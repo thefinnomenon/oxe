@@ -1,6 +1,5 @@
 export {
   bucket,
-  BucketDeclarationBuilder,
   defineSchema,
   enumType,
   isTopLevelDeclaration,
@@ -10,7 +9,10 @@ export {
   type BucketConfig,
   type BucketDeclaration,
   type BucketDimensions,
+  type BucketDimensionsInput,
+  type BucketDimensionsRangeInput,
   type BucketMetadata,
+  type BucketMetadataInput,
   type EnumDeclaration,
   type ObjectTypeDeclaration,
   type RoleDeclaration,
@@ -18,18 +20,24 @@ export {
   type SchemaDefinitionInput,
   type TableConfig,
   type TableDeclaration,
+  type TableMetadata,
+  type TableMetadataInput,
   type TopLevelDeclaration,
 } from './dsl/declarations.js';
 
 export {
   AUTH_ACTIONS,
+  AUTH_CHECK_SYMBOL,
   AUTH_SUBJECT_SYMBOL,
   AUTH_SUGAR_ACTIONS,
   auth,
+  defineAuthCheck,
+  isAuthCheckReference,
   isAuthSubjectReference,
   isRoleSubjectReference,
   resolveAuthToken,
   type AuthAction,
+  type AuthCheckReference,
   type AuthInput,
   type AuthSugarAction,
   type AuthSubjectReference,
@@ -39,8 +47,30 @@ export {
 } from './dsl/auth.js';
 
 export {
-  field,
-} from './dsl/field.js';
+  CRUD_ACTIONS,
+  CRUD_SUGAR_ACTIONS,
+  type CrudAction,
+  type CrudActionLike,
+  type CrudInput,
+  type CrudSugarAction,
+} from './dsl/crud.js';
+
+export {
+  CUSTOM_TRANSFORM_SYMBOL,
+  CUSTOM_VALIDATOR_SYMBOL,
+  defineTransform,
+  defineValidator,
+  isTransformDefinition,
+  isValidatorDefinition,
+  type CustomExecutionContext,
+  type AuthCheckReturn,
+  type TransformDefinition,
+  type UserContext,
+  type ValidatorDefinition,
+  type ValidatorReturn,
+} from './dsl/custom.js';
+
+export { field } from './dsl/field.js';
 
 export {
   DURATION_UNITS,
@@ -54,6 +84,8 @@ export {
   type SizeUnit,
 } from './dsl/units.js';
 
+export { POPULAR_MIME_TYPES, type MimeType } from './dsl/mime-types.js';
+
 export {
   FieldBuilder,
   createFieldBuilder,
@@ -62,6 +94,7 @@ export {
 } from './dsl/field-builder.js';
 
 export {
+  type BuiltInTransformKind,
   type FieldDbMetadata,
   type FieldDefinition,
   type FieldTransform,
@@ -84,9 +117,11 @@ export { validateSchemaProject, type SchemaValidationResult } from './semantics/
 export {
   buildSchemaGraph,
   normalizeAuth,
+  normalizeCrud,
   type NormalizedAuth,
   type NormalizedBucket,
   type NormalizedBucketMetadata,
+  type NormalizedCrud,
   type NormalizedEnum,
   type NormalizedField,
   type NormalizedObjectType,
@@ -96,4 +131,9 @@ export {
   type SchemaGraphProvenance,
 } from './graph/index.js';
 
-export { createDiagnostic, formatDiagnostic, type Diagnostic, type DiagnosticSource } from './diagnostics/index.js';
+export {
+  createDiagnostic,
+  formatDiagnostic,
+  type Diagnostic,
+  type DiagnosticSource,
+} from './diagnostics/index.js';

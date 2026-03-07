@@ -5,13 +5,16 @@ import type {
   EnumDeclaration,
   ObjectTypeDeclaration,
   RoleDeclaration,
+  TableMetadata,
   TableDeclaration,
 } from '../dsl/declarations.js';
 import { cloneFieldDefinition, type FieldDefinition } from '../dsl/field-types.js';
+import { reduceMimeTypes } from '../dsl/mime-types.js';
 import type { LoadedDeclaration, LoadedSchemaProject } from '../loader/types.js';
 import { validateSchemaProject } from '../semantics/validate-schema-project.js';
 import { createBuiltInTableFields } from './built-ins.js';
 import { normalizeAuth } from './normalize-auth.js';
+import { normalizeCrud } from './normalize-crud.js';
 import type {
   NormalizedBucket,
   NormalizedBucketMetadata,
@@ -57,8 +60,7 @@ const normalizeField = (
 };
 
 const normalizeBucketMetadata = (metadata: BucketMetadata): NormalizedBucketMetadata => ({
-  mediaType: metadata.mediaType,
-  fileTypes: [...(metadata.fileTypes ?? [])],
+  mimeType: reduceMimeTypes(metadata.mimeType ?? []).mimeType,
   size: {
     min: metadata.size?.min,
     max: metadata.size?.max,
@@ -72,6 +74,13 @@ const normalizeBucketMetadata = (metadata: BucketMetadata): NormalizedBucketMeta
     max: metadata.dimensions?.max,
   },
   ttlSeconds: metadata.ttlSeconds,
+});
+
+const normalizeTableMetadata = (metadata: TableMetadata): TableMetadata => ({
+  dbName: metadata.dbName,
+  description: metadata.description,
+  timestamps: metadata.timestamps,
+  tags: metadata.tags ? [...metadata.tags] : undefined,
 });
 
 const normalizeRole = (entry: LoadedDeclaration<RoleDeclaration>): NormalizedRole => ({
@@ -119,7 +128,9 @@ const normalizeTable = (entry: LoadedDeclaration<TableDeclaration>): NormalizedT
   );
 
   for (const [fieldName, fieldDefinition] of Object.entries(entry.declaration.fields)) {
-    if (BUILT_IN_TABLE_FIELD_NAMES.includes(fieldName as (typeof BUILT_IN_TABLE_FIELD_NAMES)[number])) {
+    if (
+      BUILT_IN_TABLE_FIELD_NAMES.includes(fieldName as (typeof BUILT_IN_TABLE_FIELD_NAMES)[number])
+    ) {
       continue;
     }
 
@@ -138,7 +149,9 @@ const normalizeTable = (entry: LoadedDeclaration<TableDeclaration>): NormalizedT
     name: entry.declaration.name,
     fields,
     auth: normalizeAuth(entry.declaration.auth),
+    crud: normalizeCrud(entry.declaration.crud),
     ownerField,
+    metadata: normalizeTableMetadata(entry.declaration.metadata),
     sourcePath: entry.sourcePath,
   };
 };
@@ -163,6 +176,7 @@ const normalizeBucket = (entry: LoadedDeclaration<BucketDeclaration>): Normalize
     name: entry.declaration.name,
     fields,
     auth: normalizeAuth(entry.declaration.auth),
+    crud: normalizeCrud(entry.declaration.crud),
     ownerField,
     metadata: normalizeBucketMetadata(entry.declaration.metadata),
     sourcePath: entry.sourcePath,

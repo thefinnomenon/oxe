@@ -7,6 +7,14 @@ const run = async (): Promise<void> => {
   });
 
   const validation = validateSchemaProject(project);
+  const warnings = validation.diagnostics.filter((diagnostic) => diagnostic.severity === 'warning');
+
+  if (warnings.length > 0) {
+    console.warn('Schema validation warnings:');
+    for (const diagnostic of warnings) {
+      console.warn(`- [${diagnostic.code}] ${diagnostic.message}`);
+    }
+  }
 
   if (!validation.ok) {
     console.error('Schema validation failed:');

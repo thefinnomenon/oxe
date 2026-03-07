@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { auth, normalizeAuth, role } from '../../src/index.js';
+import { auth, defineAuthCheck, normalizeAuth, role } from '../../src/index.js';
 
 describe('auth normalization', () => {
   it('normalizes read/write sugar and canonical actions', () => {
@@ -32,5 +32,14 @@ describe('auth normalization', () => {
     expect(normalized.create).toEqual(['admin', 'owner']);
     expect(normalized.update).toEqual(['admin', 'owner']);
     expect(normalized.delete).toEqual(['private']);
+  });
+
+  it('supports custom auth check references', () => {
+    const canReadDrafts = defineAuthCheck('canReadDrafts', () => true);
+    const normalized = normalizeAuth({
+      get: [auth.public, canReadDrafts],
+    });
+
+    expect(normalized.get).toEqual(['public', 'canReadDrafts']);
   });
 });

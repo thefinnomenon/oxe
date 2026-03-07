@@ -1,4 +1,5 @@
 import type { AuthInput } from './auth.js';
+import type { TransformDefinition, ValidatorDefinition } from './custom.js';
 
 export type ScalarFieldType =
   | 'id'
@@ -32,11 +33,23 @@ export interface FieldTypeObject {
 
 export type FieldTypeRef = FieldTypeScalar | FieldTypeEnum | FieldTypeObject;
 
-export type TransformKind = 'trim' | 'lowercase' | 'uppercase' | 'floor' | 'ceiling' | 'round' | string;
+export type BuiltInTransformKind =
+  | 'trim'
+  | 'lowercase'
+  | 'uppercase'
+  | 'floor'
+  | 'ceiling'
+  | 'round';
 
-export interface FieldTransform {
-  kind: TransformKind;
-}
+export type FieldTransform =
+  | {
+      kind: 'builtIn';
+      name: BuiltInTransformKind;
+    }
+  | {
+      kind: 'custom';
+      name: TransformDefinition['name'];
+    };
 
 export type FieldValidator =
   | { kind: 'minLength'; value: number }
@@ -48,7 +61,8 @@ export type FieldValidator =
   | { kind: 'regex'; source: string; flags: string }
   | { kind: 'min'; value: number }
   | { kind: 'max'; value: number }
-  | { kind: 'num'; min: number; max: number };
+  | { kind: 'num'; min: number; max: number }
+  | { kind: 'custom'; name: ValidatorDefinition['name'] };
 
 export interface FieldDbMetadata {
   primary: boolean;

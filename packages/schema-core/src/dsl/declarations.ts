@@ -1,4 +1,5 @@
 import type { AuthInput } from './auth.js';
+import type { CrudInput } from './crud.js';
 import {
   SCHEMA_DECLARATION_SYMBOL,
   SCHEMA_DEFINITION_SYMBOL,
@@ -7,6 +8,7 @@ import {
 import type { BrandedDeclaration, BrandedSchemaDefinition, DeclarationKind } from './brands.js';
 import { toFieldDefinition, type FieldInput } from './field-builder.js';
 import type { FieldDefinition } from './field-types.js';
+import { reduceMimeTypes, type MimeType } from './mime-types.js';
 import { toDurationSeconds, toSizeBytes, type DurationInput, type SizeInput } from './units.js';
 
 export interface RoleDeclaration extends BrandedDeclaration {
@@ -30,7 +32,9 @@ export interface TableDeclaration extends BrandedDeclaration {
   declarationKind: 'table';
   name: string;
   auth?: AuthInput;
+  crud?: CrudInput;
   fields: Record<string, FieldDefinition>;
+  metadata: TableMetadata;
 }
 
 export interface BucketDimensions {
@@ -39,8 +43,9 @@ export interface BucketDimensions {
 }
 
 export interface BucketMetadata {
-  mediaType?: 'image' | 'video';
-  fileTypes?: string[];
+  mimeType?: string[];
+  duplicateMimeType?: string[];
+  duplicateMetadataKeys?: string[];
   size?: {
     min?: number;
     max?: number;
@@ -60,6 +65,7 @@ export interface BucketDeclaration extends BrandedDeclaration {
   declarationKind: 'bucket';
   name: string;
   auth?: AuthInput;
+  crud?: CrudInput;
   fields: Record<string, FieldDefinition>;
   metadata: BucketMetadata;
 }
@@ -72,10 +78,15 @@ export type TopLevelDeclaration =
   | ObjectTypeDeclaration;
 
 export interface SchemaDefinitionInput {
+  /** Role declarations included in this schema module. */
   roles?: RoleDeclaration[];
+  /** Enum declarations included in this schema module. */
   enums?: EnumDeclaration[];
+  /** Object type declarations included in this schema module. */
   types?: ObjectTypeDeclaration[];
+  /** Table declarations included in this schema module. */
   tables?: TableDeclaration[];
+  /** Bucket declarations included in this schema module. */
   buckets?: BucketDeclaration[];
 }
 
@@ -89,26 +100,103 @@ export interface SchemaDefinition extends BrandedSchemaDefinition {
 }
 
 interface BaseResourceConfig {
+  /** Resource-level auth rules. */
   auth?: AuthInput;
+  /** CRUD route generation controls. */
+  crud?: CrudInput;
+  /** Resource field map. */
   fields?: Record<string, FieldInput>;
+}
+
+export interface TableMetadata {
+  /** Optional physical table name override for persistence layers. */
+  dbName?: string;
+  /** Optional description for docs/admin tooling. */
+  description?: string;
+  /** Arbitrary tags for downstream tooling/filtering. */
+  tags?: string[];
+  /** Whether built-in timestamp fields are expected on this table. */
+  timestamps?: boolean;
+}
+
+export interface TableMetadataInput extends Omit<TableMetadata, 'tags'> {
+  /** Arbitrary tags for downstream tooling/filtering. */
+  tags?: readonly string[];
 }
 
 export interface TableConfig extends BaseResourceConfig {
+  /** Table field map. */
   fields: Record<string, FieldInput>;
+  /** Table metadata/config authored in schemas. */
+  config?: TableMetadataInput;
 }
 
 export interface BucketConfig extends BaseResourceConfig {
+  /** Bucket field map. */
   fields?: Record<string, FieldInput>;
+  /** Bucket persistence/media constraints. */
+  config?: BucketMetadataInput;
 }
 
-const normalizeFields = (fields: Record<string, FieldInput> | undefined): Record<string, FieldDefinition> => {
+export type BucketDimensionsInput = BucketDimensions | [width: number, height: number];
+
+export type BucketDimensionsRangeInput =
+  | BucketDimensionsInput
+  | [min: BucketDimensionsInput, max: BucketDimensionsInput]
+  | [minWidth: number, minHeight: number, maxWidth: number, maxHeight: number];
+
+export interface BucketMetadataInput {
+  /** Allowed mime types for uploaded objects. Supports wildcards like `image/*`. */
+  fileType?: MimeType[];
+  /** Minimum allowed file size. */
+  minSize?: SizeInput;
+  /** Maximum allowed file size. */
+  maxSize?: SizeInput;
+  /** Exact size or min/max size range. */
+  size?: SizeInput | [min: SizeInput, max: SizeInput];
+  /** Minimum allowed media duration. */
+  minDuration?: DurationInput;
+  /** Maximum allowed media duration. */
+  maxDuration?: DurationInput;
+  /** Exact duration or min/max duration range. */
+  duration?: DurationInput | [min: DurationInput, max: DurationInput];
+  /** Minimum width/height bounds. */
+  minDimensions?: BucketDimensionsInput;
+  /** Maximum width/height bounds. */
+  maxDimensions?: BucketDimensionsInput;
+  /** Exact dimensions or min/max dimension range. */
+  dimensions?: BucketDimensionsRangeInput;
+  /** Time-to-live for stored objects. */
+  ttl?: DurationInput;
+}
+
+const normalizeFields = (
+  fields: Record<string, FieldInput> | undefined,
+): Record<string, FieldDefinition> => {
   if (!fields) {
     return {};
   }
 
   return Object.fromEntries(
-    Object.entries(fields).map(([fieldName, fieldValue]) => [fieldName, toFieldDefinition(fieldValue)]),
+    Object.entries(fields).map(([fieldName, fieldValue]) => [
+      fieldName,
+      toFieldDefinition(fieldValue),
+    ]),
   );
+};
+
+const normalizeTableMetadataInput = (input: TableMetadataInput | undefined): TableMetadata => {
+  if (!input) {
+    return {};
+  }
+
+  const tags = input.tags ? [...new Set(input.tags)] : undefined;
+  return {
+    dbName: input.dbName,
+    description: input.description,
+    timestamps: input.timestamps,
+    tags: tags && tags.length > 0 ? tags : undefined,
+  };
 };
 
 const createDeclarationBase = <TKind extends DeclarationKind, TPayload extends object>(
@@ -126,7 +214,9 @@ const toDimensions = (
 ): BucketDimensions => {
   if (typeof widthOrDimensions === 'number') {
     if (typeof maybeHeight !== 'number') {
-      throw new Error('Bucket dimensions require both width and height when using numeric overload.');
+      throw new Error(
+        'Bucket dimensions require both width and height when using numeric overload.',
+      );
     }
 
     return { width: widthOrDimensions, height: maybeHeight };
@@ -135,168 +225,220 @@ const toDimensions = (
   return widthOrDimensions;
 };
 
-export class BucketDeclarationBuilder implements BucketDeclaration {
-  public readonly [SCHEMA_DECLARATION_SYMBOL] = true;
-  public readonly declarationKind = 'bucket' as const;
+const toDimensionsFromInput = (input: BucketDimensionsInput): BucketDimensions =>
+  Array.isArray(input) ? toDimensions(input[0], input[1]) : toDimensions(input);
 
-  public readonly name: string;
-  public readonly auth?: AuthInput;
-  public readonly fields: Record<string, FieldDefinition>;
-  public readonly metadata: BucketMetadata;
+const appendMimeTypes = (
+  metadata: BucketMetadata,
+  mimeTypesToAppend: string[],
+): Pick<BucketMetadata, 'mimeType' | 'duplicateMimeType'> => {
+  const reduced = reduceMimeTypes([...(metadata.mimeType ?? []), ...mimeTypesToAppend]);
+  const duplicates = new Set([...(metadata.duplicateMimeType ?? []), ...reduced.duplicates]);
 
-  constructor(name: string, config: BucketConfig, metadata: BucketMetadata = {}) {
-    this.name = name;
-    this.auth = config.auth;
-    this.fields = normalizeFields(config.fields);
-    this.metadata = metadata;
+  return {
+    mimeType: reduced.mimeType,
+    duplicateMimeType: duplicates.size > 0 ? [...duplicates] : undefined,
+  };
+};
+
+type BucketMetadataKey =
+  | 'size.min'
+  | 'size.max'
+  | 'duration.min'
+  | 'duration.max'
+  | 'dimensions.min'
+  | 'dimensions.max'
+  | 'ttlSeconds';
+
+const hasBucketMetadataValue = (metadata: BucketMetadata, key: BucketMetadataKey): boolean => {
+  switch (key) {
+    case 'size.min':
+      return metadata.size?.min !== undefined;
+    case 'size.max':
+      return metadata.size?.max !== undefined;
+    case 'duration.min':
+      return metadata.duration?.min !== undefined;
+    case 'duration.max':
+      return metadata.duration?.max !== undefined;
+    case 'dimensions.min':
+      return metadata.dimensions?.min !== undefined;
+    case 'dimensions.max':
+      return metadata.dimensions?.max !== undefined;
+    case 'ttlSeconds':
+      return metadata.ttlSeconds !== undefined;
+    default:
+      return false;
+  }
+};
+
+const trackBucketMetadataOverrides = (
+  metadata: BucketMetadata,
+  keys: BucketMetadataKey[],
+): Pick<BucketMetadata, 'duplicateMetadataKeys'> => {
+  const duplicates = new Set(metadata.duplicateMetadataKeys ?? []);
+
+  for (const key of keys) {
+    if (hasBucketMetadataValue(metadata, key)) {
+      duplicates.add(key);
+    }
   }
 
-  public image(): BucketDeclarationBuilder {
-    return this.withMetadata({ mediaType: 'image' });
+  return {
+    duplicateMetadataKeys: duplicates.size > 0 ? [...duplicates] : undefined,
+  };
+};
+
+const normalizeBucketMetadataInput = (input: BucketMetadataInput | undefined): BucketMetadata => {
+  if (!input) {
+    return {};
   }
 
-  public video(): BucketDeclarationBuilder {
-    return this.withMetadata({ mediaType: 'video' });
+  let metadata: BucketMetadata = {};
+  if (input.fileType && input.fileType.length > 0) {
+    metadata = { ...metadata, ...appendMimeTypes(metadata, input.fileType) };
   }
 
-  public fileType(...fileTypes: string[]): BucketDeclarationBuilder {
-    return this.withMetadata({
-      fileTypes: [...(this.metadata.fileTypes ?? []), ...fileTypes],
-    });
+  if (input.minSize !== undefined) {
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['size.min']),
+      size: { ...metadata.size, min: toSizeBytes(input.minSize) },
+    };
+  }
+  if (input.maxSize !== undefined) {
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['size.max']),
+      size: { ...metadata.size, max: toSizeBytes(input.maxSize) },
+    };
+  }
+  if (input.size !== undefined) {
+    const min = Array.isArray(input.size) ? input.size[0] : input.size;
+    const max = Array.isArray(input.size) ? input.size[1] : input.size;
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['size.min', 'size.max']),
+      size: { min: toSizeBytes(min), max: toSizeBytes(max) },
+    };
   }
 
-  public minSize(min: SizeInput): BucketDeclarationBuilder {
-    const minBytes = toSizeBytes(min);
-    return this.withMetadata({
-      size: { ...this.metadata.size, min: minBytes },
-    });
+  if (input.minDuration !== undefined) {
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['duration.min']),
+      duration: { ...metadata.duration, min: toDurationSeconds(input.minDuration) },
+    };
+  }
+  if (input.maxDuration !== undefined) {
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['duration.max']),
+      duration: { ...metadata.duration, max: toDurationSeconds(input.maxDuration) },
+    };
+  }
+  if (input.duration !== undefined) {
+    const min = Array.isArray(input.duration) ? input.duration[0] : input.duration;
+    const max = Array.isArray(input.duration) ? input.duration[1] : input.duration;
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['duration.min', 'duration.max']),
+      duration: { min: toDurationSeconds(min), max: toDurationSeconds(max) },
+    };
   }
 
-  public maxSize(max: SizeInput): BucketDeclarationBuilder {
-    const maxBytes = toSizeBytes(max);
-    return this.withMetadata({
-      size: { ...this.metadata.size, max: maxBytes },
-    });
+  if (input.minDimensions !== undefined) {
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['dimensions.min']),
+      dimensions: { ...metadata.dimensions, min: toDimensionsFromInput(input.minDimensions) },
+    };
   }
-
-  public size(min: SizeInput, max: SizeInput): BucketDeclarationBuilder {
-    const minBytes = toSizeBytes(min);
-    const maxBytes = toSizeBytes(max);
-    return this.withMetadata({
-      size: { min: minBytes, max: maxBytes },
-    });
+  if (input.maxDimensions !== undefined) {
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['dimensions.max']),
+      dimensions: { ...metadata.dimensions, max: toDimensionsFromInput(input.maxDimensions) },
+    };
   }
-
-  public minDuration(min: DurationInput): BucketDeclarationBuilder {
-    const minSeconds = toDurationSeconds(min);
-    return this.withMetadata({
-      duration: { ...this.metadata.duration, min: minSeconds },
-    });
-  }
-
-  public maxDuration(max: DurationInput): BucketDeclarationBuilder {
-    const maxSeconds = toDurationSeconds(max);
-    return this.withMetadata({
-      duration: { ...this.metadata.duration, max: maxSeconds },
-    });
-  }
-
-  public duration(min: DurationInput, max: DurationInput): BucketDeclarationBuilder {
-    const minSeconds = toDurationSeconds(min);
-    const maxSeconds = toDurationSeconds(max);
-    return this.withMetadata({
-      duration: { min: minSeconds, max: maxSeconds },
-    });
-  }
-
-  public minDimensions(widthOrDimensions: number | BucketDimensions, maybeHeight?: number): BucketDeclarationBuilder {
-    const min = toDimensions(widthOrDimensions, maybeHeight);
-    return this.withMetadata({
-      dimensions: { ...this.metadata.dimensions, min },
-    });
-  }
-
-  public maxDimensions(widthOrDimensions: number | BucketDimensions, maybeHeight?: number): BucketDeclarationBuilder {
-    const max = toDimensions(widthOrDimensions, maybeHeight);
-    return this.withMetadata({
-      dimensions: { ...this.metadata.dimensions, max },
-    });
-  }
-
-  public dimensions(
-    minWidthOrDimensions: number | BucketDimensions,
-    minHeightOrMaxDimensions: number | BucketDimensions,
-    maybeMaxWidth?: number,
-    maybeMaxHeight?: number,
-  ): BucketDeclarationBuilder {
-    if (
-      typeof minWidthOrDimensions === 'number' &&
-      typeof minHeightOrMaxDimensions === 'number' &&
-      typeof maybeMaxWidth === 'number' &&
-      typeof maybeMaxHeight === 'number'
-    ) {
-      return this.withMetadata({
-        dimensions: {
-          min: { width: minWidthOrDimensions, height: minHeightOrMaxDimensions },
-          max: { width: maybeMaxWidth, height: maybeMaxHeight },
-        },
-      });
+  if (input.dimensions !== undefined) {
+    let min: BucketDimensions;
+    let max: BucketDimensions;
+    if (Array.isArray(input.dimensions)) {
+      if (input.dimensions.length === 2) {
+        min = toDimensionsFromInput(input.dimensions[0] as BucketDimensionsInput);
+        max = toDimensionsFromInput(input.dimensions[1] as BucketDimensionsInput);
+      } else if (input.dimensions.length === 4) {
+        min = toDimensions(input.dimensions[0], input.dimensions[1]);
+        max = toDimensions(input.dimensions[2], input.dimensions[3]);
+      } else {
+        throw new Error(
+          'Bucket metadata.dimensions expects [w,h], [min,max], or [minW,minH,maxW,maxH].',
+        );
+      }
+    } else {
+      min = toDimensionsFromInput(input.dimensions);
+      max = toDimensionsFromInput(input.dimensions);
     }
 
-    if (
-      typeof minWidthOrDimensions === 'object' &&
-      minWidthOrDimensions !== null &&
-      typeof minHeightOrMaxDimensions === 'object' &&
-      minHeightOrMaxDimensions !== null
-    ) {
-      return this.withMetadata({
-        dimensions: {
-          min: minWidthOrDimensions,
-          max: minHeightOrMaxDimensions,
-        },
-      });
-    }
-
-    throw new Error('Bucket dimensions() expects either (minW, minH, maxW, maxH) or (min, max).');
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['dimensions.min', 'dimensions.max']),
+      dimensions: { min, max },
+    };
   }
 
-  public ttl(value: DurationInput): BucketDeclarationBuilder {
-    return this.withMetadata({ ttlSeconds: toDurationSeconds(value) });
+  if (input.ttl !== undefined) {
+    metadata = {
+      ...metadata,
+      ...trackBucketMetadataOverrides(metadata, ['ttlSeconds']),
+      ttlSeconds: toDurationSeconds(input.ttl),
+    };
   }
 
-  private withMetadata(metadataPatch: Partial<BucketMetadata>): BucketDeclarationBuilder {
-    return new BucketDeclarationBuilder(
-      this.name,
-      { auth: this.auth, fields: this.fields },
-      {
-        ...this.metadata,
-        ...metadataPatch,
-      },
-    );
-  }
-}
+  return metadata;
+};
 
+/** Declares a reusable role token for auth rules. */
 export const role = (name: string): RoleDeclaration => createDeclarationBase('role', { name });
 
+/** Declares an enum type with ordered string members. */
 export const enumType = (name: string, members: readonly string[]): EnumDeclaration =>
   createDeclarationBase('enum', { name, members: [...members] });
 
-export const objectType = (name: string, fields: Record<string, FieldInput>): ObjectTypeDeclaration =>
+/** Declares an object type (structured value object) with nested fields. */
+export const objectType = (
+  name: string,
+  fields: Record<string, FieldInput>,
+): ObjectTypeDeclaration =>
   createDeclarationBase('objectType', {
     name,
     fields: normalizeFields(fields),
   });
 
+/** Declares a table resource with fields and optional table-level auth. */
 export const table = (name: string, config: TableConfig): TableDeclaration =>
   createDeclarationBase('table', {
     name,
     auth: config.auth,
+    crud: config.crud,
     fields: normalizeFields(config.fields),
+    metadata: normalizeTableMetadataInput(config.config),
   });
 
-export const bucket = (name: string, config: BucketConfig = {}): BucketDeclarationBuilder =>
-  new BucketDeclarationBuilder(name, config);
+/** Declares a bucket resource with optional fields/auth and metadata config. */
+export const bucket = (name: string, options: BucketConfig = {}): BucketDeclaration =>
+  createDeclarationBase('bucket', {
+    name,
+    auth: options.auth,
+    crud: options.crud,
+    fields: normalizeFields(options.fields),
+    metadata: normalizeBucketMetadataInput(options.config),
+  });
 
+/**
+ * Combines top-level declarations into a default schema module export.
+ * @param input Declaration groups to include in the schema module.
+ */
 export const defineSchema = (input: SchemaDefinitionInput): SchemaDefinition => ({
   declarationKind: 'schema',
   [SCHEMA_DEFINITION_SYMBOL]: true,

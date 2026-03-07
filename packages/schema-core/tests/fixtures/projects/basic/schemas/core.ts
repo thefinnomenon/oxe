@@ -1,4 +1,12 @@
-import { bucket, defineSchema, enumType, field, objectType, role, table } from '../../../../../src/index.js';
+import {
+  bucket,
+  defineSchema,
+  enumType,
+  field,
+  objectType,
+  role,
+  table,
+} from '../../../../../src/index.js';
 
 export const admin = role('admin');
 export const member = role('member');
@@ -12,12 +20,19 @@ export const SEO = objectType('SEO', {
 
 export const User = table('User', {
   fields: {
-    email: field.string().email().unique(),
+    email: field.string().unique().email(),
     displayName: field.string().trim().minLength(2),
   },
 });
 
 export const Post = table('Post', {
+  config: {
+    dbName: 'posts',
+    description: 'Primary posts table',
+    tags: ['content', 'public-content'],
+    timestamps: true,
+  },
+  crud: ['read', 'create', 'delete'],
   auth: {
     read: 'public',
     write: ['admin', 'owner'],
@@ -34,6 +49,7 @@ export const Post = table('Post', {
 });
 
 export const Assets = bucket('Assets', {
+  crud: false,
   auth: {
     read: 'private',
     write: ['admin'],
@@ -41,12 +57,13 @@ export const Assets = bucket('Assets', {
   fields: {
     ownerId: field.id().owner().references('User'),
   },
-})
-  .image()
-  .fileType('image/png', 'image/jpeg')
-  .size(1, 5_000_000)
-  .dimensions(300, 300, 3840, 2160)
-  .ttl(3600);
+  config: {
+    fileType: ['image/*', 'image/png', 'image/jpeg'],
+    size: [1, 5_000_000],
+    dimensions: [300, 300, 3840, 2160],
+    ttl: 3600,
+  },
+});
 
 export const IgnoredByLoader = table('IgnoredByLoader', {
   fields: {

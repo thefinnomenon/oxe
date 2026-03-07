@@ -1,11 +1,12 @@
 import type { Diagnostic } from '../diagnostics/types.js';
 import type { AuthAction } from '../dsl/auth.js';
+import type { CrudAction } from '../dsl/crud.js';
 import type {
   BucketDimensions,
-  BucketMetadata,
   EnumDeclaration,
   ObjectTypeDeclaration,
   RoleDeclaration,
+  TableMetadata,
 } from '../dsl/declarations.js';
 import type {
   FieldDbMetadata,
@@ -16,6 +17,11 @@ import type {
 } from '../dsl/field-types.js';
 
 export type NormalizedAuth = Record<AuthAction, string[]>;
+
+export interface NormalizedCrud {
+  enabled: boolean;
+  actions: CrudAction[];
+}
 
 export interface FieldProvenance {
   sourcePath: string;
@@ -65,13 +71,14 @@ export interface NormalizedTable {
   name: string;
   fields: Record<string, NormalizedField>;
   auth: NormalizedAuth;
+  crud: NormalizedCrud;
   ownerField?: string;
+  metadata: TableMetadata;
   sourcePath: string;
 }
 
 export interface NormalizedBucketMetadata {
-  mediaType?: BucketMetadata['mediaType'];
-  fileTypes: string[];
+  mimeType: string[];
   size: {
     min?: number;
     max?: number;
@@ -91,6 +98,7 @@ export interface NormalizedBucket {
   name: string;
   fields: Record<string, NormalizedField>;
   auth: NormalizedAuth;
+  crud: NormalizedCrud;
   ownerField?: string;
   metadata: NormalizedBucketMetadata;
   sourcePath: string;

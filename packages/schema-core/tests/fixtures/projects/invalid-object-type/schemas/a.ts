@@ -39,7 +39,7 @@ const WeirdTable = {
     },
   }),
   metadata: {
-    mediaType: 'image',
+    mimeType: ['image/*'],
   },
 };
 

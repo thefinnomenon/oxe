@@ -54,13 +54,30 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schema-core
 
-  packages/cli: {}
+  packages/cli:
+    dependencies:
+      '@oxe/migrate-core':
+        specifier: workspace:*
+        version: link:../migrate-core
+      '@oxe/schema-core':
+        specifier: workspace:*
+        version: link:../schema-core
+
+  packages/migrate-core:
+    dependencies:
+      '@oxe/schema-core':
+        specifier: workspace:*
+        version: link:../schema-core
 
   packages/schema-core:
     dependencies:
       fast-glob:
         specifier: ^3.3.3
         version: 3.3.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.15
+        version: 22.19.15
 
   packages/shared: {}
 

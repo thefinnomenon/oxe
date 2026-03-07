@@ -1,5 +1,14 @@
 import { createDiagnostic, type Diagnostic } from '../diagnostics/index.js';
+import {
+  AUTH_ACTIONS,
+  resolveAuthToken,
+  type AuthAction,
+  type AuthInput,
+  type AuthToken,
+  type AuthValue,
+} from '../dsl/auth.js';
 import { BUILT_IN_TABLE_FIELD_NAMES } from '../dsl/constants.js';
+import { reduceMimeTypes } from '../dsl/mime-types.js';
 import type {
   BucketDeclaration,
   EnumDeclaration,
@@ -7,17 +16,30 @@ import type {
   TableDeclaration,
   TopLevelDeclaration,
 } from '../dsl/declarations.js';
-import type { FieldDbMetadata, FieldDefinition } from '../dsl/field-types.js';
+import type { FieldDbMetadata, FieldDefinition, FieldValidator } from '../dsl/field-types.js';
 import type { LoadedDeclaration, LoadedSchemaProject } from '../loader/types.js';
 import type { SchemaValidationResult } from './types.js';
 
 const bucketMetadataKeys = new Set<keyof BucketDeclaration['metadata']>([
-  'mediaType',
-  'fileTypes',
+  'mimeType',
+  'duplicateMimeType',
+  'duplicateMetadataKeys',
   'size',
   'duration',
   'dimensions',
   'ttlSeconds',
+]);
+
+const singleValueValidatorKinds = new Set<FieldValidator['kind']>([
+  'minLength',
+  'maxLength',
+  'length',
+  'email',
+  'url',
+  'uuid',
+  'min',
+  'max',
+  'num',
 ]);
 
 const hasDbDirectives = (db: FieldDbMetadata): boolean =>
@@ -28,6 +50,77 @@ const hasDbDirectives = (db: FieldDbMetadata): boolean =>
   db.references !== undefined ||
   db.onDelete !== undefined ||
   db.autoUpdated;
+
+const toAuthTokens = (value: AuthValue | undefined): string[] => {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((token) => resolveAuthToken(token));
+  }
+
+  return [resolveAuthToken(value as AuthToken)];
+};
+
+const collectAuthActionTokens = (auth: AuthInput | undefined): Record<AuthAction, string[]> => {
+  const actionTokens: Record<AuthAction, string[]> = {
+    get: [],
+    getMany: [],
+    create: [],
+    update: [],
+    delete: [],
+  };
+
+  if (!auth) {
+    return actionTokens;
+  }
+
+  const readTokens = toAuthTokens(auth.read);
+  actionTokens.get.push(...readTokens);
+  actionTokens.getMany.push(...readTokens);
+
+  const writeTokens = toAuthTokens(auth.write);
+  actionTokens.create.push(...writeTokens);
+  actionTokens.update.push(...writeTokens);
+
+  for (const action of AUTH_ACTIONS) {
+    actionTokens[action].push(...toAuthTokens(auth[action]));
+  }
+
+  return actionTokens;
+};
+
+const uniqueAuthActionTokens = (auth: AuthInput | undefined): Record<AuthAction, string[]> => {
+  const tokens = collectAuthActionTokens(auth);
+
+  return {
+    get: [...new Set(tokens.get)],
+    getMany: [...new Set(tokens.getMany)],
+    create: [...new Set(tokens.create)],
+    update: [...new Set(tokens.update)],
+    delete: [...new Set(tokens.delete)],
+  };
+};
+
+const sameTokenSet = (left: string[], right: string[]): boolean => {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const rightSet = new Set(right);
+  return left.every((value) => rightSet.has(value));
+};
+
+const findDuplicateValues = (values: string[]): string[] => {
+  const counts = new Map<string, number>();
+
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([value]) => value);
+};
 
 const validateCaseInsensitiveFieldNames = (
   fields: Record<string, FieldDefinition>,
@@ -152,6 +245,294 @@ const validateOnDeleteRequiresReferences = (
   }
 };
 
+const validateAuthInputDuplicates = (
+  auth: AuthInput | undefined,
+  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
+  diagnostics: Diagnostic[],
+  fieldName?: string,
+): void => {
+  if (!auth) {
+    return;
+  }
+
+  const actionTokens = collectAuthActionTokens(auth);
+
+  for (const action of AUTH_ACTIONS) {
+    const duplicates = findDuplicateValues(actionTokens[action]);
+
+    if (duplicates.length === 0) {
+      continue;
+    }
+
+    diagnostics.push(
+      createDiagnostic({
+        code: 'DUPLICATE_AUTH_SUBJECT',
+        severity: 'warning',
+        message: `Auth action "${action}" defines duplicate subjects (${duplicates.join(
+          ', ',
+        )}). Duplicates are ignored.`,
+        source: {
+          file: declaration.sourcePath,
+          declaration: declaration.declaration.name,
+          field: fieldName,
+        },
+      }),
+    );
+  }
+};
+
+const validateFieldAuthCoveredByResourceAuth = (
+  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
+  fieldName: string,
+  fieldAuth: AuthInput | undefined,
+  diagnostics: Diagnostic[],
+): void => {
+  if (!fieldAuth) {
+    return;
+  }
+
+  if (
+    declaration.declaration.declarationKind !== 'table' &&
+    declaration.declaration.declarationKind !== 'bucket'
+  ) {
+    return;
+  }
+
+  const resourceTokens = uniqueAuthActionTokens(declaration.declaration.auth);
+  const fieldTokens = uniqueAuthActionTokens(fieldAuth);
+
+  const redundantActions: AuthAction[] = [];
+
+  for (const action of AUTH_ACTIONS) {
+    if (fieldTokens[action].length === 0 || resourceTokens[action].length === 0) {
+      continue;
+    }
+
+    if (sameTokenSet(fieldTokens[action], resourceTokens[action])) {
+      redundantActions.push(action);
+    }
+  }
+
+  if (redundantActions.length === 0) {
+    return;
+  }
+
+  diagnostics.push(
+    createDiagnostic({
+      code: 'REDUNDANT_FIELD_AUTH',
+      severity: 'warning',
+      message: `Field "${fieldName}" auth for action(s) ${redundantActions.join(
+        ', ',
+      )} is already covered by ${declaration.declaration.declarationKind} "${declaration.declaration.name}" auth.`,
+      source: {
+        file: declaration.sourcePath,
+        declaration: declaration.declaration.name,
+        field: fieldName,
+      },
+    }),
+  );
+};
+
+const validateFieldAuthDoesNotLoosenResourceAuth = (
+  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
+  fieldName: string,
+  fieldAuth: AuthInput | undefined,
+  diagnostics: Diagnostic[],
+): void => {
+  if (!fieldAuth) {
+    return;
+  }
+
+  if (
+    declaration.declaration.declarationKind !== 'table' &&
+    declaration.declaration.declarationKind !== 'bucket'
+  ) {
+    return;
+  }
+
+  const resourceTokens = uniqueAuthActionTokens(declaration.declaration.auth);
+  const fieldTokens = uniqueAuthActionTokens(fieldAuth);
+
+  for (const action of AUTH_ACTIONS) {
+    const resourceActionTokens = resourceTokens[action];
+    const fieldActionTokens = fieldTokens[action];
+
+    if (resourceActionTokens.length === 0 || fieldActionTokens.length === 0) {
+      continue;
+    }
+
+    const resourceSet = new Set(resourceActionTokens);
+    const fieldSet = new Set(fieldActionTokens);
+
+    const resourceHasPublic = resourceSet.has('public');
+    const resourceHasPrivate = resourceSet.has('private');
+    const fieldHasPublic = fieldSet.has('public');
+    const fieldHasPrivate = fieldSet.has('private');
+
+    const looseningSubjects = new Set<string>();
+
+    // Public is always broader than non-public rules.
+    if (!resourceHasPublic && fieldHasPublic) {
+      looseningSubjects.add('public');
+    }
+
+    // "private" is broader than specific subject lists.
+    if (!resourceHasPublic && !resourceHasPrivate && fieldHasPrivate) {
+      looseningSubjects.add('private');
+    }
+
+    // For specific subject lists, field auth must remain a subset.
+    if (!resourceHasPublic && !resourceHasPrivate && !fieldHasPublic && !fieldHasPrivate) {
+      for (const token of fieldActionTokens) {
+        if (!resourceSet.has(token)) {
+          looseningSubjects.add(token);
+        }
+      }
+    }
+
+    if (looseningSubjects.size === 0) {
+      continue;
+    }
+
+    diagnostics.push(
+      createDiagnostic({
+        code: 'FIELD_AUTH_LOOSENS_RESOURCE',
+        message: `Field "${fieldName}" auth for action "${action}" loosens ${declaration.declaration.declarationKind} "${declaration.declaration.name}" auth by adding broader subjects (${[
+          ...looseningSubjects,
+        ].join(', ')}).`,
+        source: {
+          file: declaration.sourcePath,
+          declaration: declaration.declaration.name,
+          field: fieldName,
+        },
+      }),
+    );
+  }
+};
+
+const toValidatorSignature = (validator: FieldValidator): string => {
+  switch (validator.kind) {
+    case 'minLength':
+      return `minLength:${validator.value}`;
+    case 'maxLength':
+      return `maxLength:${validator.value}`;
+    case 'length':
+      return `length:${validator.min}:${validator.max}`;
+    case 'email':
+      return 'email';
+    case 'url':
+      return 'url';
+    case 'uuid':
+      return 'uuid';
+    case 'regex':
+      return `regex:${validator.source}/${validator.flags}`;
+    case 'min':
+      return `min:${validator.value}`;
+    case 'max':
+      return `max:${validator.value}`;
+    case 'num':
+      return `num:${validator.min}:${validator.max}`;
+    case 'custom':
+      return `custom:${validator.name}`;
+  }
+};
+
+const validateFieldDuplicateDefinitions = (
+  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
+  diagnostics: Diagnostic[],
+): void => {
+  for (const [fieldName, fieldDefinition] of Object.entries(declaration.declaration.fields)) {
+    validateAuthInputDuplicates(fieldDefinition.auth, declaration, diagnostics, fieldName);
+
+    if (
+      (declaration.declaration.declarationKind === 'table' ||
+        declaration.declaration.declarationKind === 'bucket') &&
+      fieldDefinition.auth
+    ) {
+      validateFieldAuthDoesNotLoosenResourceAuth(
+        declaration,
+        fieldName,
+        fieldDefinition.auth,
+        diagnostics,
+      );
+      validateFieldAuthCoveredByResourceAuth(
+        declaration,
+        fieldName,
+        fieldDefinition.auth,
+        diagnostics,
+      );
+    }
+
+    const validatorKinds = fieldDefinition.validators.map((validator) => validator.kind);
+    const duplicateValidatorKinds = findDuplicateValues(
+      validatorKinds.filter((kind) => singleValueValidatorKinds.has(kind)),
+    );
+
+    const duplicateValidatorEntries = findDuplicateValues(
+      fieldDefinition.validators.map((validator) => toValidatorSignature(validator)),
+    );
+
+    if (duplicateValidatorKinds.length > 0 || duplicateValidatorEntries.length > 0) {
+      const parts: string[] = [];
+
+      if (duplicateValidatorKinds.length > 0) {
+        parts.push(`duplicate validator kinds: ${duplicateValidatorKinds.join(', ')}`);
+      }
+
+      if (duplicateValidatorEntries.length > 0) {
+        parts.push(`duplicate validator entries: ${duplicateValidatorEntries.join(', ')}`);
+      }
+
+      diagnostics.push(
+        createDiagnostic({
+          code: 'DUPLICATE_FIELD_VALIDATOR',
+          severity: 'warning',
+          message: `Field "${fieldName}" has duplicate validators (${parts.join('; ')}). Duplicates are ignored.`,
+          source: {
+            file: declaration.sourcePath,
+            declaration: declaration.declaration.name,
+            field: fieldName,
+          },
+        }),
+      );
+    }
+
+    const validatorKindSet = new Set(validatorKinds);
+    const overlapsLength =
+      validatorKindSet.has('length') &&
+      (validatorKindSet.has('minLength') || validatorKindSet.has('maxLength'));
+    const overlapsNumeric =
+      validatorKindSet.has('num') && (validatorKindSet.has('min') || validatorKindSet.has('max'));
+
+    if (!overlapsLength && !overlapsNumeric) {
+      continue;
+    }
+
+    const overlapMessages: string[] = [];
+    if (overlapsLength) {
+      overlapMessages.push('length with minLength/maxLength');
+    }
+    if (overlapsNumeric) {
+      overlapMessages.push('num with min/max');
+    }
+
+    diagnostics.push(
+      createDiagnostic({
+        code: 'OVERLAPPING_FIELD_VALIDATOR',
+        severity: 'warning',
+        message: `Field "${fieldName}" has overlapping validator definitions (${overlapMessages.join(
+          '; ',
+        )}).`,
+        source: {
+          file: declaration.sourcePath,
+          declaration: declaration.declaration.name,
+          field: fieldName,
+        },
+      }),
+    );
+  }
+};
+
 const validateUnknownTypeReferences = (
   declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
   knownEnumNames: Set<string>,
@@ -160,7 +541,10 @@ const validateUnknownTypeReferences = (
   diagnostics: Diagnostic[],
 ): void => {
   for (const [fieldName, fieldDefinition] of Object.entries(declaration.declaration.fields)) {
-    if (fieldDefinition.type.kind === 'enum' && !knownEnumNames.has(fieldDefinition.type.enumName)) {
+    if (
+      fieldDefinition.type.kind === 'enum' &&
+      !knownEnumNames.has(fieldDefinition.type.enumName)
+    ) {
       diagnostics.push(
         createDiagnostic({
           code: 'UNKNOWN_ENUM_REFERENCE',
@@ -237,7 +621,9 @@ const validateBuiltInFieldConflicts = (
   diagnostics: Diagnostic[],
 ): void => {
   for (const fieldName of Object.keys(declaration.declaration.fields)) {
-    if (!BUILT_IN_TABLE_FIELD_NAMES.includes(fieldName as (typeof BUILT_IN_TABLE_FIELD_NAMES)[number])) {
+    if (
+      !BUILT_IN_TABLE_FIELD_NAMES.includes(fieldName as (typeof BUILT_IN_TABLE_FIELD_NAMES)[number])
+    ) {
       continue;
     }
 
@@ -255,7 +641,64 @@ const validateBuiltInFieldConflicts = (
   }
 };
 
-const validateDuplicateDeclarationNames = (project: LoadedSchemaProject, diagnostics: Diagnostic[]): void => {
+const validateBucketMimeTypeDuplicates = (
+  declaration: LoadedDeclaration<BucketDeclaration>,
+  diagnostics: Diagnostic[],
+): void => {
+  const reduced = reduceMimeTypes(declaration.declaration.metadata.mimeType ?? []);
+  const duplicates = new Set<string>([
+    ...(declaration.declaration.metadata.duplicateMimeType ?? []),
+    ...reduced.duplicates,
+  ]);
+
+  if (duplicates.size === 0) {
+    return;
+  }
+
+  diagnostics.push(
+    createDiagnostic({
+      code: 'DUPLICATE_BUCKET_MIME_TYPE',
+      severity: 'warning',
+      message: `Bucket "${declaration.declaration.name}" declares duplicate mime types (${[
+        ...duplicates,
+      ].join(', ')}). Duplicates are ignored.`,
+      source: {
+        file: declaration.sourcePath,
+        declaration: declaration.declaration.name,
+      },
+    }),
+  );
+};
+
+const validateBucketMetadataSettingDuplicates = (
+  declaration: LoadedDeclaration<BucketDeclaration>,
+  diagnostics: Diagnostic[],
+): void => {
+  const duplicates = declaration.declaration.metadata.duplicateMetadataKeys ?? [];
+
+  if (duplicates.length === 0) {
+    return;
+  }
+
+  diagnostics.push(
+    createDiagnostic({
+      code: 'DUPLICATE_BUCKET_METADATA_SETTING',
+      severity: 'warning',
+      message: `Bucket "${declaration.declaration.name}" has metadata keys defined multiple times (${duplicates.join(
+        ', ',
+      )}). Later definitions win.`,
+      source: {
+        file: declaration.sourcePath,
+        declaration: declaration.declaration.name,
+      },
+    }),
+  );
+};
+
+const validateDuplicateDeclarationNames = (
+  project: LoadedSchemaProject,
+  diagnostics: Diagnostic[],
+): void => {
   type NamedLoadedDeclaration =
     | LoadedDeclaration<TableDeclaration>
     | LoadedDeclaration<BucketDeclaration>
@@ -348,13 +791,23 @@ export const validateSchemaProject = (project: LoadedSchemaProject): SchemaValid
     diagnostics,
   );
 
-  const knownTableNames = new Set(project.declarations.tables.map((entry) => entry.declaration.name));
+  const knownTableNames = new Set(
+    project.declarations.tables.map((entry) => entry.declaration.name),
+  );
   const knownEnumNames = new Set(project.declarations.enums.map((entry) => entry.declaration.name));
-  const knownObjectTypeNames = new Set(project.declarations.types.map((entry) => entry.declaration.name));
+  const knownObjectTypeNames = new Set(
+    project.declarations.types.map((entry) => entry.declaration.name),
+  );
 
   for (const tableDeclaration of project.declarations.tables) {
-    validateCaseInsensitiveFieldNames(tableDeclaration.declaration.fields, tableDeclaration, diagnostics);
+    validateCaseInsensitiveFieldNames(
+      tableDeclaration.declaration.fields,
+      tableDeclaration,
+      diagnostics,
+    );
     validateOwnerCardinality(tableDeclaration.declaration.fields, tableDeclaration, diagnostics);
+    validateAuthInputDuplicates(tableDeclaration.declaration.auth, tableDeclaration, diagnostics);
+    validateFieldDuplicateDefinitions(tableDeclaration, diagnostics);
     validateOnDeleteRequiresReferences(tableDeclaration, diagnostics);
     validateUnknownTypeReferences(
       tableDeclaration,
@@ -367,9 +820,17 @@ export const validateSchemaProject = (project: LoadedSchemaProject): SchemaValid
   }
 
   for (const bucketDeclaration of project.declarations.buckets) {
-    validateCaseInsensitiveFieldNames(bucketDeclaration.declaration.fields, bucketDeclaration, diagnostics);
+    validateCaseInsensitiveFieldNames(
+      bucketDeclaration.declaration.fields,
+      bucketDeclaration,
+      diagnostics,
+    );
     validateOwnerCardinality(bucketDeclaration.declaration.fields, bucketDeclaration, diagnostics);
+    validateAuthInputDuplicates(bucketDeclaration.declaration.auth, bucketDeclaration, diagnostics);
+    validateFieldDuplicateDefinitions(bucketDeclaration, diagnostics);
     validateOnDeleteRequiresReferences(bucketDeclaration, diagnostics);
+    validateBucketMimeTypeDuplicates(bucketDeclaration, diagnostics);
+    validateBucketMetadataSettingDuplicates(bucketDeclaration, diagnostics);
     validateUnknownTypeReferences(
       bucketDeclaration,
       knownEnumNames,
@@ -380,8 +841,13 @@ export const validateSchemaProject = (project: LoadedSchemaProject): SchemaValid
   }
 
   for (const objectTypeDeclaration of project.declarations.types) {
-    validateCaseInsensitiveFieldNames(objectTypeDeclaration.declaration.fields, objectTypeDeclaration, diagnostics);
+    validateCaseInsensitiveFieldNames(
+      objectTypeDeclaration.declaration.fields,
+      objectTypeDeclaration,
+      diagnostics,
+    );
     validateObjectTypeFieldRules(objectTypeDeclaration, diagnostics);
+    validateFieldDuplicateDefinitions(objectTypeDeclaration, diagnostics);
     validateOnDeleteRequiresReferences(objectTypeDeclaration, diagnostics);
     validateUnknownTypeReferences(
       objectTypeDeclaration,
@@ -393,7 +859,7 @@ export const validateSchemaProject = (project: LoadedSchemaProject): SchemaValid
   }
 
   return {
-    ok: diagnostics.length === 0,
+    ok: diagnostics.every((diagnostic) => diagnostic.severity !== 'error'),
     diagnostics,
   };
 };

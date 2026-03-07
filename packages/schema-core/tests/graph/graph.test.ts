@@ -33,22 +33,35 @@ describe('schema graph', () => {
       onDelete: undefined,
     });
     expect(post.ownerField).toBe('authorId');
+    expect(post.metadata).toEqual({
+      dbName: 'posts',
+      description: 'Primary posts table',
+      tags: ['content', 'public-content'],
+      timestamps: true,
+    });
 
     expect(post.auth.get).toEqual(['public']);
     expect(post.auth.getMany).toEqual(['public']);
     expect(post.auth.create).toEqual(['admin', 'owner']);
     expect(post.auth.update).toEqual(['admin', 'owner']);
     expect(post.auth.delete).toEqual(['admin', 'owner']);
+    expect(post.crud).toEqual({
+      enabled: true,
+      actions: ['get', 'getMany', 'create', 'delete'],
+    });
 
     const assets = graph.buckets.Assets;
-    expect(assets.metadata.mediaType).toBe('image');
-    expect(assets.metadata.fileTypes).toEqual(['image/png', 'image/jpeg']);
+    expect(assets.metadata.mimeType).toEqual(['image/*']);
     expect(assets.metadata.size).toEqual({ min: 1, max: 5_000_000 });
     expect(assets.metadata.dimensions).toEqual({
       min: { width: 300, height: 300 },
       max: { width: 3840, height: 2160 },
     });
     expect(assets.metadata.ttlSeconds).toBe(3600);
+    expect(assets.crud).toEqual({
+      enabled: false,
+      actions: [],
+    });
 
     expect(graph.provenance.tables.Post).toContain('/schemas/core.ts');
     expect(graph.provenance.tables.Comment).toContain('/schemas/comments.ts');
@@ -59,8 +72,8 @@ describe('schema graph', () => {
     const graph = buildSchemaGraph(project);
 
     expect(graph.diagnostics.length).toBeGreaterThan(0);
-    expect(graph.diagnostics.some((diagnostic) => diagnostic.code === 'BUILT_IN_FIELD_OVERRIDE')).toBe(
-      true,
-    );
+    expect(
+      graph.diagnostics.some((diagnostic) => diagnostic.code === 'BUILT_IN_FIELD_OVERRIDE'),
+    ).toBe(true);
   });
 });

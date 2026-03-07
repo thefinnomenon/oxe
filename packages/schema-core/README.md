@@ -61,6 +61,18 @@ Chaining categories:
 - Validators: `minLength()`, `maxLength()`, `length()`, `email()`, `url()`, `uuid()`, `regex()`, `min()`, `max()`, `num()`
 - DB metadata: `primary()`, `default()`, `unique()`, `index()`, `references()`, `onDelete()`
 
+Field chaining is order-constrained at the TypeScript level:
+
+- type -> auth/owner -> DB metadata -> transforms -> validators
+- moving backward across categories (for example `trim().auth(...)`, `trim().index(...)`, or `minLength(...).trim()`) fails type-checking.
+
+Range helpers accept either `(min, max)` or a single value that sets both sides:
+
+- `field.length(12)` -> `length(12, 12)`
+- `field.num(5)` -> `num(5, 5)`
+- `bucket.size('1MB')` -> `size(1MB, 1MB)`
+- `bucket.duration('2m')` -> `duration(2m, 2m)`
+
 ### Bucket unit inputs
 
 Bucket size/duration/ttl methods accept either raw numbers or unit-aware values.
@@ -77,6 +89,8 @@ Normalized graph values are stored as:
 
 - Size: bytes
 - Duration/TTL: seconds
+
+`bucket(...).fileType(...)` is strongly typed with a curated `MimeType` union (popular image/video/audio/application/text types plus wildcards like `image/*`, `video/*`, `audio/*`) for editor autocomplete and type-checking.
 
 ## Loader behavior
 

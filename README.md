@@ -7,6 +7,7 @@ Phase 1 in this repo provides a graph-first schema foundation built with a const
 ## Monorepo structure
 
 - `packages/schema-core`: Schema DSL, loader, semantic validator, normalized graph builder, diagnostics, tests.
+- `packages/migrate-core`: Snapshot-based Postgres migration engine (graph -> snapshot -> diff -> operations -> SQL -> files).
 - `packages/shared`: Small shared utilities/types.
 - `packages/cli`: Placeholder CLI package for future commands.
 - `apps/playground`: Local harness for loading schemas and printing the normalized graph.
@@ -53,15 +54,31 @@ This enforces lint/typecheck/tests on both commit and push.
   - `createdAt` (default now)
   - `updatedAt` (default now + auto-updated)
 
+## Current migration scope (implemented, v1)
+
+- Graph-based, snapshot-based Postgres migration engine in `@oxe/migrate-core`
+- Schema graph -> deterministic DB snapshot
+- Snapshot diff -> typed migration operations
+- SQL generation with deterministic ordering
+- Snapshot persistence: `.oxe/db-snapshot.json`
+- Migration file generation: `migrations/0001_*.sql`
+- Conservative destructive/risky change blocking by default
+
 ## Deferred in later phases
 
-- Migration generator
 - Runtime validator/codegen pipeline
 - CRUD route generation
 - Admin metadata generation
 - Event metadata generation
 - Package-provided schema roots
 - Visual schema editing and AI-assisted schema editing
+- Migration enhancements:
+  - rename detection hints
+  - DB introspection
+  - reversible down migrations
+  - richer enum evolution tooling
+  - composite index/unique support
+  - migration apply/status tracking
 
 ## Why constrained TypeScript DSL
 
