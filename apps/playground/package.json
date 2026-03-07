@@ -1,0 +1,16 @@
+{
+  "name": "@oxe/playground",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint \"src/**/*.ts\" \"schemas/**/*.ts\" --max-warnings=0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@oxe/schema-core": "workspace:*"
+  }
+}
