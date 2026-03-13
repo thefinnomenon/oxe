@@ -2,6 +2,8 @@ import type { NormalizedField, OnDeleteBehavior, SchemaGraph } from '@oxe/schema
 
 import { normalizeDefaultValue } from './defaults.js';
 import {
+  buildCompositeIndexName,
+  buildCompositeUniqueName,
   buildEnumTypeName,
   buildForeignKeyName,
   buildIndexName,
@@ -11,9 +13,11 @@ import {
 import {
   DATABASE_SNAPSHOT_FORMAT_VERSION,
   type DatabaseColumnSnapshot,
+  type DatabaseIndexSnapshot,
   type DatabaseOnDeleteAction,
   type DatabaseSnapshot,
   type DatabaseTableSnapshot,
+  type DatabaseUniqueConstraintSnapshot,
 } from './types.js';
 
 const mapOnDelete = (
@@ -93,6 +97,7 @@ const mapFieldToColumnSnapshot = (
 
   return {
     name: field.name,
+    renameFrom: field.db.renameFrom,
     postgresType,
     enumDbName,
     isArray,
@@ -112,8 +117,10 @@ const sortRecordByKey = <TValue>(record: Record<string, TValue>): Record<string,
 const buildTableSnapshot = (
   tableName: string,
   table: SchemaGraph['tables'][string],
+  tableDbNameByName: Record<string, string>,
   enumDbTypeNamesByEnumName: Record<string, string>,
 ): DatabaseTableSnapshot => {
+  const tableDbName = (table as { metadata?: { dbName?: string } }).metadata?.dbName ?? tableName;
   const columns = sortRecordByKey(
     Object.fromEntries(
       Object.entries(table.fields).map(([fieldName, field]) => [
@@ -128,39 +135,57 @@ const buildTableSnapshot = (
     .map((column) => column.name)
     .sort((a, b) => a.localeCompare(b));
 
-  const indexes = sortRecordByKey(
-    Object.fromEntries(
-      Object.values(table.fields)
-        .filter((field) => field.db.index)
-        .map((field) => {
-          const indexName = buildIndexName(tableName, field.name);
-          return [
-            indexName,
-            {
-              name: indexName,
-              columns: [field.name],
-            },
-          ];
-        }),
-    ),
-  );
+  const indexEntries: Array<[string, DatabaseIndexSnapshot]> = [
+    ...Object.values(table.fields)
+      .filter((field) => field.db.index)
+      .map((field) => {
+        const indexName = buildIndexName(tableDbName, field.name);
+        return [
+          indexName,
+          {
+            name: indexName,
+            columns: [field.name],
+          },
+        ] as [string, DatabaseIndexSnapshot];
+      }),
+    ...(table.compositeIndexes ?? []).map((composite) => {
+      const indexName = composite.name ?? buildCompositeIndexName(tableDbName, composite.columns);
+      return [
+        indexName,
+        {
+          name: indexName,
+          columns: [...composite.columns],
+        },
+      ] as [string, DatabaseIndexSnapshot];
+    }),
+  ];
+  const indexes = sortRecordByKey(Object.fromEntries(indexEntries));
 
-  const uniqueConstraints = sortRecordByKey(
-    Object.fromEntries(
-      Object.values(table.fields)
-        .filter((field) => field.db.unique)
-        .map((field) => {
-          const uniqueName = buildUniqueName(tableName, field.name);
-          return [
-            uniqueName,
-            {
-              name: uniqueName,
-              columns: [field.name],
-            },
-          ];
-        }),
-    ),
-  );
+  const uniqueEntries: Array<[string, DatabaseUniqueConstraintSnapshot]> = [
+    ...Object.values(table.fields)
+      .filter((field) => field.db.unique)
+      .map((field) => {
+        const uniqueName = buildUniqueName(tableDbName, field.name);
+        return [
+          uniqueName,
+          {
+            name: uniqueName,
+            columns: [field.name],
+          },
+        ] as [string, DatabaseUniqueConstraintSnapshot];
+      }),
+    ...(table.compositeUniques ?? []).map((composite) => {
+      const uniqueName = composite.name ?? buildCompositeUniqueName(tableDbName, composite.columns);
+      return [
+        uniqueName,
+        {
+          name: uniqueName,
+          columns: [...composite.columns],
+        },
+      ] as [string, DatabaseUniqueConstraintSnapshot];
+    }),
+  ];
+  const uniqueConstraints = sortRecordByKey(Object.fromEntries(uniqueEntries));
 
   const foreignKeys = sortRecordByKey(
     Object.fromEntries(
@@ -173,14 +198,16 @@ const buildTableSnapshot = (
             throw new Error(`Relationship metadata missing for field "${field.name}".`);
           }
 
-          const foreignKeyName = buildForeignKeyName(tableName, field.name);
+          const foreignKeyName = buildForeignKeyName(tableDbName, field.name);
+          const referencedTableDbName =
+            tableDbNameByName[relationship.targetTable] ?? relationship.targetTable;
 
           return [
             foreignKeyName,
             {
               name: foreignKeyName,
               columns: [field.name],
-              referencedTable: relationship.targetTable,
+              referencedTable: referencedTableDbName,
               referencedColumns: ['id'],
               onDelete: mapOnDelete(relationship.onDelete),
             },
@@ -191,13 +218,14 @@ const buildTableSnapshot = (
 
   return {
     name: tableName,
-    dbName: tableName,
+    renameFrom: table.renameFrom,
+    dbName: tableDbName,
     sourcePath: table.sourcePath,
     columns,
     primaryKey:
       primaryKeyColumns.length > 0
         ? {
-            name: buildPrimaryKeyName(tableName),
+            name: buildPrimaryKeyName(tableDbName),
             columns: primaryKeyColumns,
           }
         : undefined,
@@ -228,13 +256,20 @@ export const buildDatabaseSnapshot = (schemaGraph: SchemaGraph): DatabaseSnapsho
     ),
   );
 
+  const tableDbNameByName: Record<string, string> = Object.fromEntries(
+    Object.entries(schemaGraph.tables).map(([tableName, table]) => [
+      tableName,
+      (table as { metadata?: { dbName?: string } }).metadata?.dbName ?? tableName,
+    ]),
+  );
+
   const tables = sortRecordByKey(
     Object.fromEntries(
       Object.entries(schemaGraph.tables)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([tableName, table]) => [
           tableName,
-          buildTableSnapshot(tableName, table, enumDbTypeNamesByEnumName),
+          buildTableSnapshot(tableName, table, tableDbNameByName, enumDbTypeNamesByEnumName),
         ]),
     ),
   );

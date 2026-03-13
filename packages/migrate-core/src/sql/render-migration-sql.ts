@@ -1,5 +1,6 @@
 import type { MigrationPlan } from '../operations/types.js';
 import type { MigrationOperation } from '../operations/types.js';
+import { orderMigrationOperations } from '../operations/order-migration-operations.js';
 import {
   quoteIdentifier,
   quoteLiteral,
@@ -54,38 +55,48 @@ const renderOperationSql = (operation: MigrationOperation): string[] => {
     case 'drop_table': {
       return [`DROP TABLE ${quoteIdentifier(operation.table.dbName)};`];
     }
+    case 'rename_table': {
+      return [
+        `ALTER TABLE ${quoteIdentifier(operation.fromDbName)} RENAME TO ${quoteIdentifier(operation.toDbName)};`,
+      ];
+    }
     case 'add_column': {
       return [
-        `ALTER TABLE ${quoteIdentifier(operation.tableName)} ADD COLUMN ${renderColumnDefinition(operation.column)};`,
+        `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} ADD COLUMN ${renderColumnDefinition(operation.column)};`,
       ];
     }
     case 'drop_column': {
       return [
-        `ALTER TABLE ${quoteIdentifier(operation.tableName)} DROP COLUMN ${quoteIdentifier(operation.column.name)};`,
+        `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} DROP COLUMN ${quoteIdentifier(operation.column.name)};`,
+      ];
+    }
+    case 'rename_column': {
+      return [
+        `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} RENAME COLUMN ${quoteIdentifier(operation.fromColumnName)} TO ${quoteIdentifier(operation.toColumnName)};`,
       ];
     }
     case 'alter_column_type': {
       return [
-        `ALTER TABLE ${quoteIdentifier(operation.tableName)} ALTER COLUMN ${quoteIdentifier(operation.columnName)} TYPE ${renderColumnType(operation.next)} USING ${quoteIdentifier(operation.columnName)}::${renderColumnType(operation.next)};`,
+        `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} ALTER COLUMN ${quoteIdentifier(operation.columnName)} TYPE ${renderColumnType(operation.next)} USING ${quoteIdentifier(operation.columnName)}::${renderColumnType(operation.next)};`,
       ];
     }
     case 'alter_column_nullability': {
       return [
-        `ALTER TABLE ${quoteIdentifier(operation.tableName)} ALTER COLUMN ${quoteIdentifier(operation.columnName)} ${operation.nullable ? 'DROP NOT NULL' : 'SET NOT NULL'};`,
+        `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} ALTER COLUMN ${quoteIdentifier(operation.columnName)} ${operation.nullable ? 'DROP NOT NULL' : 'SET NOT NULL'};`,
       ];
     }
     case 'alter_column_default': {
       const renderedDefault = renderColumnDefault(operation.default, operation.column);
       return [
         renderedDefault
-          ? `ALTER TABLE ${quoteIdentifier(operation.tableName)} ALTER COLUMN ${quoteIdentifier(operation.columnName)} SET DEFAULT ${renderedDefault};`
-          : `ALTER TABLE ${quoteIdentifier(operation.tableName)} ALTER COLUMN ${quoteIdentifier(operation.columnName)} DROP DEFAULT;`,
+          ? `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} ALTER COLUMN ${quoteIdentifier(operation.columnName)} SET DEFAULT ${renderedDefault};`
+          : `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} ALTER COLUMN ${quoteIdentifier(operation.columnName)} DROP DEFAULT;`,
       ];
     }
     case 'add_index': {
       const columns = operation.index.columns.map((column) => quoteIdentifier(column)).join(', ');
       return [
-        `CREATE INDEX ${quoteIdentifier(operation.index.name)} ON ${quoteIdentifier(operation.tableName)} (${columns});`,
+        `CREATE INDEX ${quoteIdentifier(operation.index.name)} ON ${quoteIdentifier(operation.tableDbName)} (${columns});`,
       ];
     }
     case 'drop_index': {
@@ -94,22 +105,22 @@ const renderOperationSql = (operation: MigrationOperation): string[] => {
     case 'add_unique': {
       const columns = operation.unique.columns.map((column) => quoteIdentifier(column)).join(', ');
       return [
-        `ALTER TABLE ${quoteIdentifier(operation.tableName)} ADD CONSTRAINT ${quoteIdentifier(operation.unique.name)} UNIQUE (${columns});`,
+        `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} ADD CONSTRAINT ${quoteIdentifier(operation.unique.name)} UNIQUE (${columns});`,
       ];
     }
     case 'drop_unique': {
       return [
-        `ALTER TABLE ${quoteIdentifier(operation.tableName)} DROP CONSTRAINT ${quoteIdentifier(operation.unique.name)};`,
+        `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} DROP CONSTRAINT ${quoteIdentifier(operation.unique.name)};`,
       ];
     }
     case 'add_foreign_key': {
       return [
-        `ALTER TABLE ${quoteIdentifier(operation.tableName)} ADD ${renderForeignKeyClause(operation.foreignKey)};`,
+        `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} ADD ${renderForeignKeyClause(operation.foreignKey)};`,
       ];
     }
     case 'drop_foreign_key': {
       return [
-        `ALTER TABLE ${quoteIdentifier(operation.tableName)} DROP CONSTRAINT ${quoteIdentifier(operation.foreignKey.name)};`,
+        `ALTER TABLE ${quoteIdentifier(operation.tableDbName)} DROP CONSTRAINT ${quoteIdentifier(operation.foreignKey.name)};`,
       ];
     }
     default: {
@@ -130,7 +141,9 @@ export const renderMigrationSql = (
     throw new Error('Migration plan is blocked due to destructive/risky changes.');
   }
 
-  const statements = plan.operations.flatMap((operation) => renderOperationSql(operation));
+  const statements = orderMigrationOperations(plan.operations).flatMap((operation) =>
+    renderOperationSql(operation),
+  );
 
   if (statements.length === 0) {
     return '';

@@ -10,6 +10,9 @@ export const Metadata = objectType('Metadata', {
 });
 
 export const User = table('User', {
+  config: {
+    dbName: 'app_users',
+  },
   fields: {
     email: field.string().unique().email(),
     displayName: field.string().trim().minLength(2),
@@ -17,6 +20,9 @@ export const User = table('User', {
 });
 
 export const Post = table('Post', {
+  config: {
+    dbName: 'app_posts',
+  },
   auth: {
     read: auth.public,
     create: [admin],

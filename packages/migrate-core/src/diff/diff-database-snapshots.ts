@@ -53,6 +53,46 @@ const isAppendOnlyEnumChange = (previousValues: string[], nextValues: string[]):
   return true;
 };
 
+const classifyUnsupportedEnumMutation = (
+  previousValues: string[],
+  nextValues: string[],
+): { code: string; message: string } => {
+  const removedValues = previousValues.filter((value) => !nextValues.includes(value));
+  const addedValues = nextValues.filter((value) => !previousValues.includes(value));
+  const sameSet = removedValues.length === 0 && addedValues.length === 0;
+
+  if (sameSet) {
+    return {
+      code: 'ENUM_REORDER_UNSUPPORTED',
+      message: 'Enum value order changed. v1 only supports append-only enum evolution.',
+    };
+  }
+
+  if (removedValues.length > 0 && addedValues.length === 0) {
+    return {
+      code: 'ENUM_VALUE_REMOVED_UNSUPPORTED',
+      message: `Enum values were removed (${removedValues.join(', ')}). v1 does not support enum value removal automatically.`,
+    };
+  }
+
+  if (
+    previousValues.length === nextValues.length &&
+    removedValues.length === addedValues.length &&
+    removedValues.length > 0
+  ) {
+    return {
+      code: 'ENUM_VALUE_RENAMED_UNSUPPORTED',
+      message: `Enum values appear renamed/replaced (${removedValues.join(', ')} -> ${addedValues.join(', ')}). v1 requires manual migration handling.`,
+    };
+  }
+
+  return {
+    code: 'ENUM_MUTATION_UNSUPPORTED',
+    message:
+      'Enum changed in a non-append-only way (reorder/removal/rewrite). v1 requires manual migration handling.',
+  };
+};
+
 const diffEnums = (
   previousEnums: Record<string, DatabaseEnumSnapshot>,
   nextEnums: Record<string, DatabaseEnumSnapshot>,
@@ -103,11 +143,15 @@ const diffEnums = (
           ];
         }
 
+        const classification = classifyUnsupportedEnumMutation(
+          previousEnum.values,
+          nextEnum.values,
+        );
         diagnostics.push(
           createMigrationDiagnostic({
-            code: 'ENUM_MUTATION_UNSUPPORTED',
+            code: classification.code,
             severity: 'error',
-            message: `Enum "${enumName}" changed in a non-append-only way (reorder/removal/rewrite). v1 requires manual migration handling.`,
+            message: `Enum "${enumName}" ${classification.message}`,
             source: {
               enum: enumName,
             },
@@ -498,6 +542,18 @@ export const diffDatabaseSnapshots = (
   for (const tableName of commonTableNames) {
     const previousTable = previousTables[tableName];
     const nextTable = nextTables[tableName];
+    if (previousTable.dbName !== nextTable.dbName) {
+      diagnostics.push(
+        createMigrationDiagnostic({
+          code: 'TABLE_DB_NAME_CHANGE_UNSUPPORTED',
+          severity: 'error',
+          message: `Table "${tableName}" changed dbName from "${previousTable.dbName}" to "${nextTable.dbName}". v1 does not infer table renames; handle manually.`,
+          source: {
+            table: tableName,
+          },
+        }),
+      );
+    }
 
     const columnDiff = diffColumns(tableName, previousTable, nextTable);
 

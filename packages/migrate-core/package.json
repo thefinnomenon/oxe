@@ -22,6 +22,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@oxe/schema-core": "workspace:*"
+    "@oxe/schema-core": "workspace:*",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.11"
   }
 }

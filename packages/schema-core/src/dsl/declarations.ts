@@ -31,15 +31,112 @@ export interface ObjectTypeDeclaration extends BrandedDeclaration {
 export interface TableDeclaration extends BrandedDeclaration {
   declarationKind: 'table';
   name: string;
+  renameFrom?: string;
   auth?: AuthInput;
   crud?: CrudInput;
   fields: Record<string, FieldDefinition>;
+  compositeIndexes: CompositeConstraintDefinition[];
+  compositeUniques: CompositeConstraintDefinition[];
   metadata: TableMetadata;
 }
 
 export interface BucketDimensions {
+  /** Pixel width. */
   width: number;
+  /** Pixel height. */
   height: number;
+}
+
+/** Strategy used to derive object keys from uploaded filenames. */
+export type BucketFileNameStrategy = 'preserve' | 'uuid' | 'slugify' | 'slugify-uuid';
+
+/** Extension handling policy for stored object keys. */
+export type BucketFileExtensionMode = 'preserve' | 'infer' | 'none';
+
+export interface BucketFileNamePolicy {
+  /** Name generation strategy for uploaded files. */
+  strategy: BucketFileNameStrategy;
+  /** Whether to preserve, infer, or drop file extensions in generated keys. */
+  extension: BucketFileExtensionMode;
+  /** Lowercase generated filenames when true. */
+  lowercase: boolean;
+  /** Separator used by slug-based strategies. */
+  separator: '-' | '_';
+  /** Optional max filename length before extension handling. */
+  maxLength?: number;
+}
+
+/** Output image formats supported by built-in post-upload image processing. */
+export type BucketImageFormat = 'jpeg' | 'png' | 'webp' | 'avif';
+
+/** Resize fit mode for generated variants. */
+export type BucketImageResizeFit = 'cover' | 'contain' | 'inside' | 'outside';
+
+export interface BucketImageVariant {
+  /** Variant identifier, e.g. `thumb` or `hero`. */
+  name: string;
+  /** Target width in pixels. */
+  width: number;
+  /** Optional target height in pixels. */
+  height?: number;
+  /** Optional fit mode for this variant. */
+  fit?: BucketImageResizeFit;
+  /** Optional quality override (typically 1..100). */
+  quality?: number;
+  /** Optional format override for this variant. */
+  format?: BucketImageFormat;
+}
+
+export interface BucketImageOptimization {
+  /** Default optimization quality (typically 1..100). */
+  quality?: number;
+  /** Output formats to generate during optimization. */
+  formats?: BucketImageFormat[];
+  /** Remove EXIF/metadata payloads when true. */
+  stripMetadata?: boolean;
+}
+
+export interface BucketImageResizeConfig {
+  /** Clamp original uploads to this max width when set. */
+  maxWidth?: number;
+  /** Clamp original uploads to this max height when set. */
+  maxHeight?: number;
+  /** Named derivative variants to generate. */
+  variants?: BucketImageVariant[];
+}
+
+/** Placeholder representation strategy for image previews. */
+export type BucketPlaceholderKind = 'blurhash' | 'lqip' | 'dominantColor';
+
+export interface BucketPlaceholderConfig {
+  /** Placeholder algorithm to generate. */
+  kind?: BucketPlaceholderKind;
+  /** Target placeholder width in pixels where applicable. */
+  width?: number;
+  /** Optional quality tuning for placeholder encoding. */
+  quality?: number;
+}
+
+export interface BucketResponsiveImagesConfig {
+  /** Target responsive widths in pixels (sorted/deduped internally). */
+  breakpoints: number[];
+  /** Output formats to emit for responsive variants. */
+  formats?: BucketImageFormat[];
+  /** Quality used for responsive derivatives. */
+  quality?: number;
+  /** Also include placeholder metadata in responsive outputs. */
+  includePlaceholder?: boolean;
+}
+
+export interface BucketPostUploadConfig {
+  /** Global image optimization defaults. */
+  optimizeImages?: BucketImageOptimization;
+  /** Resize limits and derivative variant definitions. */
+  imageResize?: BucketImageResizeConfig;
+  /** Placeholder generation options. */
+  placeholders?: BucketPlaceholderConfig;
+  /** Multi-size responsive image generation settings. */
+  responsiveImages?: BucketResponsiveImagesConfig;
 }
 
 export interface BucketMetadata {
@@ -59,14 +156,18 @@ export interface BucketMetadata {
     max?: BucketDimensions;
   };
   ttlSeconds?: number;
+  /** Normalized filename/key policy for uploaded files. */
+  fileNamePolicy?: BucketFileNamePolicy;
+  /** Normalized post-upload processing directives. */
+  postUpload?: BucketPostUploadConfig;
 }
 
 export interface BucketDeclaration extends BrandedDeclaration {
   declarationKind: 'bucket';
   name: string;
+  renameFrom?: string;
   auth?: AuthInput;
   crud?: CrudInput;
-  fields: Record<string, FieldDefinition>;
   metadata: BucketMetadata;
 }
 
@@ -104,8 +205,6 @@ interface BaseResourceConfig {
   auth?: AuthInput;
   /** CRUD route generation controls. */
   crud?: CrudInput;
-  /** Resource field map. */
-  fields?: Record<string, FieldInput>;
 }
 
 export interface TableMetadata {
@@ -127,14 +226,22 @@ export interface TableMetadataInput extends Omit<TableMetadata, 'tags'> {
 export interface TableConfig extends BaseResourceConfig {
   /** Table field map. */
   fields: Record<string, FieldInput>;
+  /** Optional previous declaration name for non-interactive rename planning. */
+  renameFrom?: string;
+  /** Table-level composite indexes (multi-column). */
+  indexes?: CompositeConstraintInput[];
+  /** Table-level composite unique constraints (multi-column). */
+  unique?: CompositeConstraintInput[];
+  /** Table-level composite unique constraints (multi-column). */
+  uniques?: CompositeConstraintInput[];
   /** Table metadata/config authored in schemas. */
   config?: TableMetadataInput;
 }
 
 export interface BucketConfig extends BaseResourceConfig {
-  /** Bucket field map. */
-  fields?: Record<string, FieldInput>;
-  /** Bucket persistence/media constraints. */
+  /** Optional previous declaration name for non-interactive rename planning. */
+  renameFrom?: string;
+  /** Bucket upload constraints and processing config. */
   config?: BucketMetadataInput;
 }
 
@@ -145,9 +252,74 @@ export type BucketDimensionsRangeInput =
   | [min: BucketDimensionsInput, max: BucketDimensionsInput]
   | [minWidth: number, minHeight: number, maxWidth: number, maxHeight: number];
 
+export interface BucketFileNamePolicyInput extends Partial<Omit<BucketFileNamePolicy, 'strategy'>> {
+  /** Name generation strategy for uploaded files. */
+  strategy: BucketFileNameStrategy;
+}
+
+export interface BucketImageVariantInput extends Omit<BucketImageVariant, 'name' | 'width'> {
+  /** Variant identifier, e.g. `thumb` or `hero`. */
+  name: string;
+  /** Target width in pixels. */
+  width: number;
+}
+
+export interface BucketImageOptimizationInput extends Omit<BucketImageOptimization, 'formats'> {
+  /** Output formats to generate during optimization. */
+  formats?: readonly BucketImageFormat[];
+}
+
+export interface BucketImageResizeConfigInput extends Omit<BucketImageResizeConfig, 'variants'> {
+  /** Named derivative variants to generate. */
+  variants?: readonly BucketImageVariantInput[];
+}
+
+export interface BucketResponsiveImagesConfigInput extends Omit<
+  BucketResponsiveImagesConfig,
+  'breakpoints' | 'formats'
+> {
+  /** Target responsive widths in pixels. */
+  breakpoints: readonly number[];
+  /** Output formats to emit for responsive variants. */
+  formats?: readonly BucketImageFormat[];
+}
+
+export interface BucketPostUploadConfigInput {
+  /** Global image optimization defaults. */
+  optimizeImages?: BucketImageOptimizationInput;
+  /** Resize limits and derivative variant definitions. */
+  imageResize?: BucketImageResizeConfigInput;
+  /** Placeholder generation options. */
+  placeholders?: BucketPlaceholderConfig;
+  /** Multi-size responsive image generation settings. */
+  responsiveImages?: BucketResponsiveImagesConfigInput;
+}
+
+export interface CompositeConstraintDefinition {
+  columns: string[];
+  name?: string;
+}
+
+export type CompositeConstraintColumnsInput = readonly [
+  first: string,
+  second: string,
+  ...rest: string[],
+];
+
+export type CompositeConstraintInput =
+  | CompositeConstraintColumnsInput
+  | {
+      /** Optional explicit DB name for this index/constraint. */
+      name?: string;
+      /** Ordered column names in this composite key/index. */
+      columns: CompositeConstraintColumnsInput;
+    };
+
 export interface BucketMetadataInput {
   /** Allowed mime types for uploaded objects. Supports wildcards like `image/*`. */
   fileType?: MimeType[];
+  /** Naming policy applied to uploaded files. */
+  fileNamePolicy?: BucketFileNamePolicyInput;
   /** Minimum allowed file size. */
   minSize?: SizeInput;
   /** Maximum allowed file size. */
@@ -168,6 +340,8 @@ export interface BucketMetadataInput {
   dimensions?: BucketDimensionsRangeInput;
   /** Time-to-live for stored objects. */
   ttl?: DurationInput;
+  /** Post-upload media processing directives. */
+  postUpload?: BucketPostUploadConfigInput;
 }
 
 const normalizeFields = (
@@ -197,6 +371,35 @@ const normalizeTableMetadataInput = (input: TableMetadataInput | undefined): Tab
     timestamps: input.timestamps,
     tags: tags && tags.length > 0 ? tags : undefined,
   };
+};
+
+const normalizeCompositeConstraint = (
+  input: CompositeConstraintInput,
+): CompositeConstraintDefinition => {
+  if (Array.isArray(input)) {
+    return {
+      columns: [...new Set<string>(input)],
+    };
+  }
+
+  const objectInput = input as Extract<
+    CompositeConstraintInput,
+    { columns: CompositeConstraintColumnsInput }
+  >;
+  return {
+    name: objectInput.name,
+    columns: [...new Set<string>(objectInput.columns)],
+  };
+};
+
+const normalizeCompositeConstraints = (
+  input: CompositeConstraintInput[] | undefined,
+): CompositeConstraintDefinition[] => {
+  if (!input || input.length === 0) {
+    return [];
+  }
+
+  return input.map((entry) => normalizeCompositeConstraint(entry));
 };
 
 const createDeclarationBase = <TKind extends DeclarationKind, TPayload extends object>(
@@ -288,6 +491,85 @@ const trackBucketMetadataOverrides = (
   };
 };
 
+const normalizeBucketFileNamePolicyInput = (
+  input: BucketFileNamePolicyInput | undefined,
+): BucketFileNamePolicy | undefined => {
+  if (!input) {
+    return undefined;
+  }
+
+  return {
+    strategy: input.strategy,
+    extension: input.extension ?? 'preserve',
+    lowercase: input.lowercase ?? true,
+    separator: input.separator ?? '-',
+    maxLength: input.maxLength,
+  };
+};
+
+const normalizeBucketPostUploadInput = (
+  input: BucketPostUploadConfigInput | undefined,
+): BucketPostUploadConfig | undefined => {
+  if (!input) {
+    return undefined;
+  }
+
+  const optimizeImages = input.optimizeImages
+    ? {
+        quality: input.optimizeImages.quality,
+        stripMetadata: input.optimizeImages.stripMetadata,
+        formats: input.optimizeImages.formats
+          ? [...new Set(input.optimizeImages.formats)]
+          : undefined,
+      }
+    : undefined;
+
+  const imageResize = input.imageResize
+    ? {
+        maxWidth: input.imageResize.maxWidth,
+        maxHeight: input.imageResize.maxHeight,
+        variants: input.imageResize.variants?.map((variant) => ({
+          name: variant.name,
+          width: variant.width,
+          height: variant.height,
+          fit: variant.fit,
+          quality: variant.quality,
+          format: variant.format,
+        })),
+      }
+    : undefined;
+
+  const placeholders = input.placeholders
+    ? {
+        kind: input.placeholders.kind,
+        width: input.placeholders.width,
+        quality: input.placeholders.quality,
+      }
+    : undefined;
+
+  const responsiveImages = input.responsiveImages
+    ? {
+        breakpoints: [...new Set(input.responsiveImages.breakpoints)].sort((a, b) => a - b),
+        formats: input.responsiveImages.formats
+          ? [...new Set(input.responsiveImages.formats)]
+          : undefined,
+        quality: input.responsiveImages.quality,
+        includePlaceholder: input.responsiveImages.includePlaceholder,
+      }
+    : undefined;
+
+  if (!optimizeImages && !imageResize && !placeholders && !responsiveImages) {
+    return undefined;
+  }
+
+  return {
+    optimizeImages,
+    imageResize,
+    placeholders,
+    responsiveImages,
+  };
+};
+
 const normalizeBucketMetadataInput = (input: BucketMetadataInput | undefined): BucketMetadata => {
   if (!input) {
     return {};
@@ -296,6 +578,12 @@ const normalizeBucketMetadataInput = (input: BucketMetadataInput | undefined): B
   let metadata: BucketMetadata = {};
   if (input.fileType && input.fileType.length > 0) {
     metadata = { ...metadata, ...appendMimeTypes(metadata, input.fileType) };
+  }
+  if (input.fileNamePolicy) {
+    metadata = {
+      ...metadata,
+      fileNamePolicy: normalizeBucketFileNamePolicyInput(input.fileNamePolicy),
+    };
   }
 
   if (input.minSize !== undefined) {
@@ -395,6 +683,13 @@ const normalizeBucketMetadataInput = (input: BucketMetadataInput | undefined): B
     };
   }
 
+  if (input.postUpload !== undefined) {
+    metadata = {
+      ...metadata,
+      postUpload: normalizeBucketPostUploadInput(input.postUpload),
+    };
+  }
+
   return metadata;
 };
 
@@ -419,19 +714,22 @@ export const objectType = (
 export const table = (name: string, config: TableConfig): TableDeclaration =>
   createDeclarationBase('table', {
     name,
+    renameFrom: config.renameFrom,
     auth: config.auth,
     crud: config.crud,
     fields: normalizeFields(config.fields),
+    compositeIndexes: normalizeCompositeConstraints(config.indexes),
+    compositeUniques: normalizeCompositeConstraints(config.uniques ?? config.unique),
     metadata: normalizeTableMetadataInput(config.config),
   });
 
-/** Declares a bucket resource with optional fields/auth and metadata config. */
+/** Declares a bucket resource with auth/crud and upload config metadata. */
 export const bucket = (name: string, options: BucketConfig = {}): BucketDeclaration =>
   createDeclarationBase('bucket', {
     name,
+    renameFrom: options.renameFrom,
     auth: options.auth,
     crud: options.crud,
-    fields: normalizeFields(options.fields),
     metadata: normalizeBucketMetadataInput(options.config),
   });
 

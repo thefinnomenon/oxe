@@ -54,9 +54,10 @@ describe('field builder', () => {
       },
     });
 
-    const authorId = toFieldDefinition(field.id().references(User).index());
+    const authorId = toFieldDefinition(field.id().renameFrom('userId').references(User).index());
 
     expect(authorId.db.references).toBe('User');
+    expect(authorId.db.renameFrom).toBe('userId');
     expect(authorId.db.index).toBe(true);
   });
 

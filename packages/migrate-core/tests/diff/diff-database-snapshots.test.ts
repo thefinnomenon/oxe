@@ -45,13 +45,24 @@ describe('diffDatabaseSnapshots', () => {
     ).toEqual(['Post.status']);
 
     expect(diff.changes.foreignKeysOnDeleteChanged.map((change) => change.foreignKeyName)).toEqual([
-      'post_author_id_fkey',
+      'app_posts_author_id_fkey',
     ]);
 
     expect(
       diff.changes.foreignKeysAdded.map((change) => `${change.tableName}.${change.foreignKeyName}`),
-    ).toEqual(['Comment.comment_author_id_fkey', 'Comment.comment_post_id_fkey']);
+    ).toEqual(['Comment.app_comments_author_id_fkey', 'Comment.app_comments_post_id_fkey']);
 
     expect(diff.changes.foreignKeysRemoved).toEqual([]);
+  });
+
+  it('emits conservative diagnostics when dbName changes on an existing table', async () => {
+    const previous = buildDatabaseSnapshot(await loadFixtureSchemaGraph('e2e-a'));
+    const next = structuredClone(previous);
+    next.tables.Post.dbName = 'renamed_posts';
+
+    const diff = diffDatabaseSnapshots(previous, next);
+    expect(
+      diff.diagnostics.some((diagnostic) => diagnostic.code === 'TABLE_DB_NAME_CHANGE_UNSUPPORTED'),
+    ).toBe(true);
   });
 });

@@ -7,9 +7,11 @@ import { buildSchemaGraph, loadSchemaProject } from '@oxe/schema-core';
 
 import {
   buildDatabaseSnapshot,
+  createMigrationPreview,
   diffDatabaseSnapshots,
   generateMigrationPlan,
   loadDatabaseSnapshot,
+  loadMigrationStatus,
   renderMigrationSql,
   writeMigrationFiles,
 } from '../../src/index.js';
@@ -73,6 +75,7 @@ describe('migration e2e flow', () => {
     expect(firstWrite.wroteMigration).toBe(true);
     expect(firstWrite.migrationPath).toBeDefined();
     expect(firstWrite.migrationPath).toContain('0001_init.sql');
+    expect(firstWrite.statusPath).toContain('.oxe/migration-status.json');
 
     const secondFixture = fixtureProjectPath('e2e-b');
     await cp(path.join(secondFixture, 'schemas'), path.join(secondRootDir, 'schemas'), {
@@ -107,7 +110,16 @@ describe('migration e2e flow', () => {
     const migrationFiles = await readdir(path.join(rootDir, 'migrations'));
     expect(migrationFiles.sort()).toEqual(['0001_init.sql', '0002_evolve.sql']);
 
+    const status = await loadMigrationStatus({ rootDir });
+    expect(status).not.toBeNull();
+    expect(status?.latestMigration).toBe('0002_evolve.sql');
+    expect(status?.latestMigrationNumber).toBe(2);
+    expect(status?.migrationFiles).toEqual(['0001_init.sql', '0002_evolve.sql']);
+
     const savedSnapshot = await readFile(path.join(rootDir, '.oxe', 'db-snapshot.json'), 'utf8');
     expect(savedSnapshot).toContain('"Comment"');
+
+    const preview = createMigrationPreview(secondPlan);
+    expect(preview.operationCount).toBe(secondPlan.operations.length);
   });
 });

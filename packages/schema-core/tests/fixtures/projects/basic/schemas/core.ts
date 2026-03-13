@@ -54,11 +54,12 @@ export const Assets = bucket('Assets', {
     read: 'private',
     write: ['admin'],
   },
-  fields: {
-    ownerId: field.id().owner().references('User'),
-  },
   config: {
     fileType: ['image/*', 'image/png', 'image/jpeg'],
+    fileNamePolicy: {
+      strategy: 'slugify-uuid',
+      maxLength: 120,
+    },
     size: [1, 5_000_000],
     dimensions: [300, 300, 3840, 2160],
     ttl: 3600,

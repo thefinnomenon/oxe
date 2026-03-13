@@ -20,5 +20,11 @@ export const buildIndexName = (tableName: string, columnName: string): string =>
 export const buildUniqueName = (tableName: string, columnName: string): string =>
   `${toSnakeCase(tableName)}_${toSnakeCase(columnName)}_key`;
 
+export const buildCompositeIndexName = (tableName: string, columnNames: string[]): string =>
+  `${toSnakeCase(tableName)}_${columnNames.map((columnName) => toSnakeCase(columnName)).join('_')}_idx`;
+
+export const buildCompositeUniqueName = (tableName: string, columnNames: string[]): string =>
+  `${toSnakeCase(tableName)}_${columnNames.map((columnName) => toSnakeCase(columnName)).join('_')}_key`;
+
 export const buildForeignKeyName = (tableName: string, columnName: string): string =>
   `${toSnakeCase(tableName)}_${toSnakeCase(columnName)}_fkey`;

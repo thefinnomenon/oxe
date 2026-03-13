@@ -1,0 +1,361 @@
+{
+  "enums": {
+    "PostStatus": {
+      "dbName": "enum_post_status",
+      "name": "PostStatus",
+      "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts",
+      "values": ["draft", "published", "archived"]
+    }
+  },
+  "formatVersion": 1,
+  "generatedFromRootDir": "/Users/finn/Projects/Dev/oxe/apps/playground",
+  "tables": {
+    "Comment": {
+      "columns": {
+        "authorId": {
+          "builtIn": false,
+          "declaration": "Comment",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "authorId",
+          "nullable": false,
+          "postgresType": "uuid",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/community.ts"
+        },
+        "body": {
+          "builtIn": false,
+          "declaration": "Comment",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "body",
+          "nullable": false,
+          "postgresType": "text",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/community.ts"
+        },
+        "createdAt": {
+          "builtIn": true,
+          "declaration": "Comment",
+          "default": {
+            "kind": "raw_sql",
+            "sql": "now()"
+          },
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "createdAt",
+          "nullable": false,
+          "postgresType": "timestamptz",
+          "sourcePath": "<built-in>"
+        },
+        "id": {
+          "builtIn": true,
+          "declaration": "Comment",
+          "default": {
+            "kind": "raw_sql",
+            "sql": "uuidv7()"
+          },
+          "isArray": false,
+          "isPrimaryKey": true,
+          "name": "id",
+          "nullable": false,
+          "postgresType": "uuid",
+          "sourcePath": "<built-in>"
+        },
+        "postId": {
+          "builtIn": false,
+          "declaration": "Comment",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "postId",
+          "nullable": false,
+          "postgresType": "uuid",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/community.ts"
+        },
+        "updatedAt": {
+          "builtIn": true,
+          "declaration": "Comment",
+          "default": {
+            "kind": "raw_sql",
+            "sql": "now()"
+          },
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "updatedAt",
+          "nullable": false,
+          "postgresType": "timestamptz",
+          "sourcePath": "<built-in>"
+        }
+      },
+      "dbName": "Comment",
+      "foreignKeys": {
+        "comment_author_id_fkey": {
+          "columns": ["authorId"],
+          "name": "comment_author_id_fkey",
+          "referencedColumns": ["id"],
+          "referencedTable": "User"
+        },
+        "comment_post_id_fkey": {
+          "columns": ["postId"],
+          "name": "comment_post_id_fkey",
+          "referencedColumns": ["id"],
+          "referencedTable": "Post"
+        }
+      },
+      "indexes": {
+        "comment_author_id_idx": {
+          "columns": ["authorId"],
+          "name": "comment_author_id_idx"
+        },
+        "comment_post_id_idx": {
+          "columns": ["postId"],
+          "name": "comment_post_id_idx"
+        }
+      },
+      "name": "Comment",
+      "primaryKey": {
+        "columns": ["id"],
+        "name": "comment_pkey"
+      },
+      "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/community.ts",
+      "uniqueConstraints": {}
+    },
+    "Post": {
+      "columns": {
+        "authorId": {
+          "builtIn": false,
+          "declaration": "Post",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "authorId",
+          "nullable": false,
+          "postgresType": "uuid",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "body": {
+          "builtIn": false,
+          "declaration": "Post",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "body",
+          "nullable": false,
+          "postgresType": "text",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "createdAt": {
+          "builtIn": true,
+          "declaration": "Post",
+          "default": {
+            "kind": "raw_sql",
+            "sql": "now()"
+          },
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "createdAt",
+          "nullable": false,
+          "postgresType": "timestamptz",
+          "sourcePath": "<built-in>"
+        },
+        "id": {
+          "builtIn": true,
+          "declaration": "Post",
+          "default": {
+            "kind": "raw_sql",
+            "sql": "uuidv7()"
+          },
+          "isArray": false,
+          "isPrimaryKey": true,
+          "name": "id",
+          "nullable": false,
+          "postgresType": "uuid",
+          "sourcePath": "<built-in>"
+        },
+        "internalNotes": {
+          "builtIn": false,
+          "declaration": "Post",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "internalNotes",
+          "nullable": true,
+          "postgresType": "text",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "seo": {
+          "builtIn": false,
+          "declaration": "Post",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "seo",
+          "nullable": true,
+          "postgresType": "jsonb",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "slug": {
+          "builtIn": false,
+          "declaration": "Post",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "slug",
+          "nullable": false,
+          "postgresType": "text",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "status": {
+          "builtIn": false,
+          "declaration": "Post",
+          "default": {
+            "kind": "literal",
+            "value": "draft"
+          },
+          "enumDbName": "enum_post_status",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "status",
+          "nullable": false,
+          "postgresType": "enum_post_status",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "tags": {
+          "builtIn": false,
+          "declaration": "Post",
+          "isArray": true,
+          "isPrimaryKey": false,
+          "name": "tags",
+          "nullable": false,
+          "postgresType": "text",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "title": {
+          "builtIn": false,
+          "declaration": "Post",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "title",
+          "nullable": false,
+          "postgresType": "text",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "updatedAt": {
+          "builtIn": true,
+          "declaration": "Post",
+          "default": {
+            "kind": "raw_sql",
+            "sql": "now()"
+          },
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "updatedAt",
+          "nullable": false,
+          "postgresType": "timestamptz",
+          "sourcePath": "<built-in>"
+        }
+      },
+      "dbName": "Post",
+      "foreignKeys": {
+        "post_author_id_fkey": {
+          "columns": ["authorId"],
+          "name": "post_author_id_fkey",
+          "referencedColumns": ["id"],
+          "referencedTable": "User"
+        }
+      },
+      "indexes": {
+        "post_author_id_idx": {
+          "columns": ["authorId"],
+          "name": "post_author_id_idx"
+        }
+      },
+      "name": "Post",
+      "primaryKey": {
+        "columns": ["id"],
+        "name": "post_pkey"
+      },
+      "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts",
+      "uniqueConstraints": {
+        "post_slug_key": {
+          "columns": ["slug"],
+          "name": "post_slug_key"
+        }
+      }
+    },
+    "User": {
+      "columns": {
+        "createdAt": {
+          "builtIn": true,
+          "declaration": "User",
+          "default": {
+            "kind": "raw_sql",
+            "sql": "now()"
+          },
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "createdAt",
+          "nullable": false,
+          "postgresType": "timestamptz",
+          "sourcePath": "<built-in>"
+        },
+        "displayName": {
+          "builtIn": false,
+          "declaration": "User",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "displayName",
+          "nullable": false,
+          "postgresType": "text",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "email": {
+          "builtIn": false,
+          "declaration": "User",
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "email",
+          "nullable": false,
+          "postgresType": "text",
+          "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts"
+        },
+        "id": {
+          "builtIn": true,
+          "declaration": "User",
+          "default": {
+            "kind": "raw_sql",
+            "sql": "uuidv7()"
+          },
+          "isArray": false,
+          "isPrimaryKey": true,
+          "name": "id",
+          "nullable": false,
+          "postgresType": "uuid",
+          "sourcePath": "<built-in>"
+        },
+        "updatedAt": {
+          "builtIn": true,
+          "declaration": "User",
+          "default": {
+            "kind": "raw_sql",
+            "sql": "now()"
+          },
+          "isArray": false,
+          "isPrimaryKey": false,
+          "name": "updatedAt",
+          "nullable": false,
+          "postgresType": "timestamptz",
+          "sourcePath": "<built-in>"
+        }
+      },
+      "dbName": "User",
+      "foreignKeys": {},
+      "indexes": {},
+      "name": "User",
+      "primaryKey": {
+        "columns": ["id"],
+        "name": "user_pkey"
+      },
+      "sourcePath": "/Users/finn/Projects/Dev/oxe/apps/playground/schemas/schema.ts",
+      "uniqueConstraints": {
+        "user_email_key": {
+          "columns": ["email"],
+          "name": "user_email_key"
+        }
+      }
+    }
+  }
+}

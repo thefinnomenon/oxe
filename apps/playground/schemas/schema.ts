@@ -1,5 +1,5 @@
 import { auth, bucket, enumType, field, objectType, role, table } from '@oxe/schema-core';
-import { canManagePost, isSlug, slugify } from './custom-logic.js';
+import { canManagePost, isSlug, slugify } from './custom-logic.ts';
 
 /** Admin role used in table and field auth policies. */
 export const admin = role('admin');
@@ -14,7 +14,7 @@ export const SEO = objectType('SEO', {
 });
 
 /** Application user table. */
-export const User = table('User', {
+export const Player = table('Player', {
   fields: {
     email: field.string().unique().email(),
     displayName: field.string().trim().minLength(2),
@@ -31,7 +31,7 @@ export const Post = table('Post', {
     delete: [admin, auth.owner, canManagePost],
   },
   fields: {
-    authorId: field.id().owner().references(User).index(),
+    authorId: field.id().owner().references(Player).index(),
     title: field.string().trim().length(3, 120),
     slug: field.string().unique().transform(slugify).validate(isSlug),
     body: field.string(),
@@ -63,15 +63,37 @@ export const PostAssets = bucket('PostAssets', {
     update: [admin, auth.owner],
     delete: [admin, auth.owner],
   },
-  fields: {
-    ownerId: field.id().owner().references(User).index(),
-    postId: field.id().references(Post).index(),
-    altText: field.string().trim().maxLength(140).optional(),
-  },
   config: {
-    fileType: ['audio/*'],
+    fileType: ['image/*'],
+    fileNamePolicy: {
+      strategy: 'slugify-uuid',
+      extension: 'preserve',
+      maxLength: 120,
+    },
     size: ['1MB', '1GB'],
     dimensions: [320, 320, 4096, 4096],
     ttl: '30d',
+    postUpload: {
+      optimizeImages: {
+        formats: ['webp', 'avif'],
+        quality: 82,
+        stripMetadata: true,
+      },
+      imageResize: {
+        maxWidth: 4096,
+        maxHeight: 4096,
+      },
+      placeholders: {
+        kind: 'blurhash',
+        width: 32,
+        quality: 40,
+      },
+      responsiveImages: {
+        breakpoints: [320, 640, 960, 1280, 1920],
+        formats: ['avif', 'webp'],
+        quality: 78,
+        includePlaceholder: true,
+      },
+    },
   },
 });

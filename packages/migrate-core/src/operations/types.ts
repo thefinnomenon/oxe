@@ -35,21 +35,39 @@ export interface DropTableOperation {
   table: DatabaseTableSnapshot;
 }
 
+export interface RenameTableOperation {
+  kind: 'rename_table';
+  tableName: string;
+  fromDbName: string;
+  toDbName: string;
+}
+
 export interface AddColumnOperation {
   kind: 'add_column';
   tableName: string;
+  tableDbName: string;
   column: DatabaseColumnSnapshot;
 }
 
 export interface DropColumnOperation {
   kind: 'drop_column';
   tableName: string;
+  tableDbName: string;
   column: DatabaseColumnSnapshot;
+}
+
+export interface RenameColumnOperation {
+  kind: 'rename_column';
+  tableName: string;
+  tableDbName: string;
+  fromColumnName: string;
+  toColumnName: string;
 }
 
 export interface AlterColumnTypeOperation {
   kind: 'alter_column_type';
   tableName: string;
+  tableDbName: string;
   columnName: string;
   previous: DatabaseColumnSnapshot;
   next: DatabaseColumnSnapshot;
@@ -58,6 +76,7 @@ export interface AlterColumnTypeOperation {
 export interface AlterColumnNullabilityOperation {
   kind: 'alter_column_nullability';
   tableName: string;
+  tableDbName: string;
   columnName: string;
   nullable: boolean;
 }
@@ -65,6 +84,7 @@ export interface AlterColumnNullabilityOperation {
 export interface AlterColumnDefaultOperation {
   kind: 'alter_column_default';
   tableName: string;
+  tableDbName: string;
   columnName: string;
   default: DatabaseColumnSnapshot['default'];
   column: DatabaseColumnSnapshot;
@@ -73,36 +93,42 @@ export interface AlterColumnDefaultOperation {
 export interface AddIndexOperation {
   kind: 'add_index';
   tableName: string;
+  tableDbName: string;
   index: DatabaseIndexSnapshot;
 }
 
 export interface DropIndexOperation {
   kind: 'drop_index';
   tableName: string;
+  tableDbName: string;
   index: DatabaseIndexSnapshot;
 }
 
 export interface AddUniqueOperation {
   kind: 'add_unique';
   tableName: string;
+  tableDbName: string;
   unique: DatabaseUniqueConstraintSnapshot;
 }
 
 export interface DropUniqueOperation {
   kind: 'drop_unique';
   tableName: string;
+  tableDbName: string;
   unique: DatabaseUniqueConstraintSnapshot;
 }
 
 export interface AddForeignKeyOperation {
   kind: 'add_foreign_key';
   tableName: string;
+  tableDbName: string;
   foreignKey: DatabaseForeignKeySnapshot;
 }
 
 export interface DropForeignKeyOperation {
   kind: 'drop_foreign_key';
   tableName: string;
+  tableDbName: string;
   foreignKey: DatabaseForeignKeySnapshot;
 }
 
@@ -112,8 +138,10 @@ export type MigrationOperation =
   | AppendEnumValueOperation
   | CreateTableOperation
   | DropTableOperation
+  | RenameTableOperation
   | AddColumnOperation
   | DropColumnOperation
+  | RenameColumnOperation
   | AlterColumnTypeOperation
   | AlterColumnNullabilityOperation
   | AlterColumnDefaultOperation
@@ -124,8 +152,21 @@ export type MigrationOperation =
   | AddForeignKeyOperation
   | DropForeignKeyOperation;
 
+export interface MigrationRenameHints {
+  tableRenames?: Array<{
+    fromTableName: string;
+    toTableName: string;
+  }>;
+  columnRenames?: Array<{
+    tableName: string;
+    fromColumnName: string;
+    toColumnName: string;
+  }>;
+}
+
 export interface GenerateMigrationPlanOptions {
   allowDestructive?: boolean;
+  renameHints?: MigrationRenameHints;
 }
 
 export interface MigrationPlan {

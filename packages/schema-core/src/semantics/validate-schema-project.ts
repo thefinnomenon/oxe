@@ -11,6 +11,7 @@ import { BUILT_IN_TABLE_FIELD_NAMES } from '../dsl/constants.js';
 import { reduceMimeTypes } from '../dsl/mime-types.js';
 import type {
   BucketDeclaration,
+  CompositeConstraintDefinition,
   EnumDeclaration,
   ObjectTypeDeclaration,
   TableDeclaration,
@@ -28,6 +29,8 @@ const bucketMetadataKeys = new Set<keyof BucketDeclaration['metadata']>([
   'duration',
   'dimensions',
   'ttlSeconds',
+  'fileNamePolicy',
+  'postUpload',
 ]);
 
 const singleValueValidatorKinds = new Set<FieldValidator['kind']>([
@@ -44,6 +47,7 @@ const singleValueValidatorKinds = new Set<FieldValidator['kind']>([
 
 const hasDbDirectives = (db: FieldDbMetadata): boolean =>
   db.primary ||
+  db.renameFrom !== undefined ||
   db.defaultValue !== undefined ||
   db.unique ||
   db.index ||
@@ -154,7 +158,7 @@ const validateCaseInsensitiveFieldNames = (
 
 const validateOwnerCardinality = (
   fields: Record<string, FieldDefinition>,
-  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration>,
+  declaration: LoadedDeclaration<TableDeclaration>,
   diagnostics: Diagnostic[],
 ): void => {
   const owners = Object.entries(fields).filter(([, fieldDefinition]) => fieldDefinition.owner);
@@ -225,7 +229,7 @@ const validateObjectTypeFieldRules = (
 };
 
 const validateOnDeleteRequiresReferences = (
-  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
+  declaration: LoadedDeclaration<TableDeclaration | ObjectTypeDeclaration>,
   diagnostics: Diagnostic[],
 ): void => {
   for (const [fieldName, fieldDefinition] of Object.entries(declaration.declaration.fields)) {
@@ -282,7 +286,7 @@ const validateAuthInputDuplicates = (
 };
 
 const validateFieldAuthCoveredByResourceAuth = (
-  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
+  declaration: LoadedDeclaration<TableDeclaration | ObjectTypeDeclaration>,
   fieldName: string,
   fieldAuth: AuthInput | undefined,
   diagnostics: Diagnostic[],
@@ -291,10 +295,7 @@ const validateFieldAuthCoveredByResourceAuth = (
     return;
   }
 
-  if (
-    declaration.declaration.declarationKind !== 'table' &&
-    declaration.declaration.declarationKind !== 'bucket'
-  ) {
+  if (declaration.declaration.declarationKind !== 'table') {
     return;
   }
 
@@ -334,7 +335,7 @@ const validateFieldAuthCoveredByResourceAuth = (
 };
 
 const validateFieldAuthDoesNotLoosenResourceAuth = (
-  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
+  declaration: LoadedDeclaration<TableDeclaration | ObjectTypeDeclaration>,
   fieldName: string,
   fieldAuth: AuthInput | undefined,
   diagnostics: Diagnostic[],
@@ -343,10 +344,7 @@ const validateFieldAuthDoesNotLoosenResourceAuth = (
     return;
   }
 
-  if (
-    declaration.declaration.declarationKind !== 'table' &&
-    declaration.declaration.declarationKind !== 'bucket'
-  ) {
+  if (declaration.declaration.declarationKind !== 'table') {
     return;
   }
 
@@ -437,18 +435,56 @@ const toValidatorSignature = (validator: FieldValidator): string => {
   }
 };
 
+const validateFieldRenameFromUsage = (
+  declaration: LoadedDeclaration<TableDeclaration | ObjectTypeDeclaration>,
+  fieldName: string,
+  fieldDefinition: FieldDefinition,
+  diagnostics: Diagnostic[],
+): void => {
+  if (!fieldDefinition.db.renameFrom) {
+    return;
+  }
+
+  if (declaration.declaration.declarationKind !== 'table') {
+    diagnostics.push(
+      createDiagnostic({
+        code: 'COLUMN_RENAME_HINT_ON_NON_TABLE',
+        message: `Field "${fieldName}" uses renameFrom(...) on ${declaration.declaration.declarationKind}. Column rename hints are only valid on table fields.`,
+        source: {
+          file: declaration.sourcePath,
+          declaration: declaration.declaration.name,
+          field: fieldName,
+        },
+      }),
+    );
+    return;
+  }
+
+  if (fieldDefinition.db.renameFrom === fieldName) {
+    diagnostics.push(
+      createDiagnostic({
+        code: 'REDUNDANT_COLUMN_RENAME_HINT',
+        severity: 'warning',
+        message: `Field "${fieldName}" has renameFrom("${fieldName}") which is redundant and ignored.`,
+        source: {
+          file: declaration.sourcePath,
+          declaration: declaration.declaration.name,
+          field: fieldName,
+        },
+      }),
+    );
+  }
+};
+
 const validateFieldDuplicateDefinitions = (
-  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
+  declaration: LoadedDeclaration<TableDeclaration | ObjectTypeDeclaration>,
   diagnostics: Diagnostic[],
 ): void => {
   for (const [fieldName, fieldDefinition] of Object.entries(declaration.declaration.fields)) {
+    validateFieldRenameFromUsage(declaration, fieldName, fieldDefinition, diagnostics);
     validateAuthInputDuplicates(fieldDefinition.auth, declaration, diagnostics, fieldName);
 
-    if (
-      (declaration.declaration.declarationKind === 'table' ||
-        declaration.declaration.declarationKind === 'bucket') &&
-      fieldDefinition.auth
-    ) {
+    if (declaration.declaration.declarationKind === 'table' && fieldDefinition.auth) {
       validateFieldAuthDoesNotLoosenResourceAuth(
         declaration,
         fieldName,
@@ -534,7 +570,7 @@ const validateFieldDuplicateDefinitions = (
 };
 
 const validateUnknownTypeReferences = (
-  declaration: LoadedDeclaration<TableDeclaration | BucketDeclaration | ObjectTypeDeclaration>,
+  declaration: LoadedDeclaration<TableDeclaration | ObjectTypeDeclaration>,
   knownEnumNames: Set<string>,
   knownObjectTypeNames: Set<string>,
   knownTableNames: Set<string>,
@@ -638,6 +674,251 @@ const validateBuiltInFieldConflicts = (
         },
       }),
     );
+  }
+};
+
+const validateTableCompositeConstraintGroup = (
+  declaration: LoadedDeclaration<TableDeclaration>,
+  constraints: CompositeConstraintDefinition[],
+  group: 'index' | 'unique',
+  diagnostics: Diagnostic[],
+): void => {
+  const knownColumns = new Set<string>([
+    ...Object.keys(declaration.declaration.fields),
+    ...BUILT_IN_TABLE_FIELD_NAMES,
+  ]);
+  const seenBySignature = new Set<string>();
+  const seenNames = new Set<string>();
+
+  for (const constraint of constraints) {
+    if (constraint.columns.length < 2) {
+      diagnostics.push(
+        createDiagnostic({
+          code: 'INVALID_COMPOSITE_CONSTRAINT',
+          message: `Table "${declaration.declaration.name}" ${group} composite constraints require at least two columns.`,
+          source: {
+            file: declaration.sourcePath,
+            declaration: declaration.declaration.name,
+          },
+        }),
+      );
+      continue;
+    }
+
+    const unknownColumns = constraint.columns.filter((column) => !knownColumns.has(column));
+    if (unknownColumns.length > 0) {
+      diagnostics.push(
+        createDiagnostic({
+          code: 'UNKNOWN_COMPOSITE_CONSTRAINT_COLUMN',
+          message: `Table "${declaration.declaration.name}" ${group} composite constraint references unknown columns (${unknownColumns.join(', ')}).`,
+          source: {
+            file: declaration.sourcePath,
+            declaration: declaration.declaration.name,
+          },
+        }),
+      );
+    }
+
+    const signature = constraint.columns.join('|');
+    if (seenBySignature.has(signature)) {
+      diagnostics.push(
+        createDiagnostic({
+          code: 'DUPLICATE_COMPOSITE_CONSTRAINT',
+          severity: 'warning',
+          message: `Table "${declaration.declaration.name}" has duplicate ${group} composite constraint on (${constraint.columns.join(', ')}).`,
+          source: {
+            file: declaration.sourcePath,
+            declaration: declaration.declaration.name,
+          },
+        }),
+      );
+    }
+    seenBySignature.add(signature);
+
+    if (constraint.name) {
+      if (seenNames.has(constraint.name)) {
+        diagnostics.push(
+          createDiagnostic({
+            code: 'DUPLICATE_COMPOSITE_CONSTRAINT_NAME',
+            message: `Table "${declaration.declaration.name}" defines duplicate ${group} composite constraint name "${constraint.name}".`,
+            source: {
+              file: declaration.sourcePath,
+              declaration: declaration.declaration.name,
+            },
+          }),
+        );
+      }
+      seenNames.add(constraint.name);
+    }
+  }
+};
+
+const validateTableCompositeConstraints = (
+  declaration: LoadedDeclaration<TableDeclaration>,
+  diagnostics: Diagnostic[],
+): void => {
+  validateTableCompositeConstraintGroup(
+    declaration,
+    declaration.declaration.compositeIndexes,
+    'index',
+    diagnostics,
+  );
+  validateTableCompositeConstraintGroup(
+    declaration,
+    declaration.declaration.compositeUniques,
+    'unique',
+    diagnostics,
+  );
+};
+
+const validateTableRenameHint = (
+  declaration: LoadedDeclaration<TableDeclaration>,
+  diagnostics: Diagnostic[],
+): void => {
+  const renameFrom = declaration.declaration.renameFrom;
+  if (!renameFrom) {
+    return;
+  }
+
+  if (renameFrom === declaration.declaration.name) {
+    diagnostics.push(
+      createDiagnostic({
+        code: 'REDUNDANT_TABLE_RENAME_HINT',
+        severity: 'warning',
+        message: `Table "${declaration.declaration.name}" has renameFrom("${renameFrom}") which is redundant and ignored.`,
+        source: {
+          file: declaration.sourcePath,
+          declaration: declaration.declaration.name,
+        },
+      }),
+    );
+  }
+};
+
+const validateTableColumnRenameHints = (
+  declaration: LoadedDeclaration<TableDeclaration>,
+  diagnostics: Diagnostic[],
+): void => {
+  const renameFromToField = new Map<string, string>();
+  for (const [fieldName, fieldDefinition] of Object.entries(declaration.declaration.fields)) {
+    const renameFrom = fieldDefinition.db.renameFrom;
+    if (!renameFrom) {
+      continue;
+    }
+
+    const existingField = renameFromToField.get(renameFrom);
+    if (existingField && existingField !== fieldName) {
+      diagnostics.push(
+        createDiagnostic({
+          code: 'CONFLICTING_COLUMN_RENAME_HINT',
+          message: `Table "${declaration.declaration.name}" has multiple fields declaring renameFrom("${renameFrom}") (${existingField}, ${fieldName}).`,
+          source: {
+            file: declaration.sourcePath,
+            declaration: declaration.declaration.name,
+            field: fieldName,
+          },
+        }),
+      );
+      continue;
+    }
+
+    renameFromToField.set(renameFrom, fieldName);
+  }
+};
+
+const validateDuplicateTableRenameHintTargets = (
+  project: LoadedSchemaProject,
+  diagnostics: Diagnostic[],
+): void => {
+  const byRenameFrom = new Map<string, LoadedDeclaration<TableDeclaration>[]>();
+  for (const declaration of project.declarations.tables) {
+    const renameFrom = declaration.declaration.renameFrom;
+    if (!renameFrom) {
+      continue;
+    }
+
+    const entries = byRenameFrom.get(renameFrom) ?? [];
+    entries.push(declaration);
+    byRenameFrom.set(renameFrom, entries);
+  }
+
+  for (const [renameFrom, declarations] of byRenameFrom.entries()) {
+    if (declarations.length < 2) {
+      continue;
+    }
+
+    for (const declaration of declarations) {
+      diagnostics.push(
+        createDiagnostic({
+          code: 'CONFLICTING_TABLE_RENAME_HINT',
+          message: `Multiple tables declare renameFrom("${renameFrom}"). Only one table may claim a previous name.`,
+          source: {
+            file: declaration.sourcePath,
+            declaration: declaration.declaration.name,
+          },
+        }),
+      );
+    }
+  }
+};
+
+const validateBucketRenameHint = (
+  declaration: LoadedDeclaration<BucketDeclaration>,
+  diagnostics: Diagnostic[],
+): void => {
+  const renameFrom = declaration.declaration.renameFrom;
+  if (!renameFrom) {
+    return;
+  }
+
+  if (renameFrom === declaration.declaration.name) {
+    diagnostics.push(
+      createDiagnostic({
+        code: 'REDUNDANT_BUCKET_RENAME_HINT',
+        severity: 'warning',
+        message: `Bucket "${declaration.declaration.name}" has renameFrom("${renameFrom}") which is redundant and ignored.`,
+        source: {
+          file: declaration.sourcePath,
+          declaration: declaration.declaration.name,
+        },
+      }),
+    );
+  }
+};
+
+const validateDuplicateBucketRenameHintTargets = (
+  project: LoadedSchemaProject,
+  diagnostics: Diagnostic[],
+): void => {
+  const byRenameFrom = new Map<string, LoadedDeclaration<BucketDeclaration>[]>();
+  for (const declaration of project.declarations.buckets) {
+    const renameFrom = declaration.declaration.renameFrom;
+    if (!renameFrom) {
+      continue;
+    }
+
+    const entries = byRenameFrom.get(renameFrom) ?? [];
+    entries.push(declaration);
+    byRenameFrom.set(renameFrom, entries);
+  }
+
+  for (const [renameFrom, declarations] of byRenameFrom.entries()) {
+    if (declarations.length < 2) {
+      continue;
+    }
+
+    for (const declaration of declarations) {
+      diagnostics.push(
+        createDiagnostic({
+          code: 'CONFLICTING_BUCKET_RENAME_HINT',
+          message: `Multiple buckets declare renameFrom("${renameFrom}"). Only one bucket may claim a previous name.`,
+          source: {
+            file: declaration.sourcePath,
+            declaration: declaration.declaration.name,
+          },
+        }),
+      );
+    }
   }
 };
 
@@ -782,6 +1063,8 @@ export const validateSchemaProject = (project: LoadedSchemaProject): SchemaValid
   const diagnostics: Diagnostic[] = [];
 
   validateDuplicateDeclarationNames(project, diagnostics);
+  validateDuplicateTableRenameHintTargets(project, diagnostics);
+  validateDuplicateBucketRenameHintTargets(project, diagnostics);
   for (const enumDeclaration of project.declarations.enums) {
     validateEnumMembers(enumDeclaration, diagnostics);
   }
@@ -817,27 +1100,16 @@ export const validateSchemaProject = (project: LoadedSchemaProject): SchemaValid
       diagnostics,
     );
     validateBuiltInFieldConflicts(tableDeclaration, diagnostics);
+    validateTableRenameHint(tableDeclaration, diagnostics);
+    validateTableColumnRenameHints(tableDeclaration, diagnostics);
+    validateTableCompositeConstraints(tableDeclaration, diagnostics);
   }
 
   for (const bucketDeclaration of project.declarations.buckets) {
-    validateCaseInsensitiveFieldNames(
-      bucketDeclaration.declaration.fields,
-      bucketDeclaration,
-      diagnostics,
-    );
-    validateOwnerCardinality(bucketDeclaration.declaration.fields, bucketDeclaration, diagnostics);
     validateAuthInputDuplicates(bucketDeclaration.declaration.auth, bucketDeclaration, diagnostics);
-    validateFieldDuplicateDefinitions(bucketDeclaration, diagnostics);
-    validateOnDeleteRequiresReferences(bucketDeclaration, diagnostics);
     validateBucketMimeTypeDuplicates(bucketDeclaration, diagnostics);
     validateBucketMetadataSettingDuplicates(bucketDeclaration, diagnostics);
-    validateUnknownTypeReferences(
-      bucketDeclaration,
-      knownEnumNames,
-      knownObjectTypeNames,
-      knownTableNames,
-      diagnostics,
-    );
+    validateBucketRenameHint(bucketDeclaration, diagnostics);
   }
 
   for (const objectTypeDeclaration of project.declarations.types) {

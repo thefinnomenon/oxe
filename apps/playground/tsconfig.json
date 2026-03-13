@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "baseUrl": "../../",
+    "allowImportingTsExtensions": true,
     "paths": {
       "@oxe/schema-core": ["packages/schema-core/src/index.ts"],
       "@oxe/shared": ["packages/shared/src/index.ts"],

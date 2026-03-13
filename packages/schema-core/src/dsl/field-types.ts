@@ -66,6 +66,7 @@ export type FieldValidator =
 
 export interface FieldDbMetadata {
   primary: boolean;
+  renameFrom?: string;
   defaultValue?: unknown;
   unique: boolean;
   index: boolean;

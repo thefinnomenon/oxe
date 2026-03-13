@@ -32,6 +32,7 @@ describe('declaration builders', () => {
     });
 
     const Post = table('Post', {
+      renameFrom: 'Article',
       config: {
         dbName: 'posts',
         description: 'Posts table',
@@ -43,6 +44,8 @@ describe('declaration builders', () => {
         status: field.enum(Status),
         meta: field.type(Meta).optional(),
       },
+      indexes: [['status', 'createdAt']],
+      unique: [['status', 'id']],
     });
 
     const schema = defineSchema({
@@ -62,6 +65,9 @@ describe('declaration builders', () => {
       tags: ['content'],
       timestamps: true,
     });
+    expect(Post.renameFrom).toBe('Article');
+    expect(Post.compositeIndexes).toEqual([{ columns: ['status', 'createdAt'] }]);
+    expect(Post.compositeUniques).toEqual([{ columns: ['status', 'id'] }]);
     expect(Post.crud).toEqual(['read', 'delete']);
     expect(schema.declarationKind).toBe('schema');
     expect(schema.tables.map((entry) => entry.name)).toEqual(['Post']);
@@ -69,17 +75,45 @@ describe('declaration builders', () => {
 
   it('supports bucket metadata config fields', () => {
     const Uploads = bucket('Uploads', {
-      fields: {
-        ownerId: field.id().owner(),
-      },
+      renameFrom: 'LegacyUploads',
       config: {
         fileType: ['image/*', 'video/*', 'image/png', 'image/jpeg', 'image/webp'],
+        fileNamePolicy: {
+          strategy: 'slugify-uuid',
+          maxLength: 140,
+        },
         minSize: '10KB',
         maxSize: units.size.MB(1),
         duration: ['500ms', '2m'],
         minDimensions: [320, 200],
         maxDimensions: { width: 1920, height: 1080 },
         ttl: '1h',
+        postUpload: {
+          optimizeImages: {
+            quality: 82,
+            formats: ['webp', 'avif'],
+            stripMetadata: true,
+          },
+          imageResize: {
+            maxWidth: 4096,
+            maxHeight: 4096,
+            variants: [
+              { name: 'thumb', width: 320, quality: 72, format: 'webp' },
+              { name: 'card', width: 768, quality: 80, format: 'avif' },
+            ],
+          },
+          placeholders: {
+            kind: 'blurhash',
+            width: 32,
+            quality: 40,
+          },
+          responsiveImages: {
+            breakpoints: [1280, 640, 320, 640],
+            formats: ['avif', 'webp'],
+            quality: 78,
+            includePlaceholder: true,
+          },
+        },
       },
     });
 
@@ -94,6 +128,16 @@ describe('declaration builders', () => {
       max: { width: 1920, height: 1080 },
     });
     expect(Uploads.metadata.ttlSeconds).toBe(3_600);
+    expect(Uploads.metadata.fileNamePolicy).toEqual({
+      strategy: 'slugify-uuid',
+      extension: 'preserve',
+      lowercase: true,
+      separator: '-',
+      maxLength: 140,
+    });
+    expect(Uploads.metadata.postUpload?.responsiveImages?.breakpoints).toEqual([320, 640, 1280]);
+    expect(Uploads.metadata.postUpload?.optimizeImages?.formats).toEqual(['webp', 'avif']);
+    expect(Uploads.renameFrom).toBe('LegacyUploads');
   });
 
   it('supports single-value range metadata fields', () => {

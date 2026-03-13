@@ -11,6 +11,8 @@
     "lint": "pnpm -r lint",
     "format": "prettier --write .",
     "typecheck": "pnpm -r typecheck",
+    "db:up": "docker compose -f docker-compose.postgres.yml up -d",
+    "db:down": "docker compose -f docker-compose.postgres.yml down -v",
     "prepare": "husky"
   },
   "lint-staged": {

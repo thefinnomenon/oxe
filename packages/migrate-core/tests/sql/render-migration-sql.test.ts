@@ -20,12 +20,12 @@ describe('renderMigrationSql', () => {
     expect(sqlA).toBe(sqlB);
     expect(sqlA).toContain('BEGIN;');
     expect(sqlA).toContain('CREATE TYPE "enum_post_status" AS ENUM');
-    expect(sqlA).toContain('CREATE TABLE "Post"');
-    expect(sqlA).toContain('ALTER TABLE "Post" ADD CONSTRAINT "post_author_id_fkey"');
+    expect(sqlA).toContain('CREATE TABLE "app_posts"');
+    expect(sqlA).toContain('ALTER TABLE "app_posts" ADD CONSTRAINT "app_posts_author_id_fkey"');
     expect(sqlA).toContain('COMMIT;');
 
     expect(sqlA.indexOf('CREATE TYPE "enum_post_status"')).toBeLessThan(
-      sqlA.indexOf('CREATE TABLE "Post"'),
+      sqlA.indexOf('CREATE TABLE "app_posts"'),
     );
   });
 
@@ -39,7 +39,72 @@ describe('renderMigrationSql', () => {
     const sql = renderMigrationSql(plan, { abortOnBlockedPlan: false });
 
     expect(sql).toContain('ALTER TYPE "enum_post_status" ADD VALUE IF NOT EXISTS');
-    expect(sql).toContain('ALTER TABLE "Post" DROP COLUMN "body";');
-    expect(sql).toContain('ALTER TABLE "Post" ALTER COLUMN "status" SET DEFAULT');
+    expect(sql).toContain('ALTER TABLE "app_posts" DROP COLUMN "body";');
+    expect(sql).toContain('ALTER TABLE "app_posts" ALTER COLUMN "status" SET DEFAULT');
+  });
+
+  it('enforces dependency-safe SQL ordering regardless of input operation order', () => {
+    const sql = renderMigrationSql({
+      blocked: false,
+      diagnostics: [],
+      operations: [
+        {
+          kind: 'drop_table',
+          table: {
+            name: 'User',
+            dbName: 'user_table',
+            sourcePath: '',
+            columns: {},
+            primaryKey: undefined,
+            indexes: {},
+            uniqueConstraints: {},
+            foreignKeys: {},
+          },
+        },
+        {
+          kind: 'create_enum',
+          enum: {
+            name: 'Status',
+            dbName: 'status',
+            values: ['a'],
+            sourcePath: '',
+          },
+        },
+        {
+          kind: 'create_table',
+          table: {
+            name: 'Post',
+            dbName: 'post_table',
+            sourcePath: '',
+            columns: {
+              id: {
+                name: 'id',
+                postgresType: 'uuid',
+                isArray: false,
+                nullable: false,
+                isPrimaryKey: true,
+                declaration: 'Post',
+                sourcePath: '',
+                builtIn: true,
+              },
+            },
+            primaryKey: {
+              name: 'post_table_pkey',
+              columns: ['id'],
+            },
+            indexes: {},
+            uniqueConstraints: {},
+            foreignKeys: {},
+          },
+        },
+      ],
+    });
+
+    expect(sql.indexOf('CREATE TYPE "status"')).toBeLessThan(
+      sql.indexOf('CREATE TABLE "post_table"'),
+    );
+    expect(sql.indexOf('CREATE TABLE "post_table"')).toBeLessThan(
+      sql.indexOf('DROP TABLE "user_table"'),
+    );
   });
 });

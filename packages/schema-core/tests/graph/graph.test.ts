@@ -58,6 +58,13 @@ describe('schema graph', () => {
       max: { width: 3840, height: 2160 },
     });
     expect(assets.metadata.ttlSeconds).toBe(3600);
+    expect(assets.metadata.fileNamePolicy).toEqual({
+      strategy: 'slugify-uuid',
+      extension: 'preserve',
+      lowercase: true,
+      separator: '-',
+      maxLength: 120,
+    });
     expect(assets.crud).toEqual({
       enabled: false,
       actions: [],

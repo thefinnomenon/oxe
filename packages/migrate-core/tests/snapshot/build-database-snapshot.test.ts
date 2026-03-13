@@ -16,7 +16,9 @@ describe('buildDatabaseSnapshot', () => {
     expect(Object.keys(snapshot.tables)).toEqual(['Post', 'User']);
 
     const post = snapshot.tables.Post;
+    expect(post.dbName).toBe('app_posts');
     expect(post.primaryKey?.columns).toEqual(['id']);
+    expect(post.primaryKey?.name).toBe('app_posts_pkey');
 
     expect(post.columns.id.postgresType).toBe('uuid');
     expect(post.columns.createdAt.postgresType).toBe('timestamptz');
@@ -37,9 +39,9 @@ describe('buildDatabaseSnapshot', () => {
     expect(post.columns.metadataHistory.postgresType).toBe('jsonb');
     expect(post.columns.metadataHistory.isArray).toBe(false);
 
-    expect(Object.keys(post.foreignKeys)).toEqual(['post_author_id_fkey']);
-    expect(post.foreignKeys.post_author_id_fkey.referencedTable).toBe('User');
+    expect(Object.keys(post.foreignKeys)).toEqual(['app_posts_author_id_fkey']);
+    expect(post.foreignKeys.app_posts_author_id_fkey.referencedTable).toBe('app_users');
 
-    expect(Object.keys(post.indexes)).toContain('post_author_id_idx');
+    expect(Object.keys(post.indexes)).toContain('app_posts_author_id_idx');
   });
 });

@@ -342,6 +342,21 @@ export class FieldBuilder<TStage extends FieldBuilderStage = FieldBuilderStage> 
     });
   }
 
+  /** Declares previous column name for non-interactive rename planning. */
+  public renameFrom(
+    this: FieldBuilder<TStage> &
+      EnsureStage<
+        TStage,
+        StageAllowDb,
+        'DB directives must be declared before transforms and validators.'
+      >,
+    fromColumnName: string,
+  ): FieldBuilder<'db'> {
+    return this.update<'db'>((next) => {
+      next.db.renameFrom = fromColumnName;
+    });
+  }
+
   /** Sets a default value for this field. */
   public default(
     this: FieldBuilder<TStage> &

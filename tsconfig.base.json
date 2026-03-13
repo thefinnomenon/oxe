@@ -8,7 +8,8 @@
       "@oxe/schema-core": ["packages/schema-core/src/index.ts"],
       "@oxe/shared": ["packages/shared/src/index.ts"],
       "@oxe/cli": ["packages/cli/src/index.ts"],
-      "@oxe/migrate-core": ["packages/migrate-core/src/index.ts"]
+      "@oxe/migrate-core": ["packages/migrate-core/src/index.ts"],
+      "@oxe/storage-core": ["packages/storage-core/src/index.ts"]
     },
     "lib": ["ES2022"],
     "strict": true,

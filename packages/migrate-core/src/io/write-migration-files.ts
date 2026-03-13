@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { renderMigrationSql } from '../sql/render-migration-sql.js';
 import type { WriteMigrationFilesInput, WriteMigrationFilesResult } from './types.js';
+import { buildMigrationStatus, saveMigrationStatus } from './migration-status.js';
 import { resolveMigrationPaths } from './paths.js';
 import { saveDatabaseSnapshot } from './save-database-snapshot.js';
 
@@ -61,8 +62,19 @@ export const writeMigrationFiles = async (
   });
 
   if (input.plan.operations.length === 0) {
+    const status = await buildMigrationStatus({
+      rootDir: paths.rootDir,
+      snapshotPath: paths.snapshotPath,
+      statusPath: paths.statusPath,
+      migrationsDir: paths.migrationsDir,
+    });
+    const statusPath = await saveMigrationStatus(status, {
+      rootDir: paths.rootDir,
+      statusPath: paths.statusPath,
+    });
     return {
       snapshotPath,
+      statusPath,
       wroteMigration: false,
     };
   }
@@ -77,10 +89,21 @@ export const writeMigrationFiles = async (
   const sql = input.sql ?? renderMigrationSql(input.plan, { abortOnBlockedPlan: false });
 
   await writeFile(migrationPath, sql, 'utf8');
+  const status = await buildMigrationStatus({
+    rootDir: paths.rootDir,
+    snapshotPath: paths.snapshotPath,
+    statusPath: paths.statusPath,
+    migrationsDir: paths.migrationsDir,
+  });
+  const statusPath = await saveMigrationStatus(status, {
+    rootDir: paths.rootDir,
+    statusPath: paths.statusPath,
+  });
 
   return {
     migrationPath,
     snapshotPath,
+    statusPath,
     wroteMigration: true,
     migrationNumber,
   };

@@ -20,3 +20,9 @@ export const loadFixtureSchemaGraph = async (projectName: string) => {
 
   return buildSchemaGraph(project);
 };
+
+export const getTestDatabaseUrl = (): string | undefined =>
+  process.env.OXE_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
+
+export const createTestSchemaName = (prefix = 'oxe_test'): string =>
+  `${prefix}_${Math.random().toString(36).slice(2, 10)}`;

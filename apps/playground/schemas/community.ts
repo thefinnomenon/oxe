@@ -1,5 +1,5 @@
 import { auth, field, role, table } from '@oxe/schema-core';
-import { Post, User } from './schema.js';
+import { Post, Player } from './schema.ts';
 
 /** Community moderator role for comment management. */
 export const moderator = role('moderator');
@@ -15,7 +15,7 @@ export const Comment = table('Comment', {
   },
   fields: {
     postId: field.id().references(Post).index(),
-    authorId: field.id().owner().references(User).index(),
+    authorId: field.id().owner().references(Player).index(),
     body: field.string().trim().minLength(1).maxLength(2000),
   },
 });

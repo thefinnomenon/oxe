@@ -2,6 +2,8 @@ import type { Diagnostic } from '../diagnostics/types.js';
 import type { AuthAction } from '../dsl/auth.js';
 import type { CrudAction } from '../dsl/crud.js';
 import type {
+  BucketFileNamePolicy,
+  BucketPostUploadConfig,
   BucketDimensions,
   EnumDeclaration,
   ObjectTypeDeclaration,
@@ -50,6 +52,11 @@ export interface NormalizedField {
   provenance: FieldProvenance;
 }
 
+export interface NormalizedCompositeConstraint {
+  columns: string[];
+  name?: string;
+}
+
 export interface NormalizedEnum {
   name: EnumDeclaration['name'];
   members: EnumDeclaration['members'];
@@ -73,6 +80,9 @@ export interface NormalizedTable {
   auth: NormalizedAuth;
   crud: NormalizedCrud;
   ownerField?: string;
+  renameFrom?: string;
+  compositeIndexes: NormalizedCompositeConstraint[];
+  compositeUniques: NormalizedCompositeConstraint[];
   metadata: TableMetadata;
   sourcePath: string;
 }
@@ -92,14 +102,17 @@ export interface NormalizedBucketMetadata {
     max?: BucketDimensions;
   };
   ttlSeconds?: number;
+  /** Normalized filename/key policy for uploaded files. */
+  fileNamePolicy?: BucketFileNamePolicy;
+  /** Normalized post-upload processing directives. */
+  postUpload?: BucketPostUploadConfig;
 }
 
 export interface NormalizedBucket {
   name: string;
-  fields: Record<string, NormalizedField>;
+  renameFrom?: string;
   auth: NormalizedAuth;
   crud: NormalizedCrud;
-  ownerField?: string;
   metadata: NormalizedBucketMetadata;
   sourcePath: string;
 }

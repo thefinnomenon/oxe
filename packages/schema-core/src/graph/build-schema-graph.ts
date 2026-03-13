@@ -74,6 +74,59 @@ const normalizeBucketMetadata = (metadata: BucketMetadata): NormalizedBucketMeta
     max: metadata.dimensions?.max,
   },
   ttlSeconds: metadata.ttlSeconds,
+  fileNamePolicy: metadata.fileNamePolicy
+    ? {
+        strategy: metadata.fileNamePolicy.strategy,
+        extension: metadata.fileNamePolicy.extension,
+        lowercase: metadata.fileNamePolicy.lowercase,
+        separator: metadata.fileNamePolicy.separator,
+        maxLength: metadata.fileNamePolicy.maxLength,
+      }
+    : undefined,
+  postUpload: metadata.postUpload
+    ? {
+        optimizeImages: metadata.postUpload.optimizeImages
+          ? {
+              quality: metadata.postUpload.optimizeImages.quality,
+              stripMetadata: metadata.postUpload.optimizeImages.stripMetadata,
+              formats: metadata.postUpload.optimizeImages.formats
+                ? [...metadata.postUpload.optimizeImages.formats]
+                : undefined,
+            }
+          : undefined,
+        imageResize: metadata.postUpload.imageResize
+          ? {
+              maxWidth: metadata.postUpload.imageResize.maxWidth,
+              maxHeight: metadata.postUpload.imageResize.maxHeight,
+              variants: metadata.postUpload.imageResize.variants?.map((variant) => ({
+                name: variant.name,
+                width: variant.width,
+                height: variant.height,
+                fit: variant.fit,
+                quality: variant.quality,
+                format: variant.format,
+              })),
+            }
+          : undefined,
+        placeholders: metadata.postUpload.placeholders
+          ? {
+              kind: metadata.postUpload.placeholders.kind,
+              width: metadata.postUpload.placeholders.width,
+              quality: metadata.postUpload.placeholders.quality,
+            }
+          : undefined,
+        responsiveImages: metadata.postUpload.responsiveImages
+          ? {
+              breakpoints: [...metadata.postUpload.responsiveImages.breakpoints],
+              formats: metadata.postUpload.responsiveImages.formats
+                ? [...metadata.postUpload.responsiveImages.formats]
+                : undefined,
+              quality: metadata.postUpload.responsiveImages.quality,
+              includePlaceholder: metadata.postUpload.responsiveImages.includePlaceholder,
+            }
+          : undefined,
+      }
+    : undefined,
 });
 
 const normalizeTableMetadata = (metadata: TableMetadata): TableMetadata => ({
@@ -147,37 +200,30 @@ const normalizeTable = (entry: LoadedDeclaration<TableDeclaration>): NormalizedT
 
   return {
     name: entry.declaration.name,
+    renameFrom: entry.declaration.renameFrom,
     fields,
     auth: normalizeAuth(entry.declaration.auth),
     crud: normalizeCrud(entry.declaration.crud),
     ownerField,
+    compositeIndexes: entry.declaration.compositeIndexes.map((entry) => ({
+      name: entry.name,
+      columns: [...entry.columns],
+    })),
+    compositeUniques: entry.declaration.compositeUniques.map((entry) => ({
+      name: entry.name,
+      columns: [...entry.columns],
+    })),
     metadata: normalizeTableMetadata(entry.declaration.metadata),
     sourcePath: entry.sourcePath,
   };
 };
 
 const normalizeBucket = (entry: LoadedDeclaration<BucketDeclaration>): NormalizedBucket => {
-  const fields: Record<string, NormalizedField> = Object.fromEntries(
-    Object.entries(entry.declaration.fields).map(([fieldName, fieldDefinition]) => [
-      fieldName,
-      normalizeField(
-        fieldName,
-        cloneFieldDefinition(fieldDefinition),
-        entry.sourcePath,
-        entry.declaration.name,
-        false,
-      ),
-    ]),
-  );
-
-  const ownerField = Object.entries(fields).find(([, field]) => field.ownership?.isOwner)?.[0];
-
   return {
     name: entry.declaration.name,
-    fields,
+    renameFrom: entry.declaration.renameFrom,
     auth: normalizeAuth(entry.declaration.auth),
     crud: normalizeCrud(entry.declaration.crud),
-    ownerField,
     metadata: normalizeBucketMetadata(entry.declaration.metadata),
     sourcePath: entry.sourcePath,
   };

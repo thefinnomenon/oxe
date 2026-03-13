@@ -1,86 +1,137 @@
 # @oxe/migrate-core
 
-`@oxe/migrate-core` provides the v1 OXE Postgres migration engine.
-
-It is graph-based and snapshot-based:
+`@oxe/migrate-core` is the OXE Postgres migration system built around:
 
 1. schema graph (`@oxe/schema-core`)
-2. normalized database snapshot
+2. deterministic database snapshot
 3. snapshot diff
 4. typed migration operations
 5. SQL rendering
-6. migration/snapshot file writes
+6. migration file + snapshot persistence
+7. migration application + DB tracking
+8. DB introspection + drift detection
+
+For bucket/storage migrations, OXE uses `@oxe/storage-core` alongside this package in the CLI orchestration flow.
 
 ## Architecture
 
-- `snapshot/`: graph -> database snapshot conversion and snapshot types
-- `diff/`: previous snapshot -> next snapshot diffing
-- `operations/`: explicit migration operation planning + conservative diagnostics
-- `sql/`: deterministic Postgres SQL rendering
-- `io/`: snapshot loading/saving and migration file writing
-- `diagnostics/`: migration diagnostics types/helpers
+- `snapshot/`: graph -> DB snapshot mapping
+- `diff/`: previous snapshot -> next snapshot changes
+- `ambiguity/`: conservative rename-vs-delete ambiguity detection
+- `resolution/`: resolve ambiguity with provided answers or prompt adapter
+- `operations/`: migration planning, rename hints, deterministic ordering
+- `sql/`: SQL rendering from operations
+- `io/`: snapshot/migration file I/O and local status file
+- `apply/`: apply pending migrations to Postgres
+- `tracking/`: `_oxe_migrations` table lifecycle and records
+- `introspection/`: live Postgres schema -> snapshot
+- `drift/`: expected snapshot vs actual DB drift detection
+- `prompts/`: interactive/test prompt adapters
+- `diagnostics/`: typed migration diagnostics
 
-## Public API
+## Rename handling
+
+v1 supports three rename resolution paths:
+
+1. Interactive ambiguity prompts (`migrate:generate --interactive`)
+2. Explicit planner hints (`renameHints`)
+3. Schema-level hints:
+   - `table('Account', { renameFrom: 'User', ... })`
+   - `field.string().renameFrom('fullName')`
+
+Notes:
+
+- Schema hints are optional.
+- In non-interactive mode, explicit/schema hints can resolve ambiguous rename-vs-delete cases.
+- The engine stays conservative and does not silently guess renames.
+
+## Composite constraints
+
+Table-level composite constraints are supported in the DSL:
+
+- `indexes: [['orgId', 'createdAt']]`
+- `unique: [['orgId', 'email']]` (or `uniques`)
+
+These flow through graph -> snapshot -> diff -> operations -> SQL -> introspection/drift.
+
+## Public API highlights
 
 - `buildDatabaseSnapshot(schemaGraph)`
-- `diffDatabaseSnapshots(previousSnapshot, nextSnapshot)`
+- `diffDatabaseSnapshots(previous, next)`
+- `collectRenameHints(diff, explicitHints?)`
+- `planMigrationWithAmbiguityResolution(diff, options)`
 - `generateMigrationPlan(diff, options)`
+- `orderMigrationOperations(operations)`
 - `renderMigrationSql(plan, options)`
-- `loadDatabaseSnapshot(options)`
-- `saveDatabaseSnapshot(snapshot, options)`
-- `writeMigrationFiles({ plan, nextSnapshot, ... })`
+- `writeMigrationFiles(...)`
+- `applyMigrations(options)`
+- `getMigrationStatus(options)`
+- `introspectDatabaseSnapshot(options)`
+- `detectDatabaseDrift(expected, actual)`
+- `detectDatabaseDriftFromPostgres({ expectedSnapshot, connection })`
 
-## v1 scope
+## Migration tracking table
 
-Implemented:
+Applied migrations are tracked in Postgres table:
 
-- Tables, columns, nullability, defaults, PKs
-- Field-level unique/index metadata
-- Foreign keys and `onDelete`
-- Enums and append-only enum evolution
-- Object type fields mapped to `jsonb`
-- Scalar arrays mapped to Postgres arrays
-- Deterministic snapshot JSON and SQL output
-- Migration file + snapshot persistence
-- Conservative destructive/risky change blocking by default
+- `_oxe_migrations`
 
-Intentionally deferred in v1:
+Tracked fields:
 
-- Rename detection
-- Down migrations
-- Live DB introspection
-- Data backfills
-- Partial/generated indexes or columns
-- Advanced Postgres-specific schema features
-- Trigger/function generation
-- Validator-to-DB constraint compilation
+- `id` (migration filename, PK)
+- `checksum`
+- `applied_at`
+- `execution_ms`
 
-## File conventions
+`applyMigrations(...)` uses this table to determine pending/skipped migrations and to prevent silent checksum drift.
 
-- Snapshot: `.oxe/db-snapshot.json`
-- Migrations: `migrations/0001_<name>.sql`
+## CLI flow
 
-## Safety behavior
+- `oxe migrate:generate [--interactive] [--allow-destructive] [--dry-run]`
+- `oxe migrate:apply [--url <postgres-url>]`
+- `oxe migrate:status [--url <postgres-url>] [--local]`
+- `oxe migrate:drift [--url <postgres-url>] [--schema <schema>]`
 
-`generateMigrationPlan` blocks by default when destructive/risky changes are present (for example dropping a table/column or tightening to `NOT NULL`).
+## Determinism and safety
 
-Use `allowDestructive: true` only when you intentionally accept those operations.
+- Stable operation ordering via `orderMigrationOperations(...)`
+- Deterministic SQL output for identical inputs
+- Destructive/risky changes emit diagnostics and block by default unless explicitly allowed
+- Unsupported enum mutations (reorder/removal/rename) emit clear diagnostics
 
-## Tests
+## Integration tests (real Postgres)
 
-Run:
+Integration tests are included and gated by connection URL env var:
+
+- `OXE_TEST_DATABASE_URL` (preferred)
+- fallback: `DATABASE_URL`
+
+When URL is not set, integration tests are skipped.
+
+### Local Postgres helper
+
+From repo root:
 
 ```bash
+pnpm db:up
+export OXE_TEST_DATABASE_URL=postgres://oxe:oxe@localhost:54329/oxe_dev
 pnpm --filter @oxe/migrate-core test
+pnpm db:down
 ```
+
+## Current v1 limitations
+
+- No automatic rename inference without hints/prompts
+- No down migration generation
+- No transactional splitting for Postgres statements that must run outside transactions
+- No live DB introspection of advanced Postgres features outside core v1 scope
+- No migration lock/concurrency coordinator yet
 
 ## Next phases
 
-- Rename hints / rename detection
-- DB introspection
-- Reversible migrations
-- Richer enum evolution workflows
-- Composite indexes / composite unique constraints
-- Safe validator-to-check compilation
-- Package-aware schema ownership
-- Migration apply/status tracking
+- rename persistence/hints files
+- richer enum evolution support
+- reversible migrations
+- online migration strategies
+- migration execution locks + status history improvements
+- broader Postgres feature introspection

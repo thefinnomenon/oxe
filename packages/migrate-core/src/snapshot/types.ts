@@ -15,6 +15,7 @@ export interface DatabaseEnumSnapshot {
 
 export interface DatabaseColumnSnapshot {
   name: string;
+  renameFrom?: string;
   postgresType: string;
   enumDbName?: string;
   isArray: boolean;
@@ -51,6 +52,7 @@ export interface DatabaseForeignKeySnapshot {
 
 export interface DatabaseTableSnapshot {
   name: string;
+  renameFrom?: string;
   dbName: string;
   sourcePath: string;
   columns: Record<string, DatabaseColumnSnapshot>;
