@@ -1,131 +1,159 @@
 # OXE
 
-OXE is an AI-first fullstack framework in progress.
+OXE is an AI-first application language and runtime. Its long-term design is one
+compiler-visible graph spanning UI, asynchronous work, data, authorization,
+caching, errors, logs, metrics, and traces.
 
-Phase 1 in this repo provides a graph-first schema foundation built with a constrained TypeScript DSL.
+The project is being rebuilt from the UI language outward. Its production path
+does not use React, Solid, a virtual DOM, or `innerHTML`.
 
-## Monorepo structure
+## Working UI slices
 
-- `packages/schema-core`: Schema DSL, loader, semantic validator, normalized graph builder, diagnostics, tests.
-- `packages/migrate-core`: Snapshot-based Postgres migration engine (graph -> snapshot -> diff -> operations -> SQL -> files).
-- `packages/storage-core`: Snapshot/diff/apply engine for bucket/storage migrations over S3-compatible providers.
-- `packages/shared`: Small shared utilities/types.
-- `packages/cli`: Placeholder CLI package for future commands.
-- `apps/playground`: Local harness for loading schemas and printing the normalized graph.
+The current composition slices compile both the required-prop baseline in
+[examples/component-composition/App.oxe](examples/component-composition/App.oxe)
+and the extended contract in
+[examples/composition-features/App.oxe](examples/composition-features/App.oxe):
 
-## Tooling
+```oxe
+export App():
+  count = 0
 
-- `pnpm` workspaces
-- TypeScript (ESM)
-- `tsup` for package builds
-- Vitest for tests
-- ESLint + Prettier
-- Husky + lint-staged hooks
+  increment():
+    count = count + 1
 
-## Scripts
+  <main>
+    <h1>Component composition
+    <Counter count={count} onIncrement={increment}>
 
-- `pnpm build`: Build all workspace packages/apps.
-- `pnpm dev`: Run the playground in watch mode.
-- `pnpm test`: Run all tests.
-- `pnpm lint`: Run lint across all workspaces.
-- `pnpm format`: Format the repository with Prettier.
-- `pnpm typecheck`: Type-check all workspaces.
-- `pnpm db:up`: Start local Postgres + MinIO (Docker Compose helper).
-- `pnpm db:down`: Stop/remove local Postgres + MinIO helper containers/volumes.
+Counter(count, onIncrement):
+  doubled = count * 2
 
-## Git hooks
+  <section>
+    <button onClick={onIncrement}>Count: {count}
+    <p>Doubled: {doubled}
+```
 
-- `pre-commit`: `lint-staged`, `lint`, `typecheck`, `test`
-- `pre-push`: `lint`, `typecheck`, `test`
+The extended example adds reactive defaults, one final rest parameter, ordered
+component prop forwarding, and implicit child content:
 
-This enforces lint/typecheck/tests on both commit and push.
+```oxe
+Wrapper(title, ...props):
+  <Card title={title} {...props}>
+    {children}
 
-## Current schema scope (implemented)
+Card(title, subtitle = title, ...props):
+  <article>
+    <h2>{title}
+    <p>Subtitle: {subtitle}
+    {children}
+```
 
-- Top-level declarations: `table`, `bucket`, `role`, `enumType`, `objectType`
-- `defineSchema(...)` support
-- Field builder namespace: `field.*` scalar/object/enum builders
-- Field chaining for shape/auth/owner/transforms/validators/DB metadata
-- Schema loading from `/schemas/**/*.ts`
-- Module loading rules:
-  - Prefer `default export defineSchema(...)`
-  - Otherwise collect named exported declarations
-- Semantic validation
-- Normalized schema graph generation
-- Built-in table fields injected into graph:
-  - `id` (UUIDv7 default)
-  - `createdAt` (default now)
-  - `updatedAt` (default now + auto-updated)
+The linked-project slice compiles the named import in
+[examples/component-modules/App.oxe](examples/component-modules/App.oxe) against
+the direct export in
+[examples/component-modules/Card.oxe](examples/component-modules/Card.oxe):
 
-## Current migration scope (implemented, v1)
+```oxe
+import { Card } from "./Card.oxe"
 
-- Graph-based, snapshot-based Postgres migration engine in `@oxe/migrate-core`
-- Schema graph -> deterministic DB snapshot
-- Snapshot diff -> typed migration operations
-- SQL generation with deterministic ordering
-- Snapshot persistence: `.oxe/db-snapshot.json`
-- Migration file generation: `migrations/0001_*.sql`
-- Storage migration artifact generation: `migrations/0001_*.storage.json`
-- Storage snapshot persistence: `.oxe/storage-snapshot.json`
-- Conservative destructive/risky change blocking by default
-- Interactive and non-interactive rename-vs-delete resolution
-- Schema-level rename hints (`renameFrom`) for tables/columns
-- Table-level composite indexes and composite unique constraints
-- Migration application against real Postgres (`migrate:apply`)
-- DB migration tracking table (`_oxe_migrations`)
-- DB-backed migration status (`migrate:status`)
-- Postgres introspection + drift detection (`migrate:drift`)
-- Real Postgres integration tests (env-gated)
-- Bucket/storage migration planning and apply flow (S3-compatible provider abstraction)
-- Local MinIO support via the same S3-compatible provider path used in production
+export App():
+  <Card title={"Modules"}>
+```
 
-## Storage provider config
+The implemented path is:
 
-The storage layer is S3-compatible and endpoint-driven (not AWS-hardcoded).
+1. Scan strict indentation and produce precise diagnostics and source spans.
+2. Parse local components, strict prop contracts, handlers, scalar and array
+   assignments, `if`, keyed `map`, `untrack`, comparisons, logical expressions,
+   and indentation-closed markup into an immutable syntax tree.
+3. Resolve uppercase local component references and exact named prop contracts;
+   infer reactive value parameters, explicit procedure capabilities, rest
+   capture, defaults, and the reserved implicit `children` contract.
+4. Validate and canonically serialize a versioned semantic UI graph.
+5. Specialize authored component instances into readable direct-DOM JavaScript
+   while retaining definitions, instances, props, and ownership in the graph.
+6. Mount real DOM nodes, update text and DOM values, replace only changed `if`
+   branches, reconcile keyed rows by identity, and deterministically dispose
+   removed owners.
 
-Required env vars for storage apply:
+The original counter remains as the smallest single-component proof. The
+composition acceptance gate is stricter: updates must flow through required
+props, defaults, and caller-owned child content while preserving DOM node
+identities and creating or removing no DOM nodes.
 
-- `OXE_STORAGE_ENDPOINT`
-- `OXE_STORAGE_ACCESS_KEY_ID`
-- `OXE_STORAGE_SECRET_ACCESS_KEY`
+This is deliberately a narrow implemented proof, not yet a general UI framework.
+Value props and defaults stay reactive, procedure props are explicit
+capabilities, and additional props can be captured and forwarded only to another
+component. Arbitrary spreading onto a host DOM element is intentionally not
+implemented; named host properties and attributes use typed lowering. Fixed multi-file
+projects use JavaScript-style named imports and direct declaration exports, with
+one explicit exported entry selected by the host. Incremental `if` regions,
+scalar keyed collections, authored `untrack`, and reactive DOM values are now
+implemented. Ordinary calls, member access, records, context syntax, async work,
+multiple roots, source maps, SSR, and hydration remain on the task list.
 
-Optional:
+## Packages
 
-- `OXE_STORAGE_REGION` (default `us-east-1`)
-- `OXE_STORAGE_FORCE_PATH_STYLE` (default `true`)
-- `OXE_STORAGE_SESSION_TOKEN`
-- `OXE_STORAGE_BUCKET_PREFIX` (for deterministic provider bucket naming in snapshots/migrations)
+- `@oxe/compiler`: scanner, parser, semantic analysis, and deterministic DOM code
+  generation.
+- `@oxe/graph`: versioned UI graph types, structural validation, dependency-edge
+  reconciliation, topology checks, and canonical JSON.
+- `@oxe/runtime`: platform-neutral cells, derived values, batching, ownership,
+  cleanup, context, and `untrack` primitives for generated code.
+- `@oxe/runtime-dom`: direct DOM creation, owned text/attribute bindings,
+  conditional and keyed regions, batched event listeners, mounting, and
+  unmounting.
+- `@oxe/playground`: browser compiler lab with native examples, an isolated DOM
+  preview, diagnostics, generated output, graph inspection, and payload sizing.
+- `docs/language-decisions.md`: settled authored-language decisions and open
+  syntax.
+- `docs/ui-development-plan.md`: staged tasks and acceptance gates.
 
-MinIO local defaults with `pnpm db:up`:
+## Why TypeScript
 
-- endpoint: `http://localhost:9000`
-- access key: `oxe-minio`
-- secret key: `oxe-minio-secret`
+The compiler and runtime start in strict TypeScript. The web runtime must execute
+as JavaScript and call the DOM directly while the language and graph are changing
+quickly. Intermediate representations remain plain and serializable so measured
+compiler-throughput or native-tooling needs can justify moving selected stages to
+Rust later without changing language semantics.
 
-## Deferred in later phases
+## Commands
 
-- Runtime validator/codegen pipeline
-- CRUD route generation
-- Admin metadata generation
-- Event metadata generation
-- Package-provided schema roots
-- Visual schema editing and AI-assisted schema editing
-- Migration enhancements:
-  - rename detection heuristics
-  - reversible down migrations
-  - richer enum evolution tooling
-  - online migration strategies
-  - migration locking/concurrency safeguards
+```sh
+pnpm install
+pnpm format:check
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
 
-## Why constrained TypeScript DSL
+Launch the browser playground from the repository root:
 
-This project intentionally avoids a free-form imperative schema API.
+```sh
+pnpm playground
+```
 
-The DSL is constrained and declarative so schema definitions remain:
+The playground keeps the last valid preview visible while edited source has
+errors. Fixed example projects expose accessible file tabs, per-file drafts and
+reset state, file-aware diagnostics, and active-file AST and token views. It also
+exposes generated JavaScript, preview console/runtime failures, compile and mount
+timings, and DOM mutation counts. Its semantic graph inspector links every node
+back to the right source file and summarizes its owner, inputs, consumers, props,
+and related component nodes. The local size report links the whole project,
+builds the generated app with esbuild, and reports raw, minified, gzip, and Brotli
+bytes for the shipped application payload (`generated app + @oxe/runtime +
+@oxe/runtime-dom`). Compiler, editor, and Vite development code are deliberately
+excluded.
 
-- predictable to parse/load,
-- stable for semantic validation,
-- easy to normalize into one graph model,
-- suitable for future visual and AI-assisted editing flows.
+After `pnpm build`, inspect the JavaScript generated from the authored counter:
 
-The normalized schema graph is the internal source of truth.
+```sh
+node examples/counter/compile.mjs
+```
+
+The lower-level runtime example remains available with:
+
+```sh
+node examples/runtime-counter.mjs
+```

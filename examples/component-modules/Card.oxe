@@ -1,0 +1,5 @@
+export Card(title, subtitle = title):
+  <article>
+    <h1>{title}
+    <p>Subtitle: {subtitle}
+    {children}

@@ -1,0 +1,20 @@
+export App():
+  title = "First"
+
+  change():
+    title = "Second"
+
+  <main>
+    <button onClick={change}>Change
+    <Wrapper title={title} tone={"quiet"}>
+      <p>Child: {title}
+
+Wrapper(title, ...props):
+  <Card title={title} {...props}>
+    {children}
+
+Card(title, subtitle = title, ...props):
+  <article>
+    <h2>{title}
+    <p>Subtitle: {subtitle}
+    {children}

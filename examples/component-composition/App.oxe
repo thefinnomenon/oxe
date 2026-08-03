@@ -1,0 +1,16 @@
+export App():
+  count = 0
+
+  increment():
+    count = count + 1
+
+  <main>
+    <h1>Component composition
+    <Counter count={count} onIncrement={increment}>
+
+Counter(count, onIncrement):
+  doubled = count * 2
+
+  <section>
+    <button onClick={onIncrement}>Count: {count}
+    <p>Doubled: {doubled}

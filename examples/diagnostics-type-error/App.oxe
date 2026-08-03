@@ -1,0 +1,8 @@
+export App():
+  count = 0
+
+  breakCount():
+    count = "not a number"
+
+  <main>
+    <button onClick={breakCount}>{count}

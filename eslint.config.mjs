@@ -11,7 +11,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   prettier,
   {
-    files: ['**/*.ts', '**/*.tsx', '**/*.mts', '**/*.cts'],
+    files: ['**/*.ts'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
@@ -24,14 +24,11 @@ export default tseslint.config(
     },
   },
   {
-    files: ['**/*.test.ts'],
+    files: ['apps/playground/src/**/*.ts'],
     languageOptions: {
       globals: {
-        describe: 'readonly',
-        it: 'readonly',
-        expect: 'readonly',
-        beforeEach: 'readonly',
-        afterEach: 'readonly',
+        ...globals.browser,
+        ...globals.worker,
       },
     },
   },

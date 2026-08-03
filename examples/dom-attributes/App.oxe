@@ -1,0 +1,8 @@
+export App():
+  title = "First"
+
+  change():
+    title = "Second"
+
+  <main>
+    <button class={"primary"} title={title} disabled={false} onClick={change}>{title}

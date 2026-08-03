@@ -1,0 +1,14 @@
+export App():
+  left = 0
+  right = 10
+  total = left + right
+
+  advance():
+    left = left + 1
+    right = right + 1
+
+  <main>
+    <button onClick={advance}>Advance both values
+    <p>Left: {left}
+    <p>Right: {right}
+    <p>Total: {total}

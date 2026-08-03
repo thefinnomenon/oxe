@@ -1,4 +1,10 @@
 {
-  "extends": "./tsconfig.base.json",
-  "files": []
+  "files": [],
+  "references": [
+    { "path": "./apps/playground" },
+    { "path": "./packages/compiler" },
+    { "path": "./packages/graph" },
+    { "path": "./packages/runtime" },
+    { "path": "./packages/runtime-dom" }
+  ]
 }

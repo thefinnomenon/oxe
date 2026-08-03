@@ -4,13 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsup",
-    "dev": "tsx watch src/index.ts",
-    "test": "vitest run --passWithNoTests",
-    "lint": "eslint \"src/**/*.ts\" \"schemas/**/*.ts\" --max-warnings=0",
-    "typecheck": "tsc --noEmit"
+    "build": "vite build",
+    "dev": "vite",
+    "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" \"vite.config.ts\" --max-warnings=0",
+    "preview": "vite preview",
+    "test": "vitest run --dir tests --passWithNoTests",
+    "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@oxe/schema-core": "workspace:*"
+    "@oxe/compiler": "workspace:*",
+    "@oxe/graph": "workspace:*",
+    "@oxe/runtime": "workspace:*",
+    "@oxe/runtime-dom": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.8.2",
+    "vite": "^7.3.6",
+    "vitest": "^3.0.9"
   }
 }

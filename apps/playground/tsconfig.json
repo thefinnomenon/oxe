@@ -1,14 +1,27 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "baseUrl": "../../",
-    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "composite": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "outDir": "./dist-typecheck",
     "paths": {
-      "@oxe/schema-core": ["packages/schema-core/src/index.ts"],
-      "@oxe/shared": ["packages/shared/src/index.ts"],
-      "@oxe/cli": ["packages/cli/src/index.ts"]
+      "@oxe/compiler": ["../../packages/compiler/src/index.ts"],
+      "@oxe/graph": ["../../packages/graph/src/index.ts"],
+      "@oxe/runtime": ["../../packages/runtime/src/index.ts"],
+      "@oxe/runtime-dom": ["../../packages/runtime-dom/src/index.ts"]
     },
-    "outDir": "./dist"
+    "rootDir": ".",
+    "tsBuildInfoFile": "./dist-typecheck/.tsbuildinfo",
+    "types": ["node", "vite/client", "vitest/globals"]
   },
-  "include": ["src/**/*.ts", "schemas/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vite.config.ts"],
+  "references": [
+    { "path": "../../packages/compiler" },
+    { "path": "../../packages/graph" },
+    { "path": "../../packages/runtime" },
+    { "path": "../../packages/runtime-dom" }
+  ]
 }

@@ -3,28 +3,21 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "baseUrl": ".",
-    "paths": {
-      "@oxe/schema-core": ["packages/schema-core/src/index.ts"],
-      "@oxe/shared": ["packages/shared/src/index.ts"],
-      "@oxe/cli": ["packages/cli/src/index.ts"],
-      "@oxe/migrate-core": ["packages/migrate-core/src/index.ts"],
-      "@oxe/storage-core": ["packages/storage-core/src/index.ts"]
-    },
     "lib": ["ES2022"],
     "strict": true,
     "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "isolatedModules": true,
-    "allowSyntheticDefaultImports": true,
-    "useDefineForClassFields": true
+    "sourceMap": true,
+    "forceConsistentCasingInFileNames": true
   }
 }

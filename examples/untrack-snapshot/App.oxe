@@ -1,0 +1,10 @@
+export App():
+  count = 0
+  initialCount = untrack(count)
+
+  increment():
+    count = count + 1
+
+  <main>
+    <button onClick={increment}>Count: {count}
+    <p>Initial snapshot: {initialCount}

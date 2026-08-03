@@ -1,0 +1,7 @@
+export App():
+  title = "Hello from OXE"
+  message = "Static values are folded by the compiler."
+
+  <main>
+    <h1>{title}
+    <p>{message}

@@ -1,0 +1,14 @@
+export App():
+  visible = true
+
+  hide():
+    visible = false
+
+  show():
+    visible = true
+
+  <main>
+    <h1>Conditional region
+    <button onClick={hide}>Hide
+    <button onClick={show}>Show
+    if visible ? <section>Visible branch : <p>Hidden branch

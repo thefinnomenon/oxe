@@ -1,0 +1,12 @@
+export App():
+  count = 0
+  doubled = count * 2
+  unchanged = "Static"
+
+  increment():
+    count = count + 1
+
+  <main>
+    <button onClick={increment}>Count: {count}
+    <p>Doubled: {doubled}
+    <p>{unchanged}

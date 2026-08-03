@@ -1,0 +1,12 @@
+import { Card } from "./Card.oxe"
+
+export App():
+  title = "Modules"
+
+  change():
+    title = "Updated"
+
+  <main>
+    <button onClick={change}>Change
+    <Card title={title}>
+      <p>Imported child: {title}

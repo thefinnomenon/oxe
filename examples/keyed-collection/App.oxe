@@ -1,0 +1,15 @@
+export App():
+  items = ["Alpha", "Beta", "Gamma"]
+
+  reorder():
+    items = ["Gamma", "Alpha", "Delta"]
+
+  reset():
+    items = ["Alpha", "Beta", "Gamma"]
+
+  <main>
+    <h1>Keyed collection
+    <button onClick={reorder}>Reorder
+    <button onClick={reset}>Reset
+    <ul>
+      {items.map(item => <li key={item}>{item})}

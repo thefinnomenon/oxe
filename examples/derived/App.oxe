@@ -1,0 +1,12 @@
+export App():
+  value = 3
+  doubled = value * 2
+  squared = value * value
+
+  increase():
+    value = value + 1
+
+  <main>
+    <button onClick={increase}>Value: {value}
+    <p>Doubled: {doubled}
+    <p>Squared: {squared}
