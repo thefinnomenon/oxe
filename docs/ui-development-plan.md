@@ -51,8 +51,8 @@ authored OXE language.
       and component relationships.
 - [x] Measure the tree-shaken shipped payload as raw, minified, gzip, and Brotli
       bytes, with runtime/module attribution and tooling explicitly excluded.
-- [ ] Add precise source maps from generated JavaScript and graph nodes to OXE.
-- [ ] Explain why each computation reran and which dependency invalidated it.
+- [x] Add precise source maps from generated JavaScript and graph nodes to OXE.
+- [x] Explain why each computation reran and which dependency invalidated it.
 - [ ] Add owner/resource leak reporting and retained-memory inspection.
 
 Acceptance: valid examples render and update in a real browser; invalid examples
@@ -68,6 +68,7 @@ and size figures identify their exact payload boundary and measurement method.
 - [x] Own and deterministically dispose nested computations and resources.
 - [x] Define the compiler-visible `untrack` runtime boundary.
 - [x] Implement identity-based context scopes.
+- [x] Track standalone record and nested member dependencies by selected field path.
 - [x] Reject direct reactive cycles with actionable runtime diagnostics.
 - [x] Cover the implemented kernel behaviors with deterministic tests.
 
@@ -78,7 +79,7 @@ suppression, owner lifetimes, and cycles.
 ## Milestone 2: language frontend
 
 - [x] Specify the initial tokens, indentation, and source spans.
-- [ ] Preserve comments and whitespace trivia for formatter-safe round trips.
+- [x] Preserve comments and whitespace trivia for formatter-safe round trips.
 - [x] Implement the first lexer slice with `INDENT`/`DEDENT` diagnostics.
 - [x] Parse the counter slice: zero-argument components and handlers, assignments,
       scalar literals, identifiers, and arithmetic.
@@ -88,15 +89,17 @@ suppression, owner lifetimes, and cycles.
       indented content as the reserved `children` value.
 - [x] Parse JavaScript-style named component imports and `export Component():`
       declarations.
-- [ ] Extend expressions with ordinary calls, member access, and records.
+- [x] Extend expressions with ordinary calls, member access, and records.
 - [x] Parse indentation-closed host markup without closing tags.
-- [x] Parse the single UI `if` construct and concise markup-producing `map`
-      callbacks.
-- [ ] Extend functional callbacks to multiline bodies and non-rendering
+- [x] Parse punctuation-led UI conditionals, exhaustive inline and `=?`
+      conditional values, and concise markup-producing `map` callbacks.
+- [x] Extend functional callbacks to multiline bodies and non-rendering
       `filter`, `flatMap`, and `reduce` expressions.
+- [x] Add pure stable `sort`, direct record-field writes, and deterministic
+      `add`/`update`/`remove` collection mutations with optional limits.
 - [x] Recover at line and dedent boundaries so one syntax error does not hide later
       diagnostics.
-- [ ] Produce a stable, versioned syntax tree and formatter.
+- [x] Produce a stable, versioned syntax tree and formatter.
 
 Acceptance: every settled example in `language-decisions.md` parses, round-trips
 through the formatter, and produces stable diagnostics for malformed variants.
@@ -109,28 +112,32 @@ through the formatter, and produces stable diagnostics for malformed variants.
 - [x] Resolve local defaults, rest-prop contracts, component prop spreads, and
       the reserved implicit `children` contract.
 - [x] Resolve imported components and one explicit exported entry component.
-- [ ] Resolve contexts and platform capabilities.
+- [x] Resolve contexts and typed platform capabilities.
 - [x] Distinguish persistent declarative relationships from procedural handlers.
 - [x] Infer scalar types and explicit reactive/procedural read and write edges.
 - [x] Lower `untrack` by excluding nested reads from emitted dependency edges.
+- [x] Lower conditional value expressions with explicit branch dependencies,
+      type agreement, constant folding, and deterministic JavaScript.
 - [x] Reject duplicate declarations, unresolved names, reactive cycles, invalid
       event targets, and type-invalid procedural writes.
-- [ ] Reject multiple declarative writers and missing context providers when those
+- [x] Reject multiple declarative writers and missing context providers when those
       language features are introduced.
 - [x] Lower the counter into an explicit, versioned, inspectable UI graph.
 - [x] Preserve local component definitions, instances, reactive/procedure props,
       and ownership as explicit graph nodes and edges.
 - [x] Generate deterministic, readable ESM JavaScript for the counter slice.
+- [x] Lower record member consumers to stable field-path sources without changing
+      authored assignment syntax.
 - [x] Specialize local component instances into direct DOM with reactive parent to
       child value flow and explicit procedure capabilities.
-- [ ] Emit precise source maps.
+- [x] Emit precise source maps.
 
 Acceptance: a counter, derived-value form, nested context, conditional region, and
 keyed list compile deterministically and execute against the runtime.
 
 ## Milestone 4: DOM renderer
 
-- [ ] Hoist and clone static DOM templates.
+- [x] Hoist and clone static DOM templates.
 - [x] Implement owned direct-DOM node creation, text bindings, event listeners, and
       mount/unmount cleanup without a virtual DOM.
 - [x] Generate static and reactive property/attribute updates, including class
@@ -138,8 +145,8 @@ keyed list compile deterministically and execute against the runtime.
 - [x] Implement incremental conditional regions.
 - [x] Implement keyed list insertion, movement, removal, row reuse, duplicate-key
       diagnostics, and owner disposal.
-- [ ] Define refs and compiler-known disposable adapters.
-- [ ] Add browser conformance tests and mutation-count assertions.
+- [x] Define platform refs and compiler-known disposable adapters.
+- [x] Add browser conformance tests and mutation-count assertions.
 
 Acceptance: representative components update only affected DOM nodes, preserve focus
 and selection, clean up removed regions, and remain keyboard accessible.

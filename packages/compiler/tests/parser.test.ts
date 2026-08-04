@@ -30,12 +30,26 @@ const sourceSpan = (
 });
 
 describe('OXE parser', () => {
-  it('parses inline and multi-branch UI if regions without wrapper components', () => {
+  it('parses top-level context declarations as distinct module syntax', () => {
+    const result = parseSource(`SessionContext = createContext()
+
+App():
+  <main>
+`);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.ast.contexts).toMatchObject([
+      { kind: 'ContextDeclaration', name: { name: 'SessionContext' } },
+    ]);
+    expect(result.ast.declarations).toHaveLength(1);
+  });
+
+  it('parses inline guards and standalone multi-branch conditional choices', () => {
     const { component, result } = parseOnlyComponent(`App():
   visible = true
   <main>
-    if visible ? <strong>Visible : <p>Hidden
-    if
+    visible ? <strong>Visible : <p>Hidden
+    ?
       visible ? <section>
         <p>Primary
       : <p>Fallback
@@ -46,21 +60,21 @@ describe('OXE parser', () => {
       kind: 'Element',
       children: [
         {
-          kind: 'IfRegion',
+          kind: 'ConditionalRegion',
           branches: [
             {
-              kind: 'IfBranch',
+              kind: 'ConditionalBranch',
               condition: { kind: 'Identifier', name: 'visible' },
               result: { kind: 'Element', name: { name: 'strong' } },
             },
             {
-              kind: 'IfBranch',
+              kind: 'ConditionalBranch',
               result: { kind: 'Element', name: { name: 'p' } },
             },
           ],
         },
         {
-          kind: 'IfRegion',
+          kind: 'ConditionalRegion',
           branches: [
             {
               condition: { kind: 'Identifier', name: 'visible' },
@@ -77,7 +91,7 @@ describe('OXE parser', () => {
     const { component, result } = parseOnlyComponent(`App():
   visible = true
   <main>
-    if visible ? <strong>Status: Visible : <p>Status: Hidden
+    visible ? <strong>Status: Visible : <p>Status: Hidden
 `);
 
     expect(result.diagnostics).toEqual([]);
@@ -85,7 +99,7 @@ describe('OXE parser', () => {
       kind: 'Element',
       children: [
         {
-          kind: 'IfRegion',
+          kind: 'ConditionalRegion',
           branches: [
             {
               condition: { name: 'visible' },
@@ -104,13 +118,102 @@ describe('OXE parser', () => {
     const result = parseSource(`App():
   visible = true
   <main>
-    if visible => <strong>Visible
+    visible => <strong>Visible
 `);
 
     expect(result.diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'OXE1101',
-        message: 'Expected ? after the if condition. => is reserved for functions and callbacks.',
+        message:
+          'Expected ? after the conditional condition. => is reserved for functions and callbacks.',
+      }),
+    );
+  });
+
+  it('diagnoses the removed if keyword with migration guidance', () => {
+    const result = parseSource(`App():
+  visible = true
+  <main>
+    if
+      visible ? <strong>Visible
+`);
+
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'OXE1105',
+        message:
+          'The if keyword was removed. Write a single condition directly, or replace a multi-branch if opener with ?.',
+      }),
+    ]);
+  });
+
+  it('parses exhaustive inline and indented conditional values', () => {
+    const { component, result } = parseOnlyComponent(`App():
+  visible = true
+  inline = visible ? "Visible" : "Hidden"
+  choice =?
+    visible ? "Visible"
+    : "Hidden"
+  <main>
+    <p>{inline}: {choice}
+`);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(component.body[1]).toMatchObject({
+      kind: 'AssignmentStatement',
+      value: {
+        kind: 'ConditionalValueExpression',
+        branches: [
+          {
+            kind: 'ConditionalValueBranch',
+            condition: { kind: 'Identifier', name: 'visible' },
+            result: { kind: 'StringLiteral', value: 'Visible' },
+          },
+          {
+            kind: 'ConditionalValueBranch',
+            result: { kind: 'StringLiteral', value: 'Hidden' },
+          },
+        ],
+      },
+    });
+    expect(component.body[2]).toMatchObject({
+      kind: 'AssignmentStatement',
+      value: {
+        kind: 'ConditionalValueExpression',
+        branches: [
+          {
+            condition: { kind: 'Identifier', name: 'visible' },
+            result: { kind: 'StringLiteral', value: 'Visible' },
+          },
+          { result: { kind: 'StringLiteral', value: 'Hidden' } },
+        ],
+      },
+    });
+  });
+
+  it('requires an exhaustive fallback for every value-producing conditional', () => {
+    const inline = parseSource(`App():
+  visible = true
+  label = visible ? "Visible"
+  <p>{label}
+`);
+    const choice = parseSource(`App():
+  visible = true
+  label =?
+    visible ? "Visible"
+  <p>{label}
+`);
+
+    expect(inline.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'OXE1105',
+        message: 'A value-producing inline conditional requires a : fallback.',
+      }),
+    );
+    expect(choice.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'OXE1105',
+        message: 'A value-producing choice must end with a : fallback.',
       }),
     );
   });
@@ -151,6 +254,222 @@ describe('OXE parser', () => {
         },
       ],
     });
+  });
+
+  it('parses records, member access, ordinary calls, and multiline collection callbacks', () => {
+    const { component, result } = parseOnlyComponent(`App(transform):
+  user = { name: "Chris", active: true }
+  label = transform(user.name)
+  active = [user].filter(item => item.active)
+  cards = active.map(item =>
+    title = item.name
+    { title: title, active: item.active }
+  )
+  total = [1, 2].reduce((sum, value) => sum + value, 0)
+  <p>{label}: {cards.length}: {total}
+`);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(component.body).toMatchObject([
+      {
+        kind: 'AssignmentStatement',
+        value: {
+          kind: 'RecordLiteral',
+          entries: [
+            { name: { name: 'name' }, value: { kind: 'StringLiteral' } },
+            { name: { name: 'active' }, value: { kind: 'BooleanLiteral' } },
+          ],
+        },
+      },
+      {
+        value: {
+          kind: 'CallExpression',
+          arguments: [
+            { kind: 'MemberExpression', object: { name: 'user' }, property: { name: 'name' } },
+          ],
+        },
+      },
+      { value: { kind: 'CollectionExpression', operation: 'filter' } },
+      {
+        value: {
+          kind: 'CollectionExpression',
+          operation: 'map',
+          callback: {
+            assignments: [{ target: { name: 'title' } }],
+            result: { kind: 'RecordLiteral' },
+          },
+        },
+      },
+      { value: { kind: 'CollectionExpression', operation: 'reduce' } },
+      { kind: 'Element' },
+    ]);
+  });
+
+  it('parses record writes and the complete collection mutation surface', () => {
+    const { component, result } = parseOnlyComponent(`App():
+  users = [{ id: 1, name: "Ada", active: false }]
+  ordered = users.sort(user => user.name, { descending: true })
+  edit():
+    users.add({ id: 2, name: "Lin", active: true })
+    users.update(user => user.id == 1, user =>
+      user.name = "Grace"
+      user.active = true
+    )
+    users.remove(user => user.active == false, 1)
+  rename():
+    users.update(
+      user => user.id == 1,
+      user =>
+        user.name = "Chris"
+      ,
+      1
+    )
+  <p>{ordered.length}
+`);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(component.body).toMatchObject([
+      { kind: 'AssignmentStatement' },
+      {
+        kind: 'AssignmentStatement',
+        value: {
+          kind: 'CollectionExpression',
+          operation: 'sort',
+          options: { kind: 'RecordLiteral' },
+        },
+      },
+      {
+        kind: 'HandlerDeclaration',
+        body: [
+          { kind: 'CollectionMutationStatement', operation: 'add' },
+          {
+            kind: 'CollectionMutationStatement',
+            operation: 'update',
+            updater: {
+              assignments: [
+                { target: { kind: 'MemberExpression', property: { name: 'name' } } },
+                { target: { kind: 'MemberExpression', property: { name: 'active' } } },
+              ],
+            },
+          },
+          { kind: 'CollectionMutationStatement', operation: 'remove', limit: { value: 1 } },
+        ],
+      },
+      {
+        kind: 'HandlerDeclaration',
+        body: [{ kind: 'CollectionMutationStatement', operation: 'update', limit: { value: 1 } }],
+      },
+      { kind: 'Element' },
+    ]);
+  });
+
+  it('recovers from an unindented multiline collection call', () => {
+    const { result } = parseOnlyComponent(`App():
+  users = [{ id: 1 }]
+  remove():
+    users.remove(
+    user => user.id == 1
+    )
+  <p>{users.length}
+`);
+
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'OXE1102',
+        message: 'Expected indented collection operation arguments.',
+      }),
+    );
+  });
+
+  it('always advances past leaked dedents while recovering at module scope', () => {
+    const result = parseSource(`App():
+  users = [{ id: 1 }]
+  ordered = users.sort(
+    user => user.id
+  )
+  <p>{users.length}
+
+Other():
+  <p>Recovered
+`);
+
+    expect(result.diagnostics.length).toBeGreaterThan(0);
+    expect(result.ast.declarations.map((declaration) => declaration.name.name)).toContain('Other');
+  });
+
+  it('parses direct nested record-field writes in procedures', () => {
+    const { component, result } = parseOnlyComponent(`App():
+  profile = { name: "Ada", address: { city: "London" } }
+  move():
+    profile.name = "Grace"
+    profile.address.city = "New York"
+  <p>{profile.address.city}
+`);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(component.body[1]).toMatchObject({
+      kind: 'HandlerDeclaration',
+      body: [
+        { kind: 'MemberAssignmentStatement', target: { property: { name: 'name' } } },
+        {
+          kind: 'MemberAssignmentStatement',
+          target: {
+            property: { name: 'city' },
+            object: { kind: 'MemberExpression', property: { name: 'address' } },
+          },
+        },
+      ],
+    });
+  });
+
+  it('parses multiline conditional result blocks for values and UI', () => {
+    const { component, result } = parseOnlyComponent(`App():
+  user = true
+  label =?
+    user ?
+      prefix = "Hello"
+      prefix + " Chris"
+    : "Guest"
+  ?
+    user ?
+      message = label
+      <p>{message}
+    : <p>Guest
+`);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(component.body).toMatchObject([
+      { kind: 'AssignmentStatement' },
+      {
+        kind: 'AssignmentStatement',
+        value: {
+          kind: 'ConditionalValueExpression',
+          branches: [
+            {
+              result: {
+                kind: 'ConditionalResultBlock',
+                statements: [{ target: { name: 'prefix' } }],
+                result: { kind: 'BinaryExpression' },
+              },
+            },
+            { result: { kind: 'StringLiteral' } },
+          ],
+        },
+      },
+      {
+        kind: 'ConditionalRegion',
+        branches: [
+          {
+            result: {
+              kind: 'ConditionalResultBlock',
+              statements: [{ target: { name: 'message' } }],
+              result: { kind: 'Element' },
+            },
+          },
+          { result: { kind: 'Element' } },
+        ],
+      },
+    ]);
   });
 
   it('parses the locked untrack snapshot boundary as an ordinary expression', () => {
@@ -467,13 +786,14 @@ Counter(count, onIncrement):
     expect(result.diagnostics).toEqual([
       {
         code: 'OXE1105',
-        message: 'Expected an identifier, number, string, Boolean, or parenthesized expression.',
+        message:
+          'Expected an identifier, number, string, Boolean, array, record, or parenthesized expression.',
         severity: 'error',
         span: sourceSpan('recovery.oxe', [17, 2, 11], [17, 2, 11]),
       },
       {
         code: 'OXE1109',
-        message: 'Expected an element or interpolation in the indented markup block.',
+        message: 'Expected an element, interpolation, or conditional in the indented markup block.',
         severity: 'error',
         span: sourceSpan('recovery.oxe', [43, 5, 5], [50, 5, 12]),
       },
@@ -825,23 +1145,19 @@ import { Card } from "./Card.oxe"
     ]);
   });
 
-  it('keeps handler declarations zero-argument', () => {
+  it('parses handler parameters for ordinary procedural calls', () => {
     const { component, result } = parseOnlyComponent(`App():
   click(event):
     value = 1
   <button>
 `);
 
-    expect(result.diagnostics).toMatchObject([
-      {
-        code: 'OXE1101',
-        message: 'Handlers in this language slice must have zero arguments.',
-      },
-    ]);
+    expect(result.diagnostics).toEqual([]);
     expect(component.body).toMatchObject([
       {
         kind: 'HandlerDeclaration',
         name: { name: 'click' },
+        parameters: [{ name: 'event' }],
         body: [{ kind: 'AssignmentStatement', target: { name: 'value' } }],
       },
       { kind: 'Element', name: { name: 'button' } },

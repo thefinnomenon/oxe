@@ -14,6 +14,7 @@ import {
   createConditionalRegion,
   createElement,
   createKeyedRegion,
+  createStaticTemplate,
   createText,
   listen,
   mount,
@@ -76,11 +77,20 @@ class FakeNode {
     this.childNodes.splice(nextReferenceIndex, 0, child);
     return child;
   }
+
+  public cloneNode(deep = false): FakeNode {
+    void deep;
+    throw new Error('cloneNode must be implemented by concrete fake nodes.');
+  }
 }
 
 class FakeText extends FakeNode {
   public constructor(public data: string) {
     super();
+  }
+
+  public override cloneNode(): FakeText {
+    return new FakeText(this.data);
   }
 }
 
@@ -138,6 +148,19 @@ class FakeElement extends FakeNode {
     );
   }
 
+  public override cloneNode(deep = false): FakeElement {
+    const clone = new FakeElement(this.tagName);
+    for (const [name, value] of this.#attributes) {
+      clone.setAttribute(name, value);
+    }
+    if (deep) {
+      for (const child of this.childNodes) {
+        clone.appendChild(child.cloneNode(true));
+      }
+    }
+    return clone;
+  }
+
   #listenerKey(
     type: string,
     options: AddEventListenerOptions | EventListenerOptions | boolean | undefined,
@@ -177,6 +200,21 @@ describe('direct DOM primitives', () => {
     expect(asFakeText(text).data).toBe('OXE');
     expect(asFakeElement(parent).childNodes).toEqual([asFakeElement(child)]);
     expect(asFakeElement(child).childNodes).toEqual([asFakeText(text)]);
+  });
+
+  it('builds one static template per document and returns independent deep clones', () => {
+    const document = asDocument(new FakeDocument());
+    const template = createStaticTemplate({
+      tag: 'article',
+      attributes: [{ mode: 'attribute', name: 'class', value: 'card' }],
+      children: [{ tag: 'h2', children: ['Hello'] }],
+    });
+
+    const first = asFakeElement(template(document) as Element);
+    const second = asFakeElement(template(document) as Element);
+    expect(first).not.toBe(second);
+    expect(first.childNodes[0]).not.toBe(second.childNodes[0]);
+    expect(first.getAttribute('class')).toBe('card');
   });
 
   it('owns reactive text bindings for the lifetime of a mount', () => {

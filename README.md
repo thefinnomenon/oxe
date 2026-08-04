@@ -63,18 +63,20 @@ export App():
 The implemented path is:
 
 1. Scan strict indentation and produce precise diagnostics and source spans.
-2. Parse local components, strict prop contracts, handlers, scalar and array
-   assignments, `if`, keyed `map`, `untrack`, comparisons, logical expressions,
-   and indentation-closed markup into an immutable syntax tree.
+2. Parse local components, strict prop contracts, parameterized handlers,
+   records, member access, ordinary calls, exhaustive scalar/content choices,
+   multiline callbacks, `map`/`filter`/`flatMap`/`reduce`/pure `sort`, collection
+   `add`/`update`/`remove`, direct record-field writes, `untrack`, and
+   indentation-closed markup into an immutable syntax tree.
 3. Resolve uppercase local component references and exact named prop contracts;
    infer reactive value parameters, explicit procedure capabilities, rest
    capture, defaults, and the reserved implicit `children` contract.
 4. Validate and canonically serialize a versioned semantic UI graph.
 5. Specialize authored component instances into readable direct-DOM JavaScript
    while retaining definitions, instances, props, and ownership in the graph.
-6. Mount real DOM nodes, update text and DOM values, replace only changed `if`
-   branches, reconcile keyed rows by identity, and deterministically dispose
-   removed owners.
+6. Mount real DOM nodes, update text and DOM values, replace only changed
+   conditional branches, reconcile keyed rows by identity, and deterministically
+   dispose removed owners.
 
 The original counter remains as the smallest single-component proof. The
 composition acceptance gate is stricter: updates must flow through required
@@ -87,10 +89,13 @@ capabilities, and additional props can be captured and forwarded only to another
 component. Arbitrary spreading onto a host DOM element is intentionally not
 implemented; named host properties and attributes use typed lowering. Fixed multi-file
 projects use JavaScript-style named imports and direct declaration exports, with
-one explicit exported entry selected by the host. Incremental `if` regions,
-scalar keyed collections, authored `untrack`, and reactive DOM values are now
-implemented. Ordinary calls, member access, records, context syntax, async work,
-multiple roots, source maps, SSR, and hydration remain on the task list.
+one explicit exported entry selected by the host. Incremental conditional regions,
+first-class captured content, record/member values, immutable collection
+transformations and writes, authored `untrack`, generated source maps, and reactive DOM values are
+now implemented. Context providers, typed external capability contracts,
+compiler-owned disposable resources, platform-element refs, and cloned static
+DOM templates are implemented as well. Authored nullable types, async work,
+multiple roots, SSR, and hydration remain on the task list.
 
 ## Packages
 

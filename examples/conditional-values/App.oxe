@@ -1,0 +1,20 @@
+export App():
+  detailed = true
+
+  showDetails():
+    detailed = true
+
+  hideDetails():
+    detailed = false
+
+  description =?
+    detailed ? "Showing full details"
+    : "Showing summary"
+  status = detailed ? "Expanded" : "Collapsed"
+
+  <main>
+    <h1>Conditional values
+    <button onClick={showDetails}>Show details
+    <button onClick={hideDetails}>Hide details
+    <p>{description}
+    <p>{status}

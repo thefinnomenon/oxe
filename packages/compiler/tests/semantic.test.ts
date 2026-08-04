@@ -90,6 +90,251 @@ const expectOnlySemanticDiagnostic = (
 };
 
 describe('OXE semantic analysis', () => {
+  it('resolves context providers and consumers while preserving writable record paths', () => {
+    const moduleId = 'context.oxe';
+    const graph = requireGraph(
+      analyzeSource(
+        `SessionContext = createContext()
+
+App():
+  session = { name: "Ada", role: "admin" }
+  <SessionContext value={session}>
+    <Header>
+
+Header():
+  session = SessionContext()
+  rename():
+    session.name = "Grace"
+  <button onClick={rename}>{session.name}
+`,
+        moduleId,
+        moduleId,
+      ),
+    );
+
+    expect(validateUiGraph(graph)).toEqual([]);
+    expect(graph.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'context', name: 'SessionContext' }),
+        expect.objectContaining({ kind: 'context-provider' }),
+        expect.objectContaining({
+          kind: 'context-consumer',
+          name: 'session',
+          type: 'record',
+          writable: true,
+        }),
+      ]),
+    );
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        kind: 'write',
+        accesses: [expect.objectContaining({ path: ['name'] })],
+      }),
+    );
+  });
+
+  it('diagnoses missing providers without imposing a naming suffix', () => {
+    const missing = expectOnlySemanticDiagnostic(
+      `SessionContext = createContext()
+
+App():
+  session = SessionContext()
+  <p>{session.name}
+`,
+      'OXE2008',
+    );
+    expect(missing.diagnostics[0]?.message).toContain('No provider exists for SessionContext');
+
+    const graph = requireGraph(
+      analyzeSource(
+        `Session = createContext()
+
+App():
+  value = "ready"
+  <Session value={value}>
+    <Status>
+
+Status():
+  current = Session()
+  <p>{current}
+`,
+        'context-name.oxe',
+        'context-name.oxe',
+      ),
+    );
+    expect(graph.nodes).toContainEqual(
+      expect.objectContaining({ kind: 'context', name: 'Session' }),
+    );
+  });
+
+  it('types external platform capabilities and records their target contracts', () => {
+    const result = analyzeSource(
+      `App():
+  userId = "user-1"
+  label = formatter.label(userId)
+  analytics.identify(userId)
+  <p>{label}
+`,
+      'platform.oxe',
+      'platform.oxe',
+      {
+        target: 'client',
+        capabilities: [
+          {
+            kind: 'pure',
+            name: 'formatter.label',
+            parameters: ['string'],
+            returns: 'string',
+            target: 'universal',
+          },
+          {
+            kind: 'effect',
+            name: 'analytics.identify',
+            parameters: ['string'],
+            target: 'client',
+          },
+        ],
+      },
+    );
+    const graph = requireGraph(result);
+    expect(graph.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'platform-capability',
+          path: ['formatter', 'label'],
+          returns: 'string',
+        }),
+        expect.objectContaining({
+          capabilityKind: 'effect',
+          kind: 'platform-capability',
+          path: ['analytics', 'identify'],
+          target: 'client',
+        }),
+        expect.objectContaining({ kind: 'computed', name: 'label', type: 'string' }),
+      ]),
+    );
+  });
+
+  it('rejects platform type/target mismatches and competing declarative writers', () => {
+    const typed = analyzeSource(
+      `App():
+  analytics.identify(1)
+  <main>
+`,
+      'platform-errors.oxe',
+      'platform-errors.oxe',
+      {
+        target: 'server',
+        capabilities: [
+          {
+            kind: 'effect',
+            name: 'analytics.identify',
+            parameters: ['string'],
+            target: 'client',
+          },
+        ],
+      },
+    );
+    expect(typed.graph).toBeUndefined();
+    expect(typed.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('client-only'),
+        expect.stringContaining('must be string'),
+      ]),
+    );
+
+    const writers = analyzeSource(
+      `App():
+  first = "A"
+  second = "B"
+  document.setTitle(first)
+  document.setTitle(second)
+  <main>
+`,
+      'writers.oxe',
+      'writers.oxe',
+      {
+        capabilities: [
+          {
+            kind: 'effect',
+            name: 'document.setTitle',
+            parameters: ['string'],
+            target: 'client',
+            writes: 'document.title',
+          },
+        ],
+      },
+    );
+    expect(writers.graph).toBeUndefined();
+    expect(writers.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'OXE2007',
+        message: expect.stringContaining('Multiple persistent relationships write'),
+      }),
+    );
+  });
+
+  it('requires explicit disposal metadata for external resources', () => {
+    const invalid = analyzeSource(
+      `App():
+  connection = messages.subscribe("general")
+  <main>
+`,
+      'resource.oxe',
+      'resource.oxe',
+      {
+        capabilities: [{ kind: 'resource', name: 'messages.subscribe', parameters: ['string'] }],
+      },
+    );
+    expect(invalid.graph).toBeUndefined();
+    expect(invalid.diagnostics[0]?.message).toContain('must declare dispose');
+
+    const graph = requireGraph(
+      analyzeSource(
+        `App():
+  room = "general"
+  connection = messages.subscribe(room)
+  <main>
+`,
+        'resource.oxe',
+        'resource.oxe',
+        {
+          capabilities: [
+            {
+              dispose: 'dispose',
+              kind: 'resource',
+              name: 'messages.subscribe',
+              parameters: ['string'],
+            },
+          ],
+        },
+      ),
+    );
+    expect(graph.nodes).toContainEqual(
+      expect.objectContaining({ kind: 'resource', name: 'connection' }),
+    );
+  });
+
+  it('introduces platform element refs as compiler-owned reactive values', () => {
+    const graph = requireGraph(
+      analyzeSource(
+        `App():
+  focus():
+    field.focus()
+  <main>
+    <input ref={field}>
+    <button onClick={focus}>Focus
+`,
+        'ref.oxe',
+        'ref.oxe',
+      ),
+    );
+    expect(graph.nodes).toContainEqual(expect.objectContaining({ kind: 'ref', name: 'field' }));
+    expect(graph.nodes).toContainEqual(
+      expect.objectContaining({ kind: 'procedure', name: 'focus' }),
+    );
+  });
+
   it('records conditional branches, dependencies, and structural children in the graph', () => {
     const graph = requireGraph(
       analyzeSource(
@@ -98,7 +343,7 @@ describe('OXE semantic analysis', () => {
   hide():
     visible = false
   <main>
-    if
+    ?
       visible ? <section>Visible
       : <p>Hidden
 `,
@@ -121,6 +366,78 @@ describe('OXE semantic analysis', () => {
       }),
     );
     expect(validateUiGraph(graph)).toEqual([]);
+  });
+
+  it('lowers exhaustive conditional values with reactive conditions and typed results', () => {
+    const graph = requireGraph(
+      analyzeSource(
+        `App():
+  visible = true
+  hide():
+    visible = false
+  label =?
+    visible ? "Visible"
+    : "Hidden"
+  compact = visible ? "Yes" : "No"
+  <main>
+    <button onClick={hide}>{label}: {compact}
+`,
+        'conditional-value.oxe',
+        'conditional-value.oxe',
+      ),
+    );
+
+    const label = graph.nodes.find((node) => node.kind === 'computed' && node.name === 'label');
+    const compact = graph.nodes.find((node) => node.kind === 'computed' && node.name === 'compact');
+    expect(label).toMatchObject({
+      kind: 'computed',
+      type: 'string',
+      expression: {
+        kind: 'conditional',
+        branches: [
+          { condition: { kind: 'read' }, result: { kind: 'literal', value: 'Visible' } },
+          { result: { kind: 'literal', value: 'Hidden' } },
+        ],
+      },
+    });
+    expect(compact).toMatchObject({
+      kind: 'computed',
+      type: 'string',
+      expression: { kind: 'conditional' },
+    });
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        kind: 'read',
+        from: label?.id,
+        to: 'conditional-value.oxe#component/App/binding/visible',
+        mode: 'reactive',
+      }),
+    );
+    expect(validateUiGraph(graph)).toEqual([]);
+  });
+
+  it('requires Boolean conditional value conditions and matching branch result types', () => {
+    const condition = expectOnlySemanticDiagnostic(
+      `App():
+  label = 1 ? "Yes" : "No"
+  <p>{label}
+`,
+      'OXE2009',
+    );
+    expect(condition.diagnostics[0]?.message).toBe(
+      'A conditional value condition must be Boolean, but received number.',
+    );
+
+    const branches = expectOnlySemanticDiagnostic(
+      `App():
+  label = true ? "Yes" : 0
+  <p>{label}
+`,
+      'OXE2009',
+    );
+    expect(branches.diagnostics[0]?.message).toBe(
+      'Conditional value branches must share one type, but received string and number.',
+    );
   });
 
   it('models a keyed map source, item binding, key, and row template explicitly', () => {
@@ -284,6 +601,112 @@ describe('OXE semantic analysis', () => {
     expect(serialized).toBe(serializeUiGraph(reordered));
     expect((JSON.parse(serialized) as UiGraphV1).nodes.map((node) => node.id)).toEqual(
       expectedCounterNodeIds,
+    );
+  });
+
+  it('models immutable record writes and collection mutations as procedural cell writes', () => {
+    const moduleId = 'collections.oxe';
+    const componentId = `${moduleId}#component/App`;
+    const usersId = `${componentId}/binding/users`;
+    const graph = requireGraph(
+      analyzeSource(
+        `export App():
+  users = [{ id: 1, name: "Ada", active: false }, { id: 2, name: "Lin", active: true }]
+  profile = { name: "Ada", address: { city: "London" } }
+  ordered = users.sort(user => user.name, { descending: true })
+  change():
+    users.add({ id: 3, name: "Grace", active: true })
+    users.update(user => user.active == false, user => user.name = "Chris", 1)
+    users.remove(user => user.active == false, 1)
+    profile.address.city = "New York"
+  <button onClick={change}>{ordered.length}: {profile.address.city}
+`,
+        moduleId,
+        moduleId,
+      ),
+    );
+
+    expect(validateUiGraph(graph)).toEqual([]);
+    expect(graph.nodes.find((node) => node.id === usersId)).toMatchObject({
+      kind: 'cell',
+      name: 'users',
+      type: 'array',
+    });
+    expect(
+      graph.nodes.find((node) => node.kind === 'computed' && node.name === 'ordered'),
+    ).toMatchObject({
+      expression: { kind: 'collection', operation: 'sort', options: { kind: 'record' } },
+    });
+    const procedure = graph.nodes.find(
+      (node) => node.kind === 'procedure' && node.name === 'change',
+    );
+    expect(procedure).toMatchObject({
+      kind: 'procedure',
+      steps: [
+        { kind: 'collection-mutation', operation: 'add', targetId: usersId },
+        {
+          kind: 'collection-mutation',
+          operation: 'update',
+          targetId: usersId,
+          predicate: { parameters: [{ name: 'user' }] },
+          updater: { result: { kind: 'record' } },
+          limit: { kind: 'literal', value: 1 },
+        },
+        { kind: 'collection-mutation', operation: 'remove', targetId: usersId },
+        {
+          kind: 'write',
+          path: ['address', 'city'],
+          value: { kind: 'literal', value: 'New York' },
+        },
+      ],
+    });
+    expect(
+      graph.edges.filter(
+        (edge) => edge.kind === 'write' && edge.from === `${componentId}/procedure/change`,
+      ),
+    ).toHaveLength(2);
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        kind: 'write',
+        from: `${componentId}/procedure/change`,
+        to: `${componentId}/binding/profile`,
+        accesses: [expect.objectContaining({ path: ['address', 'city'] })],
+      }),
+    );
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        kind: 'read',
+        to: `${componentId}/binding/profile`,
+        accesses: [expect.objectContaining({ path: ['address', 'city'] })],
+      }),
+    );
+  });
+
+  it('diagnoses invalid collection limits and record field updates', () => {
+    const limit = expectOnlySemanticDiagnostic(
+      `App():
+  users = [{ id: 1 }]
+  remove():
+    users.remove(user => user.id == 1, 0 - 1)
+  <button onClick={remove}>{users.length}
+`,
+      'OXE2009',
+    );
+    expect(limit.diagnostics[0]?.message).toBe(
+      'A collection mutation limit must be a nonnegative integer.',
+    );
+
+    const field = expectOnlySemanticDiagnostic(
+      `App():
+  profile = { name: "Ada" }
+  rename():
+    profile.name = 1
+  <button onClick={rename}>{profile.name}
+`,
+      'OXE2009',
+    );
+    expect(field.diagnostics[0]?.message).toBe(
+      'Cannot assign number to string record field "name".',
     );
   });
 

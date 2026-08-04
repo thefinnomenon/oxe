@@ -28,6 +28,20 @@ export interface KeyedRegionOptions<Item, Key> {
   readonly render: (item: Readable<Item>) => MountContent;
 }
 
+export interface StaticTemplateAttribute {
+  readonly mode: DomValueMode;
+  readonly name: string;
+  readonly value: boolean | number | string;
+}
+
+export interface StaticTemplateElement {
+  readonly attributes?: readonly StaticTemplateAttribute[];
+  readonly children?: readonly (StaticTemplateElement | string)[];
+  readonly tag: string;
+}
+
+export type StaticTemplateFactory = (document: Document) => ChildNode;
+
 const renderText = (value: TextValue): string =>
   value === null || value === undefined ? '' : String(value);
 
@@ -45,6 +59,32 @@ export const createText = (document: Document, value: TextValue = ''): Text =>
 
 export const appendChild = <Child extends Node>(parent: Node, child: Child): Child =>
   parent.appendChild(child);
+
+/** Builds one direct-DOM template per Document and clones it for each instance. */
+export const createStaticTemplate = (descriptor: StaticTemplateElement): StaticTemplateFactory => {
+  const templates = new WeakMap<Document, ChildNode>();
+  const build = (document: Document, node: StaticTemplateElement): HTMLElement => {
+    const element = createElement(document, node.tag);
+    for (const attribute of node.attributes ?? []) {
+      setDomValue(element, attribute.name, attribute.mode, attribute.value);
+    }
+    for (const child of node.children ?? []) {
+      appendChild(
+        element,
+        typeof child === 'string' ? createText(document, child) : build(document, child),
+      );
+    }
+    return element;
+  };
+  return (document) => {
+    let template = templates.get(document);
+    if (!template) {
+      template = build(document, descriptor);
+      templates.set(document, template);
+    }
+    return template.cloneNode(true) as ChildNode;
+  };
+};
 
 export const bindText = (node: Text, value: Readable<TextValue>): Disposable =>
   createReaction(

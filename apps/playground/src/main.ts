@@ -1,4 +1,5 @@
 import type { NodeIdV1, UiGraphV1 } from '@oxe/graph';
+import type { ReactiveTraceEvent } from '@oxe/runtime';
 
 import {
   defaultExample,
@@ -30,7 +31,15 @@ import {
 import './styles.css';
 
 type OutputTab =
-  'preview' | 'diagnostics' | 'console' | 'generated' | 'graph' | 'ast' | 'tokens' | 'size';
+  | 'preview'
+  | 'diagnostics'
+  | 'console'
+  | 'reactivity'
+  | 'generated'
+  | 'graph'
+  | 'ast'
+  | 'tokens'
+  | 'size';
 
 type MobilePanel = 'output' | 'source';
 
@@ -47,6 +56,7 @@ const tabs: readonly { readonly id: OutputTab; readonly label: string }[] = [
   { id: 'preview', label: 'Preview' },
   { id: 'diagnostics', label: 'Diagnostics' },
   { id: 'console', label: 'Console' },
+  { id: 'reactivity', label: 'Reactivity' },
   { id: 'generated', label: 'Generated JS' },
   { id: 'graph', label: 'Graph' },
   { id: 'ast', label: 'AST' },
@@ -195,6 +205,19 @@ applicationRoot.innerHTML = `
             </div>
           </section>
 
+          <section class="output-pane" id="pane-reactivity" role="tabpanel">
+            <div class="pane-scroll">
+              <div class="pane-toolbar">
+                <div>
+                  <h2 class="pane-title">Reactivity explanations</h2>
+                  <span class="pane-hint">Writes, exact invalidating paths, executed computations, and equality-suppressed work.</span>
+                </div>
+                <button class="button" id="clear-reactivity-button" type="button">Clear</button>
+              </div>
+              <ol class="trace-list" id="reactivity-list" aria-live="polite"></ol>
+            </div>
+          </section>
+
           <section class="output-pane" id="pane-generated" role="tabpanel">
             <pre class="code-output" id="generated-output" tabindex="0"></pre>
           </section>
@@ -286,6 +309,8 @@ const previewOverlayMessage = requireElement('#preview-overlay-message', HTMLDiv
 const diagnosticList = requireElement('#diagnostic-list', HTMLOListElement);
 const consoleList = requireElement('#console-list', HTMLOListElement);
 const clearConsoleButton = requireElement('#clear-console-button', HTMLButtonElement);
+const reactivityList = requireElement('#reactivity-list', HTMLOListElement);
+const clearReactivityButton = requireElement('#clear-reactivity-button', HTMLButtonElement);
 const generatedOutput = requireElement('#generated-output', HTMLPreElement);
 const graphSummary = requireElement('#graph-summary', HTMLDivElement);
 const graphNodeList = requireElement('#graph-node-list', HTMLOListElement);
@@ -355,6 +380,7 @@ let mountedRunId: number | undefined;
 let mountMilliseconds: number | undefined;
 let mutations = emptyMutations();
 let consoleEvents: PreviewConsoleEvent[] = [];
+let reactivityEvents: ReactiveTraceEvent[] = [];
 let previewErrors: PreviewErrorEvent[] = [];
 let sizeRequestSequence = 0;
 let sizeState: SizeState = { exact: false, status: 'idle' };
@@ -505,6 +531,10 @@ const updateTabCounts = (): void => {
   const consoleCountElement = document.querySelector('[data-tab-count="console"]');
   if (consoleCountElement) {
     consoleCountElement.textContent = String(consoleCount());
+  }
+  const reactivityCountElement = document.querySelector('[data-tab-count="reactivity"]');
+  if (reactivityCountElement) {
+    reactivityCountElement.textContent = String(reactivityEvents.length);
   }
 };
 
@@ -669,6 +699,64 @@ const renderConsole = (): void => {
     message.textContent = row.message;
     item.append(heading, message);
     consoleList.append(item);
+  }
+  updateTabCounts();
+};
+
+const renderReactivity = (): void => {
+  reactivityList.replaceChildren();
+  if (reactivityEvents.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'empty-state';
+    empty.textContent = 'Interact with the preview to see why reactive work runs or is skipped.';
+    reactivityList.append(empty);
+    updateTabCounts();
+    return;
+  }
+
+  const graph = currentResult?.graphJson ? parseGraph(currentResult.graphJson) : undefined;
+  for (const event of [...reactivityEvents].reverse()) {
+    const item = document.createElement('li');
+    item.className = 'trace-row';
+    item.dataset.kind = event.kind;
+    const targetId = event.computation?.id ?? event.source.id;
+    const target = targetId ? graph?.nodes.find((node) => node.id === targetId) : undefined;
+    const card: HTMLButtonElement | HTMLDivElement = target
+      ? document.createElement('button')
+      : document.createElement('div');
+    card.className = 'trace-card';
+    if (card instanceof HTMLButtonElement && target) {
+      card.type = 'button';
+      card.title = `Inspect ${target.id}`;
+      card.addEventListener('click', () => {
+        selectedGraphNodeId = target.id;
+        showTab('graph');
+        renderGraph();
+        revealSpan(target.span.fileName, target.span.start.offset, target.span.end.offset);
+      });
+    }
+    const heading = document.createElement('div');
+    heading.className = 'trace-heading';
+    const kind = document.createElement('span');
+    kind.className = 'trace-kind';
+    kind.textContent = event.kind;
+    const subject = document.createElement('strong');
+    subject.textContent = event.computation?.name ?? event.source.name;
+    const time = document.createElement('time');
+    time.className = 'console-time';
+    time.dateTime = new Date(event.timestamp).toISOString();
+    time.textContent = new Date(event.timestamp).toLocaleTimeString();
+    heading.append(kind, subject, time);
+    const reason = document.createElement('p');
+    reason.className = 'trace-message';
+    reason.textContent = event.reason;
+    const source = document.createElement('code');
+    source.textContent = event.source.path?.length
+      ? `${event.source.name}.${event.source.path.join('.')}`
+      : event.source.name;
+    card.append(heading, reason, source);
+    item.append(card);
+    reactivityList.append(item);
   }
   updateTabCounts();
 };
@@ -1123,6 +1211,7 @@ const postPreviewMount = (result: CompileResult): void => {
       version: OXE_PLAYGROUND_PROTOCOL_VERSION,
       runId: result.runId,
       factorySource: result.factorySource,
+      ...(result.factorySourceMap ? { factorySourceMap: result.factorySourceMap } : {}),
       mountExport: result.mountExport,
     },
     window.location.origin,
@@ -1198,6 +1287,8 @@ const handleCompileResult = (result: CompileResult): void => {
   mountedRunId = undefined;
   mountMilliseconds = undefined;
   mutations = emptyMutations();
+  reactivityEvents = [];
+  renderReactivity();
   mountTime.textContent = 'Mount —';
   mutationStatus.textContent = 'DOM mutations —';
   setCompileTone('success', 'Compiled');
@@ -1275,6 +1366,7 @@ const loadExample = (example: PlaygroundExample): void => {
   mountMilliseconds = undefined;
   mutations = emptyMutations();
   consoleEvents = [];
+  reactivityEvents = [];
   previewErrors = [];
   generatedOutput.textContent = '';
   graphOutput.textContent = '';
@@ -1290,6 +1382,7 @@ const loadExample = (example: PlaygroundExample): void => {
   updateDirtyState();
   renderDiagnostics();
   renderConsole();
+  renderReactivity();
   renderGraph();
   renderSize();
   updateSizeShortcut();
@@ -1332,6 +1425,7 @@ const createDebugReport = (): string => {
     mutations,
     previewErrors,
     console: consoleEvents,
+    reactivity: reactivityEvents,
     size: sizeState,
     graph: currentResult?.graphJson ? JSON.parse(currentResult.graphJson) : undefined,
     generatedJavaScript: currentResult?.moduleSource,
@@ -1352,7 +1446,7 @@ for (const tab of tabs) {
   const label = document.createElement('span');
   label.textContent = tab.label;
   button.append(label);
-  if (tab.id === 'diagnostics' || tab.id === 'console') {
+  if (tab.id === 'diagnostics' || tab.id === 'console' || tab.id === 'reactivity') {
     const count = document.createElement('span');
     count.className = 'tab-count';
     count.dataset.tabCount = tab.id;
@@ -1420,6 +1514,13 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       }
       consoleEvents = [...consoleEvents.slice(-199), event.data];
       renderConsole();
+      break;
+    case 'preview:reactivity':
+      if (event.data.runId !== lastSuccessfulResult?.runId) {
+        return;
+      }
+      reactivityEvents = [...reactivityEvents.slice(-499), event.data.event];
+      renderReactivity();
       break;
     case 'preview:error':
       if (event.data.runId !== null && event.data.runId !== lastSuccessfulResult?.runId) {
@@ -1509,6 +1610,11 @@ clearConsoleButton.addEventListener('click', () => {
   consoleEvents = [];
   previewErrors = [];
   renderConsole();
+});
+
+clearReactivityButton.addEventListener('click', () => {
+  reactivityEvents = [];
+  renderReactivity();
 });
 
 sizeShortcut.addEventListener('click', () => showTab('size'));

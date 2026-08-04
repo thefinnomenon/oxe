@@ -78,7 +78,14 @@ const graph: UiGraphV1 = {
       targetId: 'procedure:increment',
       span,
     },
-    { kind: 'read', mode: 'reactive', from: 'instance:Counter', to: 'cell:count', sites: [span] },
+    {
+      kind: 'read',
+      mode: 'reactive',
+      from: 'instance:Counter',
+      to: 'cell:count',
+      accesses: [{ path: ['stats', 'score'], span }],
+      sites: [span],
+    },
   ],
 };
 
@@ -227,7 +234,11 @@ describe('graph inspector model', () => {
   it('shows the consumers of a reactive value and procedure capability', () => {
     expect(buildGraphInspectorModel(graph, 'cell:count')?.consumers).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: 'Read by', nodeId: 'instance:Counter' }),
+        expect.objectContaining({
+          label: 'Read by',
+          nodeId: 'instance:Counter',
+          detail: expect.stringContaining('reactive dependency · stats.score'),
+        }),
         expect.objectContaining({ label: 'Passed as count', nodeId: 'instance:Counter' }),
       ]),
     );

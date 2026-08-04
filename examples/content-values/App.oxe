@@ -1,0 +1,20 @@
+export App():
+  visible = true
+
+  hide():
+    visible = false
+
+  show():
+    visible = true
+
+  view =?
+    visible ?
+      label = "Visible content"
+      <button onClick={hide}>{label}
+    : <p>Hidden content
+
+  <main>
+    <h1>Captured content
+    <button onClick={show}>Show
+    {view}
+    {view}

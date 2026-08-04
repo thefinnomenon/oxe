@@ -1,4 +1,11 @@
-import type { GraphSpanV1, UiEdgeV1, UiGraphV1, UiNodeV1, ValueExpressionV1 } from './types.js';
+import type {
+  GraphAccessV1,
+  GraphSpanV1,
+  UiEdgeV1,
+  UiGraphV1,
+  UiNodeV1,
+  ValueExpressionV1,
+} from './types.js';
 
 export type GraphDiagnosticCode =
   'OXE3001' | 'OXE3002' | 'OXE3003' | 'OXE3004' | 'OXE3005' | 'OXE3006';
@@ -10,11 +17,63 @@ export interface GraphDiagnostic {
 }
 
 interface ExpressionReference {
+  readonly path: readonly string[];
   readonly span: GraphSpanV1;
   readonly targetId: string;
 }
 
+const collectCapabilityReferences = (
+  expression: ValueExpressionV1,
+  references: ExpressionReference[],
+): void => {
+  switch (expression.kind) {
+    case 'array':
+      expression.elements.forEach((item) => collectCapabilityReferences(item, references));
+      return;
+    case 'binary':
+      collectCapabilityReferences(expression.left, references);
+      collectCapabilityReferences(expression.right, references);
+      return;
+    case 'call':
+      collectCapabilityReferences(expression.callee, references);
+      expression.arguments.forEach((item) => collectCapabilityReferences(item, references));
+      return;
+    case 'capability-read':
+      references.push({ path: [], span: expression.span, targetId: expression.targetId });
+      return;
+    case 'collection':
+      collectCapabilityReferences(expression.source, references);
+      collectCapabilityReferences(expression.callback.result, references);
+      if (expression.initial) {
+        collectCapabilityReferences(expression.initial, references);
+      }
+      if (expression.options) {
+        collectCapabilityReferences(expression.options, references);
+      }
+      return;
+    case 'conditional':
+      for (const branch of expression.branches) {
+        if (branch.condition) {
+          collectCapabilityReferences(branch.condition, references);
+        }
+        collectCapabilityReferences(branch.result, references);
+      }
+      return;
+    case 'member':
+      collectCapabilityReferences(expression.object, references);
+      return;
+    case 'record':
+      expression.entries.forEach((entry) => collectCapabilityReferences(entry.value, references));
+      return;
+    case 'literal':
+    case 'local-read':
+    case 'read':
+      return;
+  }
+};
+
 interface ProjectedEdge {
+  readonly accesses: GraphAccessV1[];
   readonly from: string;
   readonly kind: 'read' | 'write';
   readonly mode: 'procedural' | 'reactive';
@@ -52,14 +111,187 @@ const collectExpressionReferences = (
       collectExpressionReferences(expression.left, references, trackedOnly);
       collectExpressionReferences(expression.right, references, trackedOnly);
       return;
+    case 'call':
+      collectExpressionReferences(expression.callee, references, trackedOnly);
+      for (const argument of expression.arguments) {
+        collectExpressionReferences(argument, references, trackedOnly);
+      }
+      return;
+    case 'capability-read':
+      return;
+    case 'collection':
+      collectExpressionReferences(expression.source, references, trackedOnly);
+      collectExpressionReferences(expression.callback.result, references, trackedOnly);
+      if (expression.initial) {
+        collectExpressionReferences(expression.initial, references, trackedOnly);
+      }
+      if (expression.options) {
+        collectExpressionReferences(expression.options, references, trackedOnly);
+      }
+      return;
+    case 'conditional':
+      for (const branch of expression.branches) {
+        if (branch.condition) {
+          collectExpressionReferences(branch.condition, references, trackedOnly);
+        }
+        collectExpressionReferences(branch.result, references, trackedOnly);
+      }
+      return;
     case 'literal':
+    case 'local-read':
+      return;
+    case 'member': {
+      const path: string[] = [];
+      let current: ValueExpressionV1 = expression;
+      while (current.kind === 'member') {
+        path.unshift(current.property);
+        current = current.object;
+      }
+      if (current.kind === 'read' && (!trackedOnly || current.tracked !== false)) {
+        references.push({ path, targetId: current.targetId, span: expression.span });
+        return;
+      }
+      collectExpressionReferences(expression.object, references, trackedOnly);
+      return;
+    }
+    case 'record':
+      for (const entry of expression.entries) {
+        collectExpressionReferences(entry.value, references, trackedOnly);
+      }
       return;
     case 'read':
       if (!trackedOnly || expression.tracked !== false) {
-        references.push({ targetId: expression.targetId, span: expression.span });
+        references.push({ path: [], targetId: expression.targetId, span: expression.span });
       }
       return;
   }
+};
+
+const validateExpressionStructure = (
+  expression: ValueExpressionV1,
+  diagnostics: GraphDiagnostic[],
+  localIds: ReadonlySet<string> = new Set(),
+): void => {
+  switch (expression.kind) {
+    case 'array':
+      for (const element of expression.elements) {
+        validateExpressionStructure(element, diagnostics, localIds);
+      }
+      return;
+    case 'binary':
+      validateExpressionStructure(expression.left, diagnostics, localIds);
+      validateExpressionStructure(expression.right, diagnostics, localIds);
+      return;
+    case 'call':
+      validateExpressionStructure(expression.callee, diagnostics, localIds);
+      for (const argument of expression.arguments) {
+        validateExpressionStructure(argument, diagnostics, localIds);
+      }
+      return;
+    case 'capability-read':
+      return;
+    case 'collection': {
+      validateExpressionStructure(expression.source, diagnostics, localIds);
+      const expectedParameters = expression.operation === 'reduce' ? 2 : 1;
+      if (expression.callback.parameters.length !== expectedParameters) {
+        diagnostics.push({
+          code: 'OXE3006',
+          message: `${expression.operation} callbacks require exactly ${expectedParameters} parameter${expectedParameters === 1 ? '' : 's'}.`,
+          span: expression.callback.span,
+        });
+      }
+      if (expression.operation === 'reduce' && !expression.initial) {
+        diagnostics.push({
+          code: 'OXE3006',
+          message: 'A reduce expression requires an initial value.',
+          span: expression.span,
+        });
+      }
+      const callbackLocals = new Set(localIds);
+      for (const parameter of expression.callback.parameters) {
+        callbackLocals.add(parameter.id);
+      }
+      validateExpressionStructure(expression.callback.result, diagnostics, callbackLocals);
+      if (expression.initial) {
+        validateExpressionStructure(expression.initial, diagnostics, localIds);
+      }
+      if (expression.options) {
+        validateExpressionStructure(expression.options, diagnostics, localIds);
+      }
+      return;
+    }
+    case 'conditional': {
+      if (expression.branches.length === 0) {
+        diagnostics.push({
+          code: 'OXE3006',
+          message: 'A conditional value expression must contain at least one branch.',
+          span: expression.span,
+        });
+        return;
+      }
+      expression.branches.forEach((branch, index) => {
+        const final = index === expression.branches.length - 1;
+        if (!branch.condition && !final) {
+          diagnostics.push({
+            code: 'OXE3006',
+            message: 'Only the final conditional value branch may omit its condition.',
+            span: branch.span,
+          });
+        }
+        if (branch.condition) {
+          validateExpressionStructure(branch.condition, diagnostics, localIds);
+        }
+        validateExpressionStructure(branch.result, diagnostics, localIds);
+      });
+      const fallback = expression.branches.at(-1);
+      if (fallback?.condition) {
+        diagnostics.push({
+          code: 'OXE3006',
+          message: 'A conditional value expression must end with a fallback branch.',
+          span: fallback.span,
+        });
+      }
+      return;
+    }
+    case 'literal':
+      return;
+    case 'local-read':
+      if (!localIds.has(expression.targetId)) {
+        diagnostics.push({
+          code: 'OXE3006',
+          message: `Local read "${expression.targetId}" is outside its callback or procedure scope.`,
+          span: expression.span,
+        });
+      }
+      return;
+    case 'member':
+      validateExpressionStructure(expression.object, diagnostics, localIds);
+      return;
+    case 'record':
+      for (const entry of expression.entries) {
+        validateExpressionStructure(entry.value, diagnostics, localIds);
+      }
+      return;
+    case 'read':
+      return;
+  }
+};
+
+const procedureStepExpressions = (
+  step: Extract<UiNodeV1, { readonly kind: 'procedure' }>['steps'][number],
+): readonly ValueExpressionV1[] => {
+  if (step.kind === 'call') {
+    return [step.expression];
+  }
+  if (step.kind === 'write') {
+    return [step.value];
+  }
+  return [
+    ...(step.value ? [step.value] : []),
+    ...(step.predicate ? [step.predicate.result] : []),
+    ...(step.updater ? [step.updater.result] : []),
+    ...(step.limit ? [step.limit] : []),
+  ];
 };
 
 const nodeExpressions = (node: UiNodeV1): readonly ValueExpressionV1[] => {
@@ -68,22 +300,35 @@ const nodeExpressions = (node: UiNodeV1): readonly ValueExpressionV1[] => {
       return [node.initial];
     case 'computed':
       return [node.expression];
+    case 'effect':
+      return [node.expression];
     case 'procedure':
-      return node.steps.map((step) => step.value);
+      return node.steps.flatMap(procedureStepExpressions);
     case 'text':
       return node.parts.flatMap((part) => (part.kind === 'expression' ? [part.expression] : []));
     case 'component-parameter':
       return node.parameterKind === 'value' && node.default ? [node.default] : [];
     case 'conditional-region':
       return node.branches.flatMap((branch) => (branch.condition ? [branch.condition] : []));
+    case 'content-value':
+      return node.branches.flatMap((branch) => (branch.condition ? [branch.condition] : []));
     case 'keyed-collection':
       return [node.source, node.key];
     case 'element':
       return (node.dynamicAttributes ?? []).map((attribute) => attribute.value);
+    case 'context-provider':
+      return [node.value];
+    case 'resource':
+      return [node.expression];
     case 'component':
     case 'component-instance':
     case 'collection-item':
     case 'constant':
+    case 'context':
+    case 'context-consumer':
+    case 'platform-capability':
+    case 'ref':
+    case 'content-reference':
     case 'content-slot':
       return [];
   }
@@ -121,10 +366,14 @@ const edgeKindsAreValid = (edge: UiEdgeV1, nodes: ReadonlyMap<string, UiNodeV1>)
         (from.kind === 'component' ||
           from.kind === 'component-instance' ||
           from.kind === 'conditional-region' ||
+          from.kind === 'context-provider' ||
+          from.kind === 'content-value' ||
           from.kind === 'keyed-collection' ||
           from.kind === 'element') &&
         (to.kind === 'component-instance' ||
           to.kind === 'conditional-region' ||
+          to.kind === 'context-provider' ||
+          to.kind === 'content-reference' ||
           to.kind === 'keyed-collection' ||
           to.kind === 'content-slot' ||
           to.kind === 'element' ||
@@ -156,22 +405,32 @@ const edgeKindsAreValid = (edge: UiEdgeV1, nodes: ReadonlyMap<string, UiNodeV1>)
       return (
         (from.kind === 'component-instance' ||
           from.kind === 'conditional-region' ||
+          from.kind === 'context-provider' ||
+          from.kind === 'content-value' ||
           from.kind === 'keyed-collection' ||
           from.kind === 'element' ||
           from.kind === 'computed' ||
+          from.kind === 'effect' ||
           from.kind === 'procedure' ||
+          from.kind === 'resource' ||
           from.kind === 'text' ||
           (from.kind === 'component-parameter' && from.parameterKind === 'value')) &&
         (to.kind === 'cell' ||
           to.kind === 'collection-item' ||
           to.kind === 'computed' ||
           to.kind === 'constant' ||
+          to.kind === 'context-consumer' ||
+          to.kind === 'ref' ||
           (to.kind === 'component-parameter' &&
             (to.parameterKind === 'rest' || to.parameterKind === 'value'))) &&
         (from.kind === 'procedure' ? edge.mode === 'procedural' : edge.mode === 'reactive')
       );
     case 'write':
-      return from.kind === 'procedure' && to.kind === 'cell' && edge.mode === 'procedural';
+      return (
+        from.kind === 'procedure' &&
+        (to.kind === 'cell' || (to.kind === 'context-consumer' && to.writable)) &&
+        edge.mode === 'procedural'
+      );
   }
 };
 
@@ -195,14 +454,16 @@ const addProjectionSite = (
   to: string,
   mode: ProjectedEdge['mode'],
   span: GraphSpanV1,
+  path: readonly string[] = [],
 ): void => {
   const key = projectionKey(kind, from, to, mode);
   const existing = projection.get(key);
   if (existing) {
     existing.sites.push(span);
+    existing.accesses.push({ path, span });
     return;
   }
-  projection.set(key, { kind, from, to, mode, sites: [span] });
+  projection.set(key, { accesses: [{ path, span }], kind, from, to, mode, sites: [span] });
 };
 
 const expectedProjection = (graph: UiGraphV1): Map<string, ProjectedEdge> => {
@@ -220,25 +481,39 @@ const expectedProjection = (graph: UiGraphV1): Map<string, ProjectedEdge> => {
           reference.targetId,
           'reactive',
           reference.span,
+          reference.path,
         );
       }
     } else if (node.kind === 'procedure') {
       for (const step of node.steps) {
-        addProjectionSite(projection, 'write', node.id, step.targetId, 'procedural', step.span);
-        const references: ExpressionReference[] = [];
-        collectExpressionReferences(step.value, references, true);
-        for (const reference of references) {
+        if (step.kind === 'write' || step.kind === 'collection-mutation') {
           addProjectionSite(
             projection,
-            'read',
+            'write',
             node.id,
-            reference.targetId,
+            step.targetId,
             'procedural',
-            reference.span,
+            step.span,
+            step.kind === 'write' ? (step.path ?? []) : [],
           );
         }
+        for (const expression of procedureStepExpressions(step)) {
+          const references: ExpressionReference[] = [];
+          collectExpressionReferences(expression, references, true);
+          for (const reference of references) {
+            addProjectionSite(
+              projection,
+              'read',
+              node.id,
+              reference.targetId,
+              'procedural',
+              reference.span,
+              reference.path,
+            );
+          }
+        }
       }
-    } else if (node.kind === 'text') {
+    } else if (node.kind === 'effect' || node.kind === 'resource' || node.kind === 'text') {
       for (const expression of nodeExpressions(node)) {
         const references: ExpressionReference[] = [];
         collectExpressionReferences(expression, references, true);
@@ -250,11 +525,14 @@ const expectedProjection = (graph: UiGraphV1): Map<string, ProjectedEdge> => {
             reference.targetId,
             'reactive',
             reference.span,
+            reference.path,
           );
         }
       }
     } else if (
       node.kind === 'conditional-region' ||
+      node.kind === 'content-value' ||
+      node.kind === 'context-provider' ||
       node.kind === 'keyed-collection' ||
       node.kind === 'element'
     ) {
@@ -269,6 +547,7 @@ const expectedProjection = (graph: UiGraphV1): Map<string, ProjectedEdge> => {
             reference.targetId,
             'reactive',
             reference.span,
+            reference.path,
           );
         }
       }
@@ -286,6 +565,7 @@ const expectedProjection = (graph: UiGraphV1): Map<string, ProjectedEdge> => {
           reference.targetId,
           'reactive',
           reference.span,
+          reference.path,
         );
       }
     }
@@ -303,6 +583,7 @@ const expectedProjection = (graph: UiGraphV1): Map<string, ProjectedEdge> => {
           reference.targetId,
           'reactive',
           reference.span,
+          reference.path,
         );
       }
     } else if (edge.kind === 'spread-prop' && edge.source.kind === 'rest') {
@@ -325,6 +606,7 @@ const expectedProjection = (graph: UiGraphV1): Map<string, ProjectedEdge> => {
           reference.targetId,
           'reactive',
           reference.span,
+          reference.path,
         );
       }
     }
@@ -356,7 +638,13 @@ const validateProjection = (
       });
       continue;
     }
-    actual.set(key, { ...edge, sites: [...edge.sites] });
+    actual.set(key, {
+      ...edge,
+      accesses: [
+        ...(edge.accesses ?? edge.sites.map((span) => ({ path: [] as readonly string[], span }))),
+      ],
+      sites: [...edge.sites],
+    });
   }
 
   const keys = new Set([...expected.keys(), ...actual.keys()]);
@@ -399,6 +687,29 @@ const validateProjection = (
       diagnostics.push({
         code: 'OXE3004',
         message: `The ${reference.kind} edge from "${reference.from}" to "${reference.to}" has incorrect source sites.`,
+        span,
+      });
+    }
+
+    const compareAccess = (left: GraphAccessV1, right: GraphAccessV1): number =>
+      compareText(left.path.join('\0'), right.path.join('\0')) ||
+      compareSpans(left.span, right.span);
+    const expectedAccesses = [...expectedEdge.accesses].sort(compareAccess);
+    const actualAccesses = [...actualEdge.accesses].sort(compareAccess);
+    if (
+      expectedAccesses.length !== actualAccesses.length ||
+      expectedAccesses.some((access, index) => {
+        const actualAccess = actualAccesses[index];
+        return (
+          !actualAccess ||
+          access.path.join('\0') !== actualAccess.path.join('\0') ||
+          !spansEqual(access.span, actualAccess.span)
+        );
+      })
+    ) {
+      diagnostics.push({
+        code: 'OXE3004',
+        message: `The ${reference.kind} edge from "${reference.from}" to "${reference.to}" has incorrect field paths.`,
         span,
       });
     }
@@ -472,6 +783,7 @@ const validateChildTopology = (
     if (
       (node.kind === 'component-instance' ||
         node.kind === 'conditional-region' ||
+        node.kind === 'context-provider' ||
         node.kind === 'keyed-collection' ||
         node.kind === 'content-slot' ||
         node.kind === 'element' ||
@@ -1057,7 +1369,22 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
   }
 
   for (const node of [...graph.nodes].sort((left, right) => compareText(left.id, right.id))) {
+    const procedureLocals =
+      node.kind === 'procedure'
+        ? new Set([
+            ...node.parameters.map((parameter) => parameter.name),
+            ...node.steps.flatMap((step) =>
+              step.kind === 'collection-mutation'
+                ? [
+                    ...(step.predicate?.parameters.map((parameter) => parameter.id) ?? []),
+                    ...(step.updater?.parameters.map((parameter) => parameter.id) ?? []),
+                  ]
+                : [],
+            ),
+          ])
+        : new Set<string>();
     for (const expression of nodeExpressions(node)) {
+      validateExpressionStructure(expression, diagnostics, procedureLocals);
       const references: ExpressionReference[] = [];
       collectExpressionReferences(expression, references);
       for (const reference of references) {
@@ -1068,6 +1395,8 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
           target.kind !== 'cell' &&
           target.kind !== 'computed' &&
           target.kind !== 'constant' &&
+          target.kind !== 'context-consumer' &&
+          target.kind !== 'ref' &&
           target.kind !== 'collection-item' &&
           !(target.kind === 'component-parameter' && target.parameterKind === 'value')
         ) {
@@ -1078,18 +1407,75 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
           });
         }
       }
+      const capabilities: ExpressionReference[] = [];
+      collectCapabilityReferences(expression, capabilities);
+      for (const capability of capabilities) {
+        requireReference(capability.targetId, capability.span);
+        const target = nodes.get(capability.targetId);
+        if (
+          target &&
+          target.kind !== 'procedure' &&
+          target.kind !== 'platform-capability' &&
+          !(target.kind === 'component-parameter' && target.parameterKind === 'procedure')
+        ) {
+          diagnostics.push({
+            code: 'OXE3003',
+            message: `Capability read "${capability.targetId}" must reference a procedure.`,
+            span: capability.span,
+          });
+        }
+      }
     }
 
     if (node.kind === 'procedure') {
       for (const step of node.steps) {
+        if (step.kind === 'call') {
+          continue;
+        }
         requireReference(step.targetId, step.span);
         const target = nodes.get(step.targetId);
-        if (target && target.kind !== 'cell') {
+        if (
+          target &&
+          target.kind !== 'cell' &&
+          !(target.kind === 'context-consumer' && target.writable)
+        ) {
           diagnostics.push({
             code: 'OXE3003',
-            message: `Procedure write "${step.targetId}" must reference a cell node.`,
+            message: `Procedure write "${step.targetId}" must reference a writable value node.`,
             span: step.span,
           });
+        }
+        if (step.kind === 'collection-mutation') {
+          const validShape =
+            (step.operation === 'add' &&
+              step.value !== undefined &&
+              step.predicate === undefined &&
+              step.updater === undefined &&
+              step.limit === undefined) ||
+            (step.operation === 'remove' &&
+              step.value === undefined &&
+              step.predicate !== undefined &&
+              step.updater === undefined) ||
+            (step.operation === 'update' &&
+              step.value === undefined &&
+              step.predicate !== undefined &&
+              step.updater !== undefined);
+          if (!validShape) {
+            diagnostics.push({
+              code: 'OXE3006',
+              message: `Collection ${step.operation} step has an invalid payload.`,
+              span: step.span,
+            });
+          }
+          for (const callback of [step.predicate, step.updater]) {
+            if (callback && callback.parameters.length !== 1) {
+              diagnostics.push({
+                code: 'OXE3006',
+                message: `Collection ${step.operation} callbacks require exactly one parameter.`,
+                span: callback.span,
+              });
+            }
+          }
         }
       }
     } else if (node.kind === 'component') {
@@ -1108,6 +1494,35 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
           span: node.span,
         });
       }
+    } else if (node.kind === 'context-consumer' || node.kind === 'context-provider') {
+      requireReference(node.contextId, node.span);
+      const context = nodes.get(node.contextId);
+      if (context && context.kind !== 'context') {
+        diagnostics.push({
+          code: 'OXE3003',
+          message: `Context reference "${node.contextId}" must reference a context node.`,
+          span: node.span,
+        });
+      }
+    } else if (node.kind === 'content-reference') {
+      requireReference(node.contentId, node.span);
+      const content = nodes.get(node.contentId);
+      if (content && content.kind !== 'content-value') {
+        diagnostics.push({
+          code: 'OXE3003',
+          message: `Content reference "${node.contentId}" must reference a content value node.`,
+          span: node.span,
+        });
+      }
+    } else if (node.kind === 'content-value') {
+      for (const branch of node.branches) {
+        requireReference(branch.resultId, branch.span);
+        for (const effectId of branch.effectIds) {
+          requireReference(effectId, branch.span);
+        }
+      }
+    } else if (node.kind === 'effect') {
+      requireReference(node.ownerId, node.span);
     } else if (node.kind === 'content-slot') {
       requireReference(node.parameterId, node.span);
     } else if (node.kind === 'keyed-collection') {
@@ -1130,6 +1545,31 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
           span: node.span,
         });
       }
+    } else if (node.kind === 'platform-capability') {
+      if (node.path.length === 0 || node.path.some((segment) => segment.length === 0)) {
+        diagnostics.push({
+          code: 'OXE3006',
+          message: `Platform capability "${node.id}" must have a non-empty path.`,
+          span: node.span,
+        });
+      }
+      if (node.capabilityKind === 'resource' && node.dispose !== 'dispose') {
+        diagnostics.push({
+          code: 'OXE3006',
+          message: `Resource capability "${node.id}" must declare its disposal contract.`,
+          span: node.span,
+        });
+      }
+    } else if (node.kind === 'ref') {
+      requireReference(node.elementId, node.span);
+      const element = nodes.get(node.elementId);
+      if (element && element.kind !== 'element') {
+        diagnostics.push({
+          code: 'OXE3003',
+          message: `Ref "${node.id}" must reference a platform element node.`,
+          span: node.span,
+        });
+      }
     }
   }
 
@@ -1146,6 +1586,7 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
     }
 
     if (edge.kind === 'prop' && edge.mode === 'reactive') {
+      validateExpressionStructure(edge.value, diagnostics);
       const references: ExpressionReference[] = [];
       collectExpressionReferences(edge.value, references);
       for (const reference of references) {
@@ -1157,6 +1598,8 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
           target.kind !== 'computed' &&
           target.kind !== 'constant' &&
           target.kind !== 'collection-item' &&
+          target.kind !== 'context-consumer' &&
+          target.kind !== 'ref' &&
           !(target.kind === 'component-parameter' && target.parameterKind === 'value')
         ) {
           diagnostics.push({
@@ -1191,6 +1634,7 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
         });
       }
     } else if (edge.kind === 'spread-prop' && edge.source.kind === 'value') {
+      validateExpressionStructure(edge.source.value, diagnostics);
       const references: ExpressionReference[] = [];
       collectExpressionReferences(edge.source.value, references);
       for (const reference of references) {

@@ -3,35 +3,45 @@ import {
   type ComponentInstanceNodeV1,
   type ComponentNodeV1,
   type ComponentParameterNodeV1,
+  type ConstantValueV1,
+  type ContentReferenceNodeV1,
+  type ContentValueNodeV1,
   type ConditionalRegionNodeV1,
   type CollectionItemNodeV1,
+  type CollectionCallbackV1,
   type DynamicAttributeV1,
+  type EffectNodeV1,
   type GraphSpanV1,
   type KeyedCollectionNodeV1,
   type LiteralValueV1,
   type PrimitiveTypeV1,
+  type ProcedureStepV1,
   type ProcedureNodeV1,
   type TextPartV1,
   type UiEdgeV1,
   type UiGraphV1,
   type UiNodeV1,
   type ValueExpressionV1,
-  type WriteStepV1,
 } from '@oxe/graph';
 
 import type {
   AssignmentStatementNode,
   AttributeNode,
+  CollectionMutationStatementNode,
   ComponentDeclarationNode,
   ComponentParameterNode,
+  ContextDeclarationNode,
+  ConditionalRegionNode,
+  ConditionalResultNode,
   ElementNode,
   ExpressionNode,
   HandlerDeclarationNode,
   IdentifierNode,
-  IfRegionNode,
   InterpolationNode,
+  ExpressionStatementNode,
   MapExpressionNode,
   MarkupChildNode,
+  MemberExpressionNode,
   ModuleNode,
   SpreadAttributeNode,
   TextNode,
@@ -45,23 +55,63 @@ import {
 import { parseSource } from './parser.js';
 import type { SourceSpan } from './source.js';
 
-type LiteralValue = LiteralValueV1 | readonly LiteralValueV1[];
+type LiteralValue = ConstantValueV1;
 const isLiteralScalar = (value: LiteralValue): value is LiteralValueV1 =>
   typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string';
+const isConstantRecord = (
+  value: ConstantValueV1 | undefined,
+): value is { readonly [name: string]: ConstantValueV1 } =>
+  typeof value === 'object' && !Array.isArray(value);
 type SemanticDiagnosticCode = Extract<DiagnosticCode, `OXE2${string}`>;
-type ValueClassification = 'cell' | 'computed' | 'constant';
+type ValueClassification = 'cell' | 'computed' | 'constant' | 'context' | 'resource';
+
+export interface PlatformCapabilityContract {
+  readonly dispose?: 'dispose';
+  readonly kind: 'effect' | 'pure' | 'resource';
+  /** Dot-separated host path, for example analytics.identify. */
+  readonly name: string;
+  readonly parameters: readonly PrimitiveTypeV1[];
+  readonly returns?: PrimitiveTypeV1;
+  readonly target?: 'client' | 'server' | 'universal';
+  /** Stable external target written by a persistent effect relationship. */
+  readonly writes?: string;
+}
+
+export interface AnalyzeOptions {
+  readonly capabilities?: readonly PlatformCapabilityContract[];
+  readonly target?: 'client' | 'server';
+}
+
+interface PlatformCapabilityInfo {
+  readonly contract: PlatformCapabilityContract;
+  readonly id: string;
+  readonly path: readonly string[];
+  span?: SourceSpan;
+  used: boolean;
+}
+
+interface ContextInfo {
+  readonly declaration: ContextDeclarationNode;
+  readonly id: string;
+  readonly name: string;
+}
 
 interface BindingInfo {
+  readonly context?: ContextInfo;
   readonly declaration: AssignmentStatementNode;
   readonly id: string;
   classification: ValueClassification;
   expression: ValueExpressionV1 | undefined;
+  forcedCell?: boolean;
   type: PrimitiveTypeV1;
   itemType?: PrimitiveTypeV1;
 }
 
 interface ValueSymbol {
   readonly id: string;
+  readonly expression?: ValueExpressionV1 | undefined;
+  /** Inline expression used for callback-scoped locals that do not become graph nodes. */
+  readonly substitution?: ValueExpressionV1;
   type: PrimitiveTypeV1;
   itemType?: PrimitiveTypeV1;
 }
@@ -81,13 +131,27 @@ interface ProcedureInfo {
   readonly id: string;
 }
 
+interface RefInfo extends ValueSymbol {
+  readonly attribute: AttributeNode;
+  readonly declaration: IdentifierNode;
+}
+
+interface ContentInfo {
+  readonly declaration: AssignmentStatementNode;
+  readonly id: string;
+}
+
 interface ComponentSymbols {
   readonly bindings: Map<string, BindingInfo>;
   readonly component: ComponentDeclarationNode;
   readonly componentId: string;
+  readonly contents: Map<string, ContentInfo>;
+  readonly contexts: ReadonlyMap<string, ContextInfo>;
+  readonly effects: ExpressionStatementNode[];
   readonly parameters: Map<string, ParameterInfo>;
   readonly procedures: Map<string, ProcedureInfo>;
-  readonly renderRoots: (ElementNode | IfRegionNode)[];
+  readonly refs: Map<string, RefInfo>;
+  readonly renderRoots: (ElementNode | ConditionalRegionNode)[];
   readonly values: Map<string, ValueSymbol>;
 }
 
@@ -106,9 +170,18 @@ interface LoweredValueProp {
   readonly value: ValueExpressionV1;
 }
 
+interface LoweredContextProvider {
+  readonly context: ContextInfo;
+  readonly element: ElementNode;
+  readonly owner: ComponentSymbols;
+  readonly value: ValueExpressionV1;
+}
+
 interface AnalysisState {
   readonly diagnostics: Diagnostic[];
   readonly diagnosticKeys: Set<string>;
+  readonly platformCapabilities: ReadonlyMap<string, PlatformCapabilityInfo>;
+  readonly target: 'client' | 'server';
 }
 
 export interface AnalyzeResult {
@@ -120,9 +193,11 @@ export interface AnalyzeResult {
 export type LoadOxeModule = (normalizedModuleId: string) => Promise<string | undefined>;
 
 export interface AnalyzeProjectOptions {
+  readonly capabilities?: readonly PlatformCapabilityContract[];
   readonly entryModuleId: string;
   readonly entryExport: string;
   readonly loadModule: LoadOxeModule;
+  readonly target?: 'client' | 'server';
 }
 
 export interface AnalyzedProjectModule {
@@ -153,6 +228,12 @@ const identifierSegment = (name: string): string => encodeURIComponent(name);
 const componentId = (moduleId: string, name: string): string =>
   `${moduleId}#component/${identifierSegment(name)}`;
 
+const contextId = (moduleId: string, name: string): string =>
+  `${moduleId}#context/${identifierSegment(name)}`;
+
+const platformCapabilityId = (moduleId: string, name: string): string =>
+  `${moduleId}#platform/${identifierSegment(name)}`;
+
 const bindingId = (ownerId: string, name: string): string =>
   `${ownerId}/binding/${identifierSegment(name)}`;
 
@@ -161,6 +242,114 @@ const parameterId = (ownerId: string, name: string): string =>
 
 const procedureId = (ownerId: string, name: string): string =>
   `${ownerId}/procedure/${identifierSegment(name)}`;
+
+const contentId = (ownerId: string, name: string): string =>
+  `${ownerId}/content/${identifierSegment(name)}`;
+
+const refId = (ownerId: string, name: string): string =>
+  `${ownerId}/ref/${identifierSegment(name)}`;
+
+const contextRead = (
+  expression: ExpressionNode,
+  contexts: ReadonlyMap<string, ContextInfo>,
+): ContextInfo | undefined =>
+  expression.kind === 'CallExpression' &&
+  expression.arguments.length === 0 &&
+  expression.callee.kind === 'Identifier'
+    ? contexts.get(expression.callee.name)
+    : undefined;
+
+const expressionPath = (expression: ExpressionNode): readonly string[] | undefined => {
+  const path: string[] = [];
+  let current = expression;
+  while (current.kind === 'MemberExpression') {
+    path.unshift(current.property.name);
+    current = current.object;
+  }
+  if (current.kind !== 'Identifier') {
+    return undefined;
+  }
+  path.unshift(current.name);
+  return path;
+};
+
+const createAnalysisState = (
+  options: AnalyzeOptions | undefined,
+  moduleId: string,
+  span: SourceSpan,
+): AnalysisState => {
+  const state: AnalysisState = {
+    diagnostics: [],
+    diagnosticKeys: new Set(),
+    platformCapabilities: new Map(),
+    target: options?.target ?? 'client',
+  };
+  const capabilities = state.platformCapabilities as Map<string, PlatformCapabilityInfo>;
+  for (const contract of options?.capabilities ?? []) {
+    const path = contract.name.split('.');
+    if (path.length === 0 || path.some((segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment))) {
+      report(state, 'OXE2008', `Invalid platform capability path "${contract.name}".`, span);
+      continue;
+    }
+    if (capabilities.has(contract.name)) {
+      report(state, 'OXE2001', `Duplicate platform capability "${contract.name}".`, span);
+      continue;
+    }
+    if (contract.kind === 'resource' && contract.dispose !== 'dispose') {
+      report(
+        state,
+        'OXE2008',
+        `Resource capability "${contract.name}" must declare dispose: "dispose".`,
+        span,
+      );
+      continue;
+    }
+    capabilities.set(contract.name, {
+      contract,
+      id: platformCapabilityId(moduleId, contract.name),
+      path,
+      used: false,
+    });
+  }
+  return state;
+};
+
+const conditionalResultElement = (result: ConditionalResultNode): ElementNode | undefined => {
+  const final = result.kind === 'ConditionalResultBlock' ? result.result : result;
+  return final.kind === 'Element' ? final : undefined;
+};
+
+const isContentChoice = (expression: ExpressionNode): boolean =>
+  expression.kind === 'ConditionalValueExpression' &&
+  expression.branches.some((branch) => conditionalResultElement(branch.result) !== undefined);
+
+const callableValues = (component: ComponentSymbols): Map<string, ValueSymbol> => {
+  const values = new Map(component.values);
+  for (const [name, procedure] of component.procedures) {
+    values.set(name, {
+      id: procedure.id,
+      substitution: {
+        kind: 'capability-read',
+        span: graphSpan(procedure.declaration.name.span),
+        targetId: procedure.id,
+      },
+      type: 'unknown',
+    });
+  }
+  for (const [name, parameter] of component.parameters) {
+    if (parameter.parameterKind === 'procedure') {
+      values.set(name, {
+        ...parameter,
+        substitution: {
+          kind: 'capability-read',
+          span: graphSpan(parameter.declaration.span),
+          targetId: parameter.id,
+        },
+      });
+    }
+  }
+  return values;
+};
 
 const report = (
   state: AnalysisState,
@@ -196,8 +385,47 @@ const markExpressionUntracked = (expression: ValueExpressionV1): ValueExpression
         left: markExpressionUntracked(expression.left),
         right: markExpressionUntracked(expression.right),
       };
-    case 'literal':
+    case 'call':
+      return {
+        ...expression,
+        arguments: expression.arguments.map(markExpressionUntracked),
+        callee: markExpressionUntracked(expression.callee),
+      };
+    case 'capability-read':
       return expression;
+    case 'collection':
+      return {
+        ...expression,
+        callback: {
+          ...expression.callback,
+          result: markExpressionUntracked(expression.callback.result),
+        },
+        ...(expression.initial ? { initial: markExpressionUntracked(expression.initial) } : {}),
+        ...(expression.options ? { options: markExpressionUntracked(expression.options) } : {}),
+        source: markExpressionUntracked(expression.source),
+      };
+    case 'conditional':
+      return {
+        ...expression,
+        branches: expression.branches.map((branch) => ({
+          ...branch,
+          ...(branch.condition ? { condition: markExpressionUntracked(branch.condition) } : {}),
+          result: markExpressionUntracked(branch.result),
+        })),
+      };
+    case 'literal':
+    case 'local-read':
+      return expression;
+    case 'member':
+      return { ...expression, object: markExpressionUntracked(expression.object) };
+    case 'record':
+      return {
+        ...expression,
+        entries: expression.entries.map((entry) => ({
+          ...entry,
+          value: markExpressionUntracked(entry.value),
+        })),
+      };
     case 'read':
       return { ...expression, tracked: false };
   }
@@ -208,11 +436,12 @@ const lowerExpression = (
   values: ReadonlyMap<string, ValueSymbol>,
   scopeName: string,
   state: AnalysisState,
+  locals: ReadonlyMap<string, ValueExpressionV1> = new Map(),
 ): ValueExpressionV1 | undefined => {
   switch (expression.kind) {
     case 'ArrayLiteral': {
       const elements = expression.elements.flatMap((element) => {
-        const lowered = lowerExpression(element, values, scopeName, state);
+        const lowered = lowerExpression(element, values, scopeName, state, locals);
         return lowered ? [lowered] : [];
       });
       return { kind: 'array', elements, span: graphSpan(expression.span) };
@@ -227,6 +456,10 @@ const lowerExpression = (
       }
       return { kind: 'literal', value: expression.value, span: graphSpan(expression.span) };
     case 'Identifier': {
+      const local = locals.get(expression.name);
+      if (local) {
+        return local;
+      }
       const target = values.get(expression.name);
       if (!target) {
         report(
@@ -237,13 +470,19 @@ const lowerExpression = (
         );
         return undefined;
       }
-      return { kind: 'read', targetId: target.id, span: graphSpan(expression.span) };
+      return (
+        target.substitution ?? {
+          kind: 'read',
+          targetId: target.id,
+          span: graphSpan(expression.span),
+        }
+      );
     }
     case 'ParenthesizedExpression':
-      return lowerExpression(expression.expression, values, scopeName, state);
+      return lowerExpression(expression.expression, values, scopeName, state, locals);
     case 'BinaryExpression': {
-      const left = lowerExpression(expression.left, values, scopeName, state);
-      const right = lowerExpression(expression.right, values, scopeName, state);
+      const left = lowerExpression(expression.left, values, scopeName, state, locals);
+      const right = lowerExpression(expression.right, values, scopeName, state, locals);
       if (!left || !right) {
         return undefined;
       }
@@ -255,6 +494,224 @@ const lowerExpression = (
         span: graphSpan(expression.span),
       };
     }
+    case 'RecordLiteral': {
+      const entries = expression.entries.flatMap((entry) => {
+        const value = lowerExpression(entry.value, values, scopeName, state, locals);
+        return value ? [{ name: entry.name.name, span: graphSpan(entry.span), value }] : [];
+      });
+      return entries.length === expression.entries.length
+        ? { entries, kind: 'record', span: graphSpan(expression.span) }
+        : undefined;
+    }
+    case 'MemberExpression': {
+      const object = lowerExpression(expression.object, values, scopeName, state, locals);
+      return object
+        ? {
+            kind: 'member',
+            object,
+            property: expression.property.name,
+            span: graphSpan(expression.span),
+          }
+        : undefined;
+    }
+    case 'CallExpression': {
+      const path = expressionPath(expression.callee);
+      const platform = path ? state.platformCapabilities.get(path.join('.')) : undefined;
+      if (platform) {
+        platform.used = true;
+        platform.span ??= expression.callee.span;
+        const declaredTarget = platform.contract.target ?? 'universal';
+        if (declaredTarget !== 'universal' && declaredTarget !== state.target) {
+          report(
+            state,
+            'OXE2008',
+            `Platform capability "${platform.contract.name}" is ${declaredTarget}-only but this compilation targets ${state.target}.`,
+            expression.callee.span,
+          );
+        }
+        const arguments_ = expression.arguments.flatMap((argument) => {
+          const lowered = lowerExpression(argument, values, scopeName, state, locals);
+          return lowered ? [lowered] : [];
+        });
+        if (arguments_.length !== expression.arguments.length) {
+          return undefined;
+        }
+        if (arguments_.length !== platform.contract.parameters.length) {
+          report(
+            state,
+            'OXE2009',
+            `Platform capability "${platform.contract.name}" expects ${platform.contract.parameters.length} argument${platform.contract.parameters.length === 1 ? '' : 's'}, but received ${arguments_.length}.`,
+            expression.span,
+          );
+        }
+        const valuesById = new Map([...values.values()].map((value) => [value.id, value]));
+        arguments_.forEach((argument, index) => {
+          const expected = platform.contract.parameters[index];
+          const actual = inferExpressionTypeWithoutDiagnostics(argument, valuesById);
+          if (expected && actual !== 'unknown' && expected !== actual) {
+            report(
+              state,
+              'OXE2009',
+              `Argument ${index + 1} to "${platform.contract.name}" must be ${expected}, but received ${actual}.`,
+              argument.span,
+            );
+          }
+        });
+        return {
+          arguments: arguments_,
+          callee: {
+            kind: 'capability-read',
+            span: graphSpan(expression.callee.span),
+            targetId: platform.id,
+          },
+          kind: 'call',
+          ...(platform.contract.returns ? { returnType: platform.contract.returns } : {}),
+          span: graphSpan(expression.span),
+        };
+      }
+      const callee = lowerExpression(expression.callee, values, scopeName, state, locals);
+      const arguments_ = expression.arguments.flatMap((argument) => {
+        const lowered = lowerExpression(argument, values, scopeName, state, locals);
+        return lowered ? [lowered] : [];
+      });
+      return callee && arguments_.length === expression.arguments.length
+        ? { arguments: arguments_, callee, kind: 'call', span: graphSpan(expression.span) }
+        : undefined;
+    }
+    case 'CollectionExpression': {
+      const source = lowerExpression(expression.collection, values, scopeName, state, locals);
+      if (!source || expression.callback.result.kind === 'Element') {
+        return undefined;
+      }
+      const valuesById = new Map([...values.values()].map((value) => [value.id, value]));
+      const itemType = inferArrayItemTypeWithoutDiagnostics(source, valuesById) ?? 'unknown';
+      const itemRecord = inferArrayItemRecordWithoutDiagnostics(source, valuesById);
+      const initial = expression.initial
+        ? lowerExpression(expression.initial, values, scopeName, state, locals)
+        : undefined;
+      const options = expression.options
+        ? lowerExpression(expression.options, values, scopeName, state, locals)
+        : undefined;
+      if (expression.initial && !initial) {
+        return undefined;
+      }
+      if (expression.options && !options) {
+        return undefined;
+      }
+      const initialType = initial
+        ? inferExpressionTypeWithoutDiagnostics(initial, valuesById)
+        : 'unknown';
+      const callbackLocals = new Map(locals);
+      const parameters = expression.parameters.map((parameter, index) => {
+        const id = `${scopeName}/callback/${expression.span.start.offset}/${identifierSegment(parameter.name)}`;
+        const type = expression.operation === 'reduce' && index === 0 ? initialType : itemType;
+        callbackLocals.set(parameter.name, {
+          kind: 'local-read',
+          ...(itemRecord && !(expression.operation === 'reduce' && index === 0)
+            ? { record: itemRecord }
+            : {}),
+          span: graphSpan(parameter.span),
+          targetId: id,
+          type,
+        });
+        return {
+          id,
+          name: parameter.name,
+          span: graphSpan(parameter.span),
+          type,
+        };
+      });
+      for (const assignment of expression.callback.assignments) {
+        const value = lowerExpression(
+          assignment.value,
+          values,
+          `${scopeName} callback`,
+          state,
+          callbackLocals,
+        );
+        if (!value) {
+          return undefined;
+        }
+        callbackLocals.set(assignment.target.name, value);
+      }
+      const result = lowerExpression(
+        expression.callback.result,
+        values,
+        `${scopeName} callback`,
+        state,
+        callbackLocals,
+      );
+      if (!result) {
+        return undefined;
+      }
+      return {
+        callback: {
+          parameters,
+          result,
+          span: graphSpan(expression.callback.span),
+        },
+        ...(initial ? { initial } : {}),
+        kind: 'collection',
+        operation: expression.operation,
+        ...(options ? { options } : {}),
+        source,
+        span: graphSpan(expression.span),
+      };
+    }
+    case 'ConditionalValueExpression': {
+      const branches: Extract<ValueExpressionV1, { kind: 'conditional' }>['branches'][number][] =
+        [];
+      for (const branch of expression.branches) {
+        const condition = branch.condition
+          ? lowerExpression(branch.condition, values, scopeName, state, locals)
+          : undefined;
+        const branchLocals = new Map(locals);
+        let resultSyntax = branch.result;
+        if (resultSyntax.kind === 'ConditionalResultBlock') {
+          for (const statement of resultSyntax.statements) {
+            if (statement.kind === 'ExpressionStatement') {
+              report(
+                state,
+                'OXE2008',
+                'A scalar conditional result block may contain local assignments but not effect calls.',
+                statement.span,
+              );
+              continue;
+            }
+            const value = lowerExpression(
+              statement.value,
+              values,
+              `${scopeName} conditional result`,
+              state,
+              branchLocals,
+            );
+            if (value) {
+              branchLocals.set(statement.target.name, value);
+            }
+          }
+          resultSyntax = resultSyntax.result;
+        }
+        if (resultSyntax.kind === 'Element') {
+          report(
+            state,
+            'OXE2008',
+            'Captured markup is a content value and must be rendered from a content placement.',
+            resultSyntax.span,
+          );
+          return undefined;
+        }
+        const result = lowerExpression(resultSyntax, values, scopeName, state, branchLocals);
+        if ((branch.condition && !condition) || !result) {
+          return undefined;
+        }
+        branches.push({
+          ...(condition ? { condition } : {}),
+          result,
+          span: graphSpan(branch.span),
+        });
+      }
+      return { kind: 'conditional', branches, span: graphSpan(expression.span) };
+    }
     case 'MapExpression':
       report(
         state,
@@ -264,13 +721,14 @@ const lowerExpression = (
       );
       return undefined;
     case 'UntrackExpression': {
-      const value = lowerExpression(expression.expression, values, scopeName, state);
+      const value = lowerExpression(expression.expression, values, scopeName, state, locals);
       return value ? markExpressionUntracked(value) : undefined;
     }
   }
 };
 
 interface ReadReference {
+  readonly path: readonly string[];
   readonly span: GraphSpanV1;
   readonly targetId: string;
 }
@@ -282,17 +740,63 @@ const collectReads = (expression: ValueExpressionV1, result: ReadReference[]): v
         collectReads(element, result);
       }
       return;
+    case 'capability-read':
+      return;
     case 'binary':
       collectReads(expression.left, result);
       collectReads(expression.right, result);
       return;
+    case 'call':
+      collectReads(expression.callee, result);
+      for (const argument of expression.arguments) {
+        collectReads(argument, result);
+      }
+      return;
+    case 'collection':
+      collectReads(expression.source, result);
+      collectReads(expression.callback.result, result);
+      if (expression.initial) {
+        collectReads(expression.initial, result);
+      }
+      if (expression.options) {
+        collectReads(expression.options, result);
+      }
+      return;
+    case 'conditional':
+      for (const branch of expression.branches) {
+        if (branch.condition) {
+          collectReads(branch.condition, result);
+        }
+        collectReads(branch.result, result);
+      }
+      return;
     case 'literal':
+    case 'local-read':
+      return;
+    case 'member': {
+      const path: string[] = [];
+      let current: ValueExpressionV1 = expression;
+      while (current.kind === 'member') {
+        path.unshift(current.property);
+        current = current.object;
+      }
+      if (current.kind === 'read' && current.tracked !== false) {
+        result.push({ path, targetId: current.targetId, span: expression.span });
+        return;
+      }
+      collectReads(expression.object, result);
+      return;
+    }
+    case 'record':
+      for (const entry of expression.entries) {
+        collectReads(entry.value, result);
+      }
       return;
     case 'read':
       if (expression.tracked === false) {
         return;
       }
-      result.push({ targetId: expression.targetId, span: expression.span });
+      result.push({ path: [], targetId: expression.targetId, span: expression.span });
       return;
   }
 };
@@ -314,10 +818,27 @@ const classifyBindings = (
     switch (expression.kind) {
       case 'array':
         return expression.elements.every(expressionIsConstant);
+      case 'call':
+        return false;
+      case 'capability-read':
+        return false;
+      case 'collection':
+        return false;
       case 'literal':
+      case 'local-read':
         return true;
+      case 'member':
+        return expressionIsConstant(expression.object);
+      case 'record':
+        return expression.entries.every((entry) => expressionIsConstant(entry.value));
       case 'binary':
         return expressionIsConstant(expression.left) && expressionIsConstant(expression.right);
+      case 'conditional':
+        return expression.branches.every(
+          (branch) =>
+            (!branch.condition || expressionIsConstant(branch.condition)) &&
+            expressionIsConstant(branch.result),
+        );
       case 'read': {
         const dependency = byId.get(expression.targetId);
         return dependency ? bindingIsConstant(dependency) : false;
@@ -344,11 +865,15 @@ const classifyBindings = (
   };
 
   for (const binding of bindings.values()) {
-    binding.classification = writtenIds.has(binding.id)
-      ? 'cell'
-      : bindingIsConstant(binding)
-        ? 'constant'
-        : 'computed';
+    if (binding.classification === 'context' || binding.classification === 'resource') {
+      continue;
+    }
+    binding.classification =
+      writtenIds.has(binding.id) || binding.forcedCell
+        ? 'cell'
+        : bindingIsConstant(binding)
+          ? 'constant'
+          : 'computed';
   }
 };
 
@@ -394,7 +919,13 @@ const diagnoseCycles = (bindings: ReadonlyMap<string, BindingInfo>, state: Analy
     }
 
     const binding = byId.get(id);
-    if (!binding || binding.classification === 'cell' || !binding.expression) {
+    if (
+      !binding ||
+      binding.classification === 'cell' ||
+      binding.classification === 'context' ||
+      binding.classification === 'resource' ||
+      !binding.expression
+    ) {
       visitState.set(id, 'done');
       return;
     }
@@ -474,6 +1005,126 @@ const inferBinaryType = (
   return 'unknown';
 };
 
+const resolveRecordExpression = (
+  expression: ValueExpressionV1,
+  valuesById: ReadonlyMap<string, ValueSymbol>,
+  visited: ReadonlySet<string> = new Set(),
+): Extract<ValueExpressionV1, { kind: 'record' }> | undefined => {
+  if (expression.kind === 'record') {
+    return expression;
+  }
+  if (expression.kind === 'local-read') {
+    return expression.record;
+  }
+  if (expression.kind === 'read') {
+    if (visited.has(expression.targetId)) {
+      return undefined;
+    }
+    const target = valuesById.get(expression.targetId)?.expression;
+    return target
+      ? resolveRecordExpression(target, valuesById, new Set([...visited, expression.targetId]))
+      : undefined;
+  }
+  if (expression.kind === 'member') {
+    const parent = resolveRecordExpression(expression.object, valuesById, visited);
+    const field = parent?.entries.find((entry) => entry.name === expression.property);
+    return field ? resolveRecordExpression(field.value, valuesById, visited) : undefined;
+  }
+  return undefined;
+};
+
+const memberRootAndPath = (
+  target: MemberExpressionNode,
+): { readonly path: readonly string[]; readonly root: IdentifierNode } | undefined => {
+  const path: string[] = [];
+  let current: ExpressionNode = target;
+  while (current.kind === 'MemberExpression') {
+    path.unshift(current.property.name);
+    current = current.object;
+  }
+  return current.kind === 'Identifier' ? { path, root: current } : undefined;
+};
+
+const replaceRecordMember = (
+  schema: Extract<ValueExpressionV1, { readonly kind: 'record' }>,
+  object: ValueExpressionV1,
+  path: readonly string[],
+  replacement: ValueExpressionV1,
+  valuesById: ReadonlyMap<string, ValueSymbol>,
+  state: AnalysisState,
+  span: SourceSpan,
+): Extract<ValueExpressionV1, { readonly kind: 'record' }> | undefined => {
+  const [field, ...rest] = path;
+  if (!field) {
+    return undefined;
+  }
+  const target = schema.entries.find((entry) => entry.name === field);
+  if (!target) {
+    report(state, 'OXE2002', `Record has no field "${field}".`, span);
+    return undefined;
+  }
+
+  let nextValue = replacement;
+  if (rest.length > 0) {
+    const nestedSchema = resolveRecordExpression(target.value, valuesById);
+    if (!nestedSchema) {
+      report(state, 'OXE2009', `Record field "${field}" is not a nested record.`, span);
+      return undefined;
+    }
+    const nestedObject: ValueExpressionV1 = {
+      kind: 'member',
+      object,
+      property: field,
+      span: graphSpan(span),
+    };
+    const nested = replaceRecordMember(
+      nestedSchema,
+      nestedObject,
+      rest,
+      replacement,
+      valuesById,
+      state,
+      span,
+    );
+    if (!nested) {
+      return undefined;
+    }
+    nextValue = nested;
+  } else {
+    const expectedType = inferExpressionTypeWithoutDiagnostics(target.value, valuesById);
+    const replacementType = inferExpressionTypeWithoutDiagnostics(replacement, valuesById);
+    if (
+      expectedType !== 'unknown' &&
+      replacementType !== 'unknown' &&
+      expectedType !== replacementType
+    ) {
+      report(
+        state,
+        'OXE2009',
+        `Cannot assign ${replacementType} to ${expectedType} record field "${field}".`,
+        span,
+      );
+    }
+  }
+
+  return {
+    entries: schema.entries.map((entry) => ({
+      ...entry,
+      value:
+        entry.name === field
+          ? nextValue
+          : {
+              kind: 'member',
+              object,
+              property: entry.name,
+              span: graphSpan(span),
+            },
+    })),
+    kind: 'record',
+    span: graphSpan(span),
+  };
+};
+
 const inferExpressionTypeWithoutDiagnostics = (
   expression: ValueExpressionV1,
   valuesById: ReadonlyMap<string, ValueSymbol>,
@@ -481,10 +1132,36 @@ const inferExpressionTypeWithoutDiagnostics = (
   switch (expression.kind) {
     case 'array':
       return 'array';
+    case 'call':
+      return expression.returnType ?? 'unknown';
+    case 'capability-read':
+      return 'unknown';
+    case 'collection':
+      return expression.operation === 'reduce'
+        ? inferExpressionTypeWithoutDiagnostics(
+            expression.initial ?? expression.callback.result,
+            valuesById,
+          )
+        : 'array';
     case 'literal':
       return typeof expression.value as 'boolean' | 'number' | 'string';
     case 'read':
       return valuesById.get(expression.targetId)?.type ?? 'unknown';
+    case 'local-read':
+      return expression.type;
+    case 'member': {
+      const record = resolveRecordExpression(expression.object, valuesById);
+      if (record) {
+        const entry = record.entries.find((item) => item.name === expression.property);
+        return entry ? inferExpressionTypeWithoutDiagnostics(entry.value, valuesById) : 'unknown';
+      }
+      const objectType = inferExpressionTypeWithoutDiagnostics(expression.object, valuesById);
+      return expression.property === 'length' && (objectType === 'array' || objectType === 'string')
+        ? 'number'
+        : 'unknown';
+    }
+    case 'record':
+      return 'record';
     case 'binary': {
       const left = inferExpressionTypeWithoutDiagnostics(expression.left, valuesById);
       const right = inferExpressionTypeWithoutDiagnostics(expression.right, valuesById);
@@ -502,6 +1179,26 @@ const inferExpressionTypeWithoutDiagnostics = (
       }
       return left === 'number' && right === 'number' ? 'number' : 'unknown';
     }
+    case 'conditional': {
+      let resultType: PrimitiveTypeV1 = 'unknown';
+      for (const branch of expression.branches) {
+        if (branch.condition) {
+          const conditionType = inferExpressionTypeWithoutDiagnostics(branch.condition, valuesById);
+          if (conditionType !== 'boolean' && conditionType !== 'unknown') {
+            return 'unknown';
+          }
+        }
+        const current = inferExpressionTypeWithoutDiagnostics(branch.result, valuesById);
+        if (current === 'unknown') {
+          continue;
+        }
+        if (resultType !== 'unknown' && resultType !== current) {
+          return 'unknown';
+        }
+        resultType = current;
+      }
+      return resultType;
+    }
   }
 };
 
@@ -509,8 +1206,28 @@ const inferArrayItemTypeWithoutDiagnostics = (
   expression: ValueExpressionV1,
   valuesById: ReadonlyMap<string, ValueSymbol>,
 ): PrimitiveTypeV1 | undefined => {
+  if (expression.kind === 'collection') {
+    if (expression.operation === 'filter' || expression.operation === 'sort') {
+      return inferArrayItemTypeWithoutDiagnostics(expression.source, valuesById);
+    }
+    if (expression.operation === 'map') {
+      return inferExpressionTypeWithoutDiagnostics(expression.callback.result, valuesById);
+    }
+    return undefined;
+  }
   if (expression.kind === 'read') {
     return valuesById.get(expression.targetId)?.itemType;
+  }
+  if (expression.kind === 'conditional') {
+    let itemType: PrimitiveTypeV1 | undefined;
+    for (const branch of expression.branches) {
+      const current = inferArrayItemTypeWithoutDiagnostics(branch.result, valuesById);
+      if (current && itemType && current !== itemType) {
+        return undefined;
+      }
+      itemType = current ?? itemType;
+    }
+    return itemType;
   }
   if (expression.kind !== 'array') {
     return undefined;
@@ -527,6 +1244,253 @@ const inferArrayItemTypeWithoutDiagnostics = (
     itemType = current;
   }
   return itemType;
+};
+
+const recordSchemaKey = (
+  record: Extract<ValueExpressionV1, { kind: 'record' }>,
+  valuesById: ReadonlyMap<string, ValueSymbol>,
+): string =>
+  [...record.entries]
+    .sort((left, right) => compareText(left.name, right.name))
+    .map((entry) => {
+      const nested = resolveRecordExpression(entry.value, valuesById);
+      return nested
+        ? `${entry.name}:{${recordSchemaKey(nested, valuesById)}}`
+        : `${entry.name}:${inferExpressionTypeWithoutDiagnostics(entry.value, valuesById)}`;
+    })
+    .join(',');
+
+const inferArrayItemRecordWithoutDiagnostics = (
+  expression: ValueExpressionV1,
+  valuesById: ReadonlyMap<string, ValueSymbol>,
+  visited: ReadonlySet<string> = new Set(),
+): Extract<ValueExpressionV1, { kind: 'record' }> | undefined => {
+  if (expression.kind === 'collection') {
+    if (expression.operation === 'filter' || expression.operation === 'sort') {
+      return inferArrayItemRecordWithoutDiagnostics(expression.source, valuesById, visited);
+    }
+    if (expression.operation === 'map') {
+      return resolveRecordExpression(expression.callback.result, valuesById);
+    }
+    if (expression.operation === 'flatMap') {
+      return inferArrayItemRecordWithoutDiagnostics(
+        expression.callback.result,
+        valuesById,
+        visited,
+      );
+    }
+    return undefined;
+  }
+  if (expression.kind === 'read') {
+    if (visited.has(expression.targetId)) {
+      return undefined;
+    }
+    const target = valuesById.get(expression.targetId)?.expression;
+    return target
+      ? inferArrayItemRecordWithoutDiagnostics(
+          target,
+          valuesById,
+          new Set([...visited, expression.targetId]),
+        )
+      : undefined;
+  }
+  if (expression.kind === 'conditional') {
+    let result: Extract<ValueExpressionV1, { kind: 'record' }> | undefined;
+    let schema: string | undefined;
+    for (const branch of expression.branches) {
+      const current = inferArrayItemRecordWithoutDiagnostics(branch.result, valuesById, visited);
+      if (!current) {
+        return undefined;
+      }
+      const currentSchema = recordSchemaKey(current, valuesById);
+      if (schema && schema !== currentSchema) {
+        return undefined;
+      }
+      result = result ?? current;
+      schema = currentSchema;
+    }
+    return result;
+  }
+  if (expression.kind !== 'array' || expression.elements.length === 0) {
+    return undefined;
+  }
+  let result: Extract<ValueExpressionV1, { kind: 'record' }> | undefined;
+  let schema: string | undefined;
+  for (const element of expression.elements) {
+    const current = resolveRecordExpression(element, valuesById);
+    if (!current) {
+      return undefined;
+    }
+    const currentSchema = recordSchemaKey(current, valuesById);
+    if (schema && schema !== currentSchema) {
+      return undefined;
+    }
+    result = result ?? current;
+    schema = currentSchema;
+  }
+  return result;
+};
+
+const mutationCallbackParameter = (
+  statement: CollectionMutationStatementNode,
+  parameter: IdentifierNode,
+  role: 'predicate' | 'updater',
+  itemType: PrimitiveTypeV1,
+): CollectionCallbackV1['parameters'][number] => ({
+  id: `${statement.collection.name}/mutation/${statement.span.start.offset}/${role}/${identifierSegment(parameter.name)}`,
+  name: parameter.name,
+  span: graphSpan(parameter.span),
+  type: itemType,
+});
+
+const lowerMutationPredicate = (
+  statement: CollectionMutationStatementNode,
+  source: ValueExpressionV1,
+  values: ReadonlyMap<string, ValueSymbol>,
+  scopeName: string,
+  state: AnalysisState,
+): CollectionCallbackV1 | undefined => {
+  const predicate = statement.predicate;
+  if (!predicate || predicate.callback.result.kind === 'Element') {
+    return undefined;
+  }
+  const valuesById = new Map([...values.values()].map((value) => [value.id, value]));
+  const itemType = inferArrayItemTypeWithoutDiagnostics(source, valuesById) ?? 'unknown';
+  const itemRecord = inferArrayItemRecordWithoutDiagnostics(source, valuesById);
+  const parameter = mutationCallbackParameter(
+    statement,
+    predicate.parameter,
+    'predicate',
+    itemType,
+  );
+  const locals = new Map<string, ValueExpressionV1>();
+  locals.set(predicate.parameter.name, {
+    kind: 'local-read',
+    ...(itemRecord ? { record: itemRecord } : {}),
+    span: graphSpan(predicate.parameter.span),
+    targetId: parameter.id,
+    type: itemType,
+  });
+  for (const assignment of predicate.callback.assignments) {
+    const value = lowerExpression(
+      assignment.value,
+      values,
+      `${scopeName} ${statement.operation} predicate`,
+      state,
+      locals,
+    );
+    if (!value) {
+      return undefined;
+    }
+    locals.set(assignment.target.name, value);
+  }
+  const result = lowerExpression(
+    predicate.callback.result,
+    values,
+    `${scopeName} ${statement.operation} predicate`,
+    state,
+    locals,
+  );
+  return result
+    ? {
+        parameters: [parameter],
+        result,
+        span: graphSpan(predicate.span),
+      }
+    : undefined;
+};
+
+const lowerMutationUpdater = (
+  statement: CollectionMutationStatementNode,
+  source: ValueExpressionV1,
+  values: ReadonlyMap<string, ValueSymbol>,
+  scopeName: string,
+  state: AnalysisState,
+): CollectionCallbackV1 | undefined => {
+  const updater = statement.updater;
+  if (!updater) {
+    return undefined;
+  }
+  const valuesById = new Map([...values.values()].map((value) => [value.id, value]));
+  const itemType = inferArrayItemTypeWithoutDiagnostics(source, valuesById) ?? 'unknown';
+  let itemRecord = inferArrayItemRecordWithoutDiagnostics(source, valuesById);
+  const parameter = mutationCallbackParameter(statement, updater.parameter, 'updater', itemType);
+  let current: ValueExpressionV1 = {
+    kind: 'local-read',
+    ...(itemRecord ? { record: itemRecord } : {}),
+    span: graphSpan(updater.parameter.span),
+    targetId: parameter.id,
+    type: itemType,
+  };
+  const locals = new Map<string, ValueExpressionV1>();
+  locals.set(updater.parameter.name, current);
+
+  for (const assignment of updater.assignments) {
+    const value = lowerExpression(
+      assignment.value,
+      values,
+      `${scopeName} update callback`,
+      state,
+      locals,
+    );
+    if (!value) {
+      return undefined;
+    }
+    if (assignment.target.kind === 'Identifier') {
+      if (assignment.target.name !== updater.parameter.name) {
+        report(
+          state,
+          'OXE2008',
+          `An update callback may only replace "${updater.parameter.name}" or assign one of its fields.`,
+          assignment.target.span,
+        );
+        return undefined;
+      }
+      current = value;
+      itemRecord = resolveRecordExpression(value, valuesById);
+    } else {
+      const target = memberRootAndPath(assignment.target);
+      if (!target || target.root.name !== updater.parameter.name) {
+        report(
+          state,
+          'OXE2008',
+          `An update callback may only assign fields rooted at "${updater.parameter.name}".`,
+          assignment.target.span,
+        );
+        return undefined;
+      }
+      if (!itemRecord) {
+        report(
+          state,
+          'OXE2009',
+          'A field update requires a collection with a known record shape.',
+          assignment.target.span,
+        );
+        return undefined;
+      }
+      const next = replaceRecordMember(
+        itemRecord,
+        current,
+        target.path,
+        value,
+        valuesById,
+        state,
+        assignment.span,
+      );
+      if (!next) {
+        return undefined;
+      }
+      current = next;
+      itemRecord = next;
+    }
+    locals.set(updater.parameter.name, current);
+  }
+
+  return {
+    parameters: [parameter],
+    result: current,
+    span: graphSpan(updater.span),
+  };
 };
 
 const inferProjectValueTypes = (
@@ -567,6 +1531,9 @@ const inferProjectValueTypes = (
         }
       }
       for (const binding of component.bindings.values()) {
+        if (binding.classification === 'resource') {
+          continue;
+        }
         if (binding.type !== 'unknown' || !binding.expression) {
           continue;
         }
@@ -606,6 +1573,9 @@ const inferProjectValueTypes = (
 
   for (const component of components) {
     for (const binding of component.bindings.values()) {
+      if (binding.classification === 'resource') {
+        continue;
+      }
       if (binding.expression) {
         const inferred = inferStandaloneExpression(binding.expression, valuesById, state);
         if (binding.type === 'unknown') {
@@ -676,10 +1646,10 @@ const evaluateConstants = (
   const evaluateExpression = (expression: ValueExpressionV1): LiteralValue | undefined => {
     switch (expression.kind) {
       case 'array': {
-        const result: LiteralValueV1[] = [];
+        const result: ConstantValueV1[] = [];
         for (const element of expression.elements) {
           const value = evaluateExpression(element);
-          if (value === undefined || !isLiteralScalar(value)) {
+          if (value === undefined) {
             return undefined;
           }
           result.push(value);
@@ -688,6 +1658,29 @@ const evaluateConstants = (
       }
       case 'literal':
         return expression.value;
+      case 'call':
+      case 'capability-read':
+      case 'collection':
+      case 'local-read':
+        return undefined;
+      case 'member': {
+        const object = evaluateExpression(expression.object);
+        if (!isConstantRecord(object)) {
+          return undefined;
+        }
+        return object[expression.property];
+      }
+      case 'record': {
+        const result: Record<string, ConstantValueV1> = {};
+        for (const entry of expression.entries) {
+          const value = evaluateExpression(entry.value);
+          if (value === undefined) {
+            return undefined;
+          }
+          result[entry.name] = value;
+        }
+        return result;
+      }
       case 'read': {
         const binding = byId.get(expression.targetId);
         return binding ? evaluateBinding(binding) : undefined;
@@ -752,6 +1745,20 @@ const evaluateConstants = (
         }
         return value;
       }
+      case 'conditional':
+        for (const branch of expression.branches) {
+          if (!branch.condition) {
+            return evaluateExpression(branch.result);
+          }
+          const condition = evaluateExpression(branch.condition);
+          if (condition === true) {
+            return evaluateExpression(branch.result);
+          }
+          if (condition !== false) {
+            return undefined;
+          }
+        }
+        return undefined;
     }
   };
 
@@ -797,6 +1804,13 @@ const addReadEdges = (
 
   for (const targetId of [...sitesByTarget.keys()].sort(compareText)) {
     edges.push({
+      accesses: expressions.flatMap((expression) => {
+        const reads: ReadReference[] = [];
+        collectReads(expression, reads);
+        return reads
+          .filter((read) => read.targetId === targetId)
+          .map((read) => ({ path: read.path, span: read.span }));
+      }),
       kind: 'read',
       from,
       to: targetId,
@@ -808,13 +1822,24 @@ const addReadEdges = (
 
 const addWriteEdges = (edges: UiEdgeV1[], procedure: ProcedureNodeV1): void => {
   const sitesByTarget = new Map<string, GraphSpanV1[]>();
+  const accessesByTarget = new Map<
+    string,
+    { readonly path: readonly string[]; readonly span: GraphSpanV1 }[]
+  >();
   for (const step of procedure.steps) {
+    if (step.kind === 'call') {
+      continue;
+    }
     const sites = sitesByTarget.get(step.targetId) ?? [];
     sites.push(step.span);
     sitesByTarget.set(step.targetId, sites);
+    const accesses = accessesByTarget.get(step.targetId) ?? [];
+    accesses.push({ path: step.kind === 'write' ? (step.path ?? []) : [], span: step.span });
+    accessesByTarget.set(step.targetId, accesses);
   }
   for (const targetId of [...sitesByTarget.keys()].sort(compareText)) {
     edges.push({
+      accesses: accessesByTarget.get(targetId) ?? [],
       kind: 'write',
       from: procedure.id,
       to: targetId,
@@ -824,16 +1849,35 @@ const addWriteEdges = (edges: UiEdgeV1[], procedure: ProcedureNodeV1): void => {
   }
 };
 
+const procedureStepExpressions = (step: ProcedureStepV1): readonly ValueExpressionV1[] => {
+  if (step.kind === 'call') {
+    return [step.expression];
+  }
+  if (step.kind === 'write') {
+    return [step.value];
+  }
+  return [
+    ...(step.value ? [step.value] : []),
+    ...(step.predicate ? [step.predicate.result] : []),
+    ...(step.updater ? [step.updater.result] : []),
+    ...(step.limit ? [step.limit] : []),
+  ];
+};
+
 const registerComponentSymbols = (
   component: ComponentDeclarationNode,
   moduleId: string,
+  contexts: ReadonlyMap<string, ContextInfo>,
   state: AnalysisState,
 ): ComponentSymbols => {
   const ownerId = componentId(moduleId, component.name.name);
   const bindings = new Map<string, BindingInfo>();
+  const contents = new Map<string, ContentInfo>();
   const parameters = new Map<string, ParameterInfo>();
   const procedures = new Map<string, ProcedureInfo>();
-  const renderRoots: (ElementNode | IfRegionNode)[] = [];
+  const refs = new Map<string, RefInfo>();
+  const renderRoots: (ElementNode | ConditionalRegionNode)[] = [];
+  const effects: ExpressionStatementNode[] = [];
   const declarations = new Map<string, SourceSpan>();
 
   const register = (name: string, span: SourceSpan): boolean => {
@@ -889,13 +1933,22 @@ const registerComponentSymbols = (
     switch (statement.kind) {
       case 'AssignmentStatement':
         if (register(statement.target.name, statement.target.span)) {
-          bindings.set(statement.target.name, {
-            declaration: statement,
-            id: bindingId(ownerId, statement.target.name),
-            classification: 'computed',
-            expression: undefined,
-            type: 'unknown',
-          });
+          if (isContentChoice(statement.value)) {
+            contents.set(statement.target.name, {
+              declaration: statement,
+              id: contentId(ownerId, statement.target.name),
+            });
+          } else {
+            const context = contextRead(statement.value, contexts);
+            bindings.set(statement.target.name, {
+              ...(context ? { context } : {}),
+              declaration: statement,
+              id: bindingId(ownerId, statement.target.name),
+              classification: context ? 'context' : 'computed',
+              expression: undefined,
+              type: 'unknown',
+            });
+          }
         }
         break;
       case 'HandlerDeclaration':
@@ -906,10 +1959,67 @@ const registerComponentSymbols = (
           });
         }
         break;
+      case 'ExpressionStatement':
+        effects.push(statement);
+        break;
       case 'Element':
-      case 'IfRegion':
+      case 'ConditionalRegion':
         renderRoots.push(statement);
         break;
+    }
+  }
+
+  const scanRefsInConditional = (region: ConditionalRegionNode): void => {
+    for (const branch of region.branches) {
+      const result =
+        branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+      if (result.kind === 'Element') {
+        scanRefsInElement(result);
+      }
+    }
+  };
+  const scanRefsInElement = (element: ElementNode): void => {
+    for (const attribute of element.attributes) {
+      if (attribute.kind !== 'Attribute' || attribute.name.name !== 'ref') {
+        continue;
+      }
+      if (!/^[a-z]/u.test(element.name.name)) {
+        report(
+          state,
+          'OXE2008',
+          'ref is currently supported only on platform elements.',
+          attribute.span,
+        );
+        continue;
+      }
+      if (attribute.value.kind !== 'Identifier') {
+        report(state, 'OXE2008', 'ref requires a new identifier.', attribute.value.span);
+        continue;
+      }
+      if (register(attribute.value.name, attribute.value.span)) {
+        refs.set(attribute.value.name, {
+          attribute,
+          declaration: attribute.value,
+          id: refId(ownerId, attribute.value.name),
+          type: 'unknown',
+        });
+      }
+    }
+    for (const child of element.children) {
+      if (child.kind === 'Element') {
+        scanRefsInElement(child);
+      } else if (child.kind === 'ConditionalRegion') {
+        scanRefsInConditional(child);
+      } else if (child.kind === 'Interpolation' && child.expression.kind === 'MapExpression') {
+        scanRefsInElement(child.expression.body);
+      }
+    }
+  };
+  for (const root of renderRoots) {
+    if (root.kind === 'Element') {
+      scanRefsInElement(root);
+    } else {
+      scanRefsInConditional(root);
     }
   }
 
@@ -920,13 +2030,20 @@ const registerComponentSymbols = (
   for (const [name, binding] of bindings) {
     values.set(name, binding);
   }
+  for (const [name, ref] of refs) {
+    values.set(name, ref);
+  }
 
   return {
     bindings,
     component,
     componentId: ownerId,
+    contents,
+    contexts,
+    effects,
     parameters,
     procedures,
+    refs,
     renderRoots,
     values,
   };
@@ -983,6 +2100,29 @@ const visitExpressionIdentifiers = (
         visitExpressionIdentifiers(element, visit);
       }
       return;
+    case 'CallExpression':
+      if (expression.callee.kind === 'MemberExpression') {
+        visitExpressionIdentifiers(expression.callee.object, visit);
+      }
+      for (const argument of expression.arguments) {
+        visitExpressionIdentifiers(argument, visit);
+      }
+      return;
+    case 'CollectionExpression':
+      visitExpressionIdentifiers(expression.collection, visit);
+      for (const assignment of expression.callback.assignments) {
+        visitExpressionIdentifiers(assignment.value, visit);
+      }
+      if (expression.callback.result.kind !== 'Element') {
+        visitExpressionIdentifiers(expression.callback.result, visit);
+      }
+      if (expression.initial) {
+        visitExpressionIdentifiers(expression.initial, visit);
+      }
+      if (expression.options) {
+        visitExpressionIdentifiers(expression.options, visit);
+      }
+      return;
     case 'Identifier':
       visit(expression);
       return;
@@ -990,11 +2130,42 @@ const visitExpressionIdentifiers = (
       visitExpressionIdentifiers(expression.left, visit);
       visitExpressionIdentifiers(expression.right, visit);
       return;
+    case 'ConditionalValueExpression':
+      for (const branch of expression.branches) {
+        if (branch.condition) {
+          visitExpressionIdentifiers(branch.condition, visit);
+        }
+        if (branch.result.kind === 'ConditionalResultBlock') {
+          for (const statement of branch.result.statements) {
+            visitExpressionIdentifiers(
+              statement.kind === 'AssignmentStatement' ? statement.value : statement.expression,
+              visit,
+            );
+          }
+          if (branch.result.result.kind !== 'Element') {
+            visitExpressionIdentifiers(branch.result.result, visit);
+          }
+        } else if (branch.result.kind !== 'Element') {
+          visitExpressionIdentifiers(branch.result, visit);
+        }
+      }
+      return;
     case 'ParenthesizedExpression':
       visitExpressionIdentifiers(expression.expression, visit);
       return;
     case 'MapExpression':
       visitExpressionIdentifiers(expression.collection, visit);
+      for (const assignment of expression.assignments) {
+        visitExpressionIdentifiers(assignment.value, visit);
+      }
+      return;
+    case 'MemberExpression':
+      visitExpressionIdentifiers(expression.object, visit);
+      return;
+    case 'RecordLiteral':
+      for (const entry of expression.entries) {
+        visitExpressionIdentifiers(entry.value, visit);
+      }
       return;
     case 'UntrackExpression':
       visitExpressionIdentifiers(expression.expression, visit);
@@ -1052,14 +2223,75 @@ const scanDirectParameterUses = (component: ComponentSymbols, state: AnalysisSta
   for (const binding of component.bindings.values()) {
     markExpressionParametersAsValues(binding.declaration.value, component, state);
   }
-  for (const procedure of component.procedures.values()) {
-    for (const assignment of procedure.declaration.body) {
-      markExpressionParametersAsValues(assignment.value, component, state);
+  for (const content of component.contents.values()) {
+    if (content.declaration.value.kind !== 'ConditionalValueExpression') {
+      continue;
     }
+    for (const branch of content.declaration.value.branches) {
+      if (branch.condition) {
+        markExpressionParametersAsValues(branch.condition, component, state);
+      }
+      if (branch.result.kind === 'ConditionalResultBlock') {
+        for (const statement of branch.result.statements) {
+          markExpressionParametersAsValues(
+            statement.kind === 'AssignmentStatement' ? statement.value : statement.expression,
+            component,
+            state,
+          );
+        }
+      }
+    }
+  }
+  for (const procedure of component.procedures.values()) {
+    for (const statement of procedure.declaration.body) {
+      const expressions: readonly ExpressionNode[] =
+        statement.kind === 'AssignmentStatement' || statement.kind === 'MemberAssignmentStatement'
+          ? [statement.value]
+          : statement.kind === 'ExpressionStatement'
+            ? [statement.expression]
+            : [
+                ...(statement.value ? [statement.value] : []),
+                ...(statement.predicate
+                  ? [
+                      ...statement.predicate.callback.assignments.map(
+                        (assignment) => assignment.value,
+                      ),
+                      ...(statement.predicate.callback.result.kind === 'Element'
+                        ? []
+                        : [statement.predicate.callback.result]),
+                    ]
+                  : []),
+                ...(statement.updater
+                  ? statement.updater.assignments.map((assignment) => assignment.value)
+                  : []),
+                ...(statement.limit ? [statement.limit] : []),
+              ];
+      for (const expression of expressions) {
+        if (expression.kind === 'CallExpression' && expression.callee.kind === 'Identifier') {
+          const parameter = component.parameters.get(expression.callee.name);
+          if (parameter) {
+            markParameterKind(parameter, 'procedure', expression.callee.span, state);
+          }
+        }
+        markExpressionParametersAsValues(expression, component, state);
+      }
+    }
+  }
+  for (const effect of component.effects) {
+    if (
+      effect.expression.kind === 'CallExpression' &&
+      effect.expression.callee.kind === 'Identifier'
+    ) {
+      const parameter = component.parameters.get(effect.expression.callee.name);
+      if (parameter) {
+        markParameterKind(parameter, 'procedure', effect.expression.callee.span, state);
+      }
+    }
+    markExpressionParametersAsValues(effect.expression, component, state);
   }
 
   const scanElement = (element: ElementNode): void => {
-    if (/^[a-z]/u.test(element.name.name)) {
+    if (/^[a-z]/u.test(element.name.name) || component.contexts.has(element.name.name)) {
       for (const attribute of element.attributes) {
         if (attribute.kind === 'SpreadAttribute') {
           continue;
@@ -1077,8 +2309,8 @@ const scanDirectParameterUses = (component: ComponentSymbols, state: AnalysisSta
     for (const child of element.children) {
       if (child.kind === 'Element') {
         scanElement(child);
-      } else if (child.kind === 'IfRegion') {
-        scanIfRegion(child);
+      } else if (child.kind === 'ConditionalRegion') {
+        scanConditionalRegion(child);
       } else if (child.kind === 'Interpolation') {
         const isChildrenSlot =
           child.expression.kind === 'Identifier' && child.expression.name === 'children';
@@ -1094,12 +2326,25 @@ const scanDirectParameterUses = (component: ComponentSymbols, state: AnalysisSta
     }
   };
 
-  const scanIfRegion = (region: IfRegionNode): void => {
+  const scanConditionalRegion = (region: ConditionalRegionNode): void => {
     for (const branch of region.branches) {
       if (branch.condition) {
         markExpressionParametersAsValues(branch.condition, component, state);
       }
-      scanElement(branch.result);
+      const result =
+        branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+      if (branch.result.kind === 'ConditionalResultBlock') {
+        for (const statement of branch.result.statements) {
+          markExpressionParametersAsValues(
+            statement.kind === 'AssignmentStatement' ? statement.value : statement.expression,
+            component,
+            state,
+          );
+        }
+      }
+      if (result.kind === 'Element') {
+        scanElement(result);
+      }
     }
   };
 
@@ -1107,7 +2352,18 @@ const scanDirectParameterUses = (component: ComponentSymbols, state: AnalysisSta
     if (root.kind === 'Element') {
       scanElement(root);
     } else {
-      scanIfRegion(root);
+      scanConditionalRegion(root);
+    }
+  }
+  for (const content of component.contents.values()) {
+    if (content.declaration.value.kind !== 'ConditionalValueExpression') {
+      continue;
+    }
+    for (const branch of content.declaration.value.branches) {
+      const element = conditionalResultElement(branch.result);
+      if (element) {
+        scanElement(element);
+      }
     }
   }
 };
@@ -1120,6 +2376,50 @@ const collectComponentInvocations = (
   const invocations: ComponentInvocation[] = [];
 
   const visitElement = (element: ElementNode, owner: ComponentSymbols): void => {
+    if (owner.contexts.has(element.name.name)) {
+      const valueAttributes = element.attributes.filter(
+        (attribute): attribute is AttributeNode =>
+          attribute.kind === 'Attribute' && attribute.name.name === 'value',
+      );
+      const invalidAttributes = element.attributes.filter(
+        (attribute) =>
+          attribute.kind === 'SpreadAttribute' ||
+          (attribute.kind === 'Attribute' && attribute.name.name !== 'value'),
+      );
+      if (valueAttributes.length === 0) {
+        report(
+          state,
+          'OXE2011',
+          `Context provider <${element.name.name}> requires a value prop.`,
+          element.name.span,
+        );
+      } else if (valueAttributes.length > 1) {
+        report(
+          state,
+          'OXE2001',
+          `Context provider <${element.name.name}> declares value more than once.`,
+          valueAttributes[1]?.span ?? element.span,
+        );
+      }
+      for (const attribute of invalidAttributes) {
+        report(
+          state,
+          'OXE2011',
+          `Context provider <${element.name.name}> only accepts the value prop.`,
+          attribute.span,
+        );
+      }
+      for (const child of element.children) {
+        if (child.kind === 'Element') {
+          visitElement(child, owner);
+        } else if (child.kind === 'ConditionalRegion') {
+          visitConditionalRegion(child, owner);
+        } else if (child.kind === 'Interpolation' && child.expression.kind === 'MapExpression') {
+          visitElement(child.expression.body, owner);
+        }
+      }
+      return;
+    }
     if (/^[A-Z]/u.test(element.name.name)) {
       const target = componentScopes.get(owner.componentId)?.get(element.name.name);
       if (!target) {
@@ -1238,8 +2538,8 @@ const collectComponentInvocations = (
       for (const child of element.children) {
         if (child.kind === 'Element') {
           visitElement(child, owner);
-        } else if (child.kind === 'IfRegion') {
-          visitIfRegion(child, owner);
+        } else if (child.kind === 'ConditionalRegion') {
+          visitConditionalRegion(child, owner);
         } else if (child.kind === 'Interpolation' && child.expression.kind === 'MapExpression') {
           visitElement(child.expression.body, owner);
         }
@@ -1258,17 +2558,21 @@ const collectComponentInvocations = (
     for (const child of element.children) {
       if (child.kind === 'Element') {
         visitElement(child, owner);
-      } else if (child.kind === 'IfRegion') {
-        visitIfRegion(child, owner);
+      } else if (child.kind === 'ConditionalRegion') {
+        visitConditionalRegion(child, owner);
       } else if (child.kind === 'Interpolation' && child.expression.kind === 'MapExpression') {
         visitElement(child.expression.body, owner);
       }
     }
   };
 
-  const visitIfRegion = (region: IfRegionNode, owner: ComponentSymbols): void => {
+  const visitConditionalRegion = (region: ConditionalRegionNode, owner: ComponentSymbols): void => {
     for (const branch of region.branches) {
-      visitElement(branch.result, owner);
+      const result =
+        branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+      if (result.kind === 'Element') {
+        visitElement(result, owner);
+      }
     }
   };
 
@@ -1277,7 +2581,18 @@ const collectComponentInvocations = (
       if (root.kind === 'Element') {
         visitElement(root, component);
       } else {
-        visitIfRegion(root, component);
+        visitConditionalRegion(root, component);
+      }
+    }
+    for (const content of component.contents.values()) {
+      if (content.declaration.value.kind !== 'ConditionalValueExpression') {
+        continue;
+      }
+      for (const branch of content.declaration.value.branches) {
+        const element = conditionalResultElement(branch.result);
+        if (element) {
+          visitElement(element, component);
+        }
       }
     }
   }
@@ -1505,6 +2820,9 @@ const retainValueSymbols = (component: ComponentSymbols): void => {
   for (const [name, binding] of component.bindings) {
     component.values.set(name, binding);
   }
+  for (const [name, ref] of component.refs) {
+    component.values.set(name, ref);
+  }
 };
 
 const lowerParameterDefaults = (
@@ -1529,11 +2847,234 @@ const lowerParameterDefaults = (
   }
 };
 
+const collectLoweredContextProviders = (
+  components: readonly ComponentSymbols[],
+  state: AnalysisState,
+): ReadonlyMap<ElementNode, LoweredContextProvider> => {
+  const providers = new Map<ElementNode, LoweredContextProvider>();
+
+  const visitConditional = (region: ConditionalRegionNode, owner: ComponentSymbols): void => {
+    for (const branch of region.branches) {
+      const result =
+        branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+      if (result.kind === 'Element') {
+        visitElement(result, owner);
+      }
+    }
+  };
+
+  const visitElement = (element: ElementNode, owner: ComponentSymbols): void => {
+    const context = owner.contexts.get(element.name.name);
+    if (context) {
+      const attribute = element.attributes.find(
+        (candidate): candidate is AttributeNode =>
+          candidate.kind === 'Attribute' && candidate.name.name === 'value',
+      );
+      if (attribute) {
+        const value = lowerExpression(
+          attribute.value,
+          owner.values,
+          `context provider <${context.name}>`,
+          state,
+        );
+        if (value) {
+          providers.set(element, { context, element, owner, value });
+        }
+      }
+    }
+    for (const child of element.children) {
+      if (child.kind === 'Element') {
+        visitElement(child, owner);
+      } else if (child.kind === 'ConditionalRegion') {
+        visitConditional(child, owner);
+      } else if (child.kind === 'Interpolation' && child.expression.kind === 'MapExpression') {
+        visitElement(child.expression.body, owner);
+      }
+    }
+  };
+
+  for (const component of components) {
+    for (const root of component.renderRoots) {
+      if (root.kind === 'Element') {
+        visitElement(root, component);
+      } else {
+        visitConditional(root, component);
+      }
+    }
+    for (const content of component.contents.values()) {
+      const expression = content.declaration.value;
+      if (expression.kind !== 'ConditionalValueExpression') {
+        continue;
+      }
+      for (const branch of expression.branches) {
+        const element = conditionalResultElement(branch.result);
+        if (element) {
+          visitElement(element, component);
+        }
+      }
+    }
+  }
+
+  const byContext = new Map<string, LoweredContextProvider[]>();
+  for (const provider of providers.values()) {
+    const current = byContext.get(provider.context.id) ?? [];
+    current.push(provider);
+    byContext.set(provider.context.id, current);
+  }
+  for (const component of components) {
+    for (const binding of component.bindings.values()) {
+      if (binding.classification !== 'context' || !binding.context) {
+        continue;
+      }
+      const candidates = byContext.get(binding.context.id) ?? [];
+      binding.expression = candidates[0]?.value;
+    }
+  }
+
+  const writtenContextIds = new Set<string>();
+  for (const component of components) {
+    for (const procedure of component.procedures.values()) {
+      for (const statement of procedure.declaration.body) {
+        if (statement.kind === 'ExpressionStatement') {
+          continue;
+        }
+        const name =
+          statement.kind === 'CollectionMutationStatement'
+            ? statement.collection.name
+            : statement.kind === 'MemberAssignmentStatement'
+              ? memberRootAndPath(statement.target)?.root.name
+              : statement.target.name;
+        const binding = name ? component.bindings.get(name) : undefined;
+        if (binding?.classification === 'context' && binding.context) {
+          writtenContextIds.add(binding.context.id);
+        }
+      }
+    }
+  }
+  for (const contextIdValue of writtenContextIds) {
+    for (const provider of byContext.get(contextIdValue) ?? []) {
+      if (provider.value.kind !== 'read') {
+        report(
+          state,
+          'OXE2007',
+          `Writable context ${provider.context.name} must be provided from a direct component value.`,
+          provider.value.span,
+        );
+        continue;
+      }
+      const providerTargetId = provider.value.targetId;
+      const source = [...provider.owner.bindings.values()].find(
+        (binding) => binding.id === providerTargetId,
+      );
+      if (!source || source.classification === 'context') {
+        report(
+          state,
+          'OXE2007',
+          `Writable context ${provider.context.name} must be backed by a local component value.`,
+          provider.value.span,
+        );
+      } else {
+        source.forcedCell = true;
+      }
+    }
+  }
+
+  return providers;
+};
+
+const diagnoseMissingContextProviders = (
+  components: readonly ComponentSymbols[],
+  invocations: readonly ComponentInvocation[],
+  providers: ReadonlyMap<ElementNode, LoweredContextProvider>,
+  requestedEntries: readonly ComponentSymbols[] | undefined,
+  state: AnalysisState,
+): void => {
+  const invocationByElement = new Map(
+    invocations.map((invocation) => [invocation.element, invocation] as const),
+  );
+  const invokedIds = new Set(invocations.map((invocation) => invocation.target.componentId));
+  const entries =
+    requestedEntries ?? components.filter((component) => !invokedIds.has(component.componentId));
+
+  const visitConditional = (
+    region: ConditionalRegionNode,
+    active: ReadonlySet<string>,
+    stack: ReadonlySet<string>,
+  ): void => {
+    for (const branch of region.branches) {
+      const result =
+        branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+      if (result.kind === 'Element') {
+        visitElement(result, active, stack);
+      }
+    }
+  };
+
+  const visitElement = (
+    element: ElementNode,
+    active: ReadonlySet<string>,
+    stack: ReadonlySet<string>,
+  ): void => {
+    const provider = providers.get(element);
+    const descendants = provider ? new Set([...active, provider.context.id]) : active;
+    const invocation = invocationByElement.get(element);
+    if (invocation) {
+      visitComponent(invocation.target, active, stack);
+    }
+    for (const child of element.children) {
+      if (child.kind === 'Element') {
+        visitElement(child, descendants, stack);
+      } else if (child.kind === 'ConditionalRegion') {
+        visitConditional(child, descendants, stack);
+      } else if (child.kind === 'Interpolation' && child.expression.kind === 'MapExpression') {
+        visitElement(child.expression.body, descendants, stack);
+      }
+    }
+  };
+
+  const visitComponent = (
+    component: ComponentSymbols,
+    active: ReadonlySet<string>,
+    stack: ReadonlySet<string>,
+  ): void => {
+    if (stack.has(component.componentId)) {
+      return;
+    }
+    for (const binding of component.bindings.values()) {
+      if (
+        binding.classification === 'context' &&
+        binding.context &&
+        !active.has(binding.context.id)
+      ) {
+        report(
+          state,
+          'OXE2008',
+          `No provider exists for ${binding.context.name}. Wrap this component in <${binding.context.name} value={...}>.`,
+          binding.declaration.value.span,
+        );
+      }
+    }
+    const nextStack = new Set([...stack, component.componentId]);
+    for (const root of component.renderRoots) {
+      if (root.kind === 'Element') {
+        visitElement(root, active, nextStack);
+      } else {
+        visitConditional(root, active, nextStack);
+      }
+    }
+  };
+
+  for (const entry of entries) {
+    visitComponent(entry, new Set(), new Set());
+  }
+};
+
 interface RenderContext {
   readonly component: ComponentSymbols;
   readonly constantValues: ReadonlyMap<string, LiteralValue>;
   readonly edges: UiEdgeV1[];
   readonly invocations: ReadonlyMap<ElementNode, ComponentInvocation>;
+  readonly contextProviders: ReadonlyMap<ElementNode, LoweredContextProvider>;
   readonly nodes: UiNodeV1[];
   readonly props: ReadonlyMap<ComponentInvocation, ReadonlyMap<AttributeNode, LoweredValueProp>>;
   readonly scopeName: string;
@@ -1542,6 +3083,117 @@ interface RenderContext {
   readonly valuesById: ReadonlyMap<string, ValueSymbol>;
   readonly collectionKeys: ReadonlySet<AttributeNode>;
 }
+
+const lowerContentValue = (content: ContentInfo, context: RenderContext): void => {
+  const choice = content.declaration.value;
+  if (choice.kind !== 'ConditionalValueExpression') {
+    return;
+  }
+
+  const branches: ContentValueNodeV1['branches'][number][] = [];
+  const conditions: ValueExpressionV1[] = [];
+  const contentNode: ContentValueNodeV1 = {
+    branches,
+    id: content.id,
+    kind: 'content-value',
+    name: content.declaration.target.name,
+    span: graphSpan(content.declaration.span),
+  };
+  context.nodes.push(contentNode);
+
+  choice.branches.forEach((branch, index) => {
+    const condition = branch.condition
+      ? lowerExpression(
+          branch.condition,
+          context.values,
+          `${context.scopeName} content condition`,
+          context.state,
+        )
+      : undefined;
+    if (condition) {
+      conditions.push(condition);
+      const type = inferStandaloneExpression(condition, context.valuesById, context.state);
+      if (type !== 'boolean' && type !== 'unknown') {
+        report(
+          context.state,
+          'OXE2009',
+          `A content choice condition must be Boolean, but received ${type}.`,
+          branch.condition?.span ?? branch.span,
+        );
+      }
+    }
+
+    const result = conditionalResultElement(branch.result);
+    if (!result) {
+      report(
+        context.state,
+        'OXE2009',
+        'Every branch of a content choice must produce markup.',
+        branch.result.span,
+      );
+      return;
+    }
+
+    const values = callableValues(context.component);
+    const effectIds: string[] = [];
+    if (branch.result.kind === 'ConditionalResultBlock') {
+      for (const [statementIndex, statement] of branch.result.statements.entries()) {
+        if (statement.kind === 'AssignmentStatement') {
+          const expression = lowerExpression(
+            statement.value,
+            values,
+            `${context.scopeName} content branch`,
+            context.state,
+          );
+          if (expression) {
+            values.set(statement.target.name, {
+              id: `${content.id}/branch[${index}]/local/${identifierSegment(statement.target.name)}`,
+              substitution: expression,
+              type: inferStandaloneExpression(expression, context.valuesById, context.state),
+            });
+          }
+          continue;
+        }
+        const expression = lowerExpression(
+          statement.expression,
+          values,
+          `${context.scopeName} content branch effect`,
+          context.state,
+        );
+        if (expression?.kind !== 'call') {
+          report(
+            context.state,
+            'OXE2008',
+            'A content branch expression statement must be an ordinary call.',
+            statement.span,
+          );
+          continue;
+        }
+        const effectId = `${content.id}/branch[${index}]/effect[${statementIndex}]`;
+        context.nodes.push({
+          expression,
+          id: effectId,
+          kind: 'effect',
+          ownerId: content.id,
+          span: graphSpan(statement.span),
+        });
+        addReadEdges(context.edges, effectId, [expression], 'reactive');
+        effectIds.push(effectId);
+      }
+    }
+
+    const viewKind = /^[A-Z]/u.test(result.name.name) ? 'instance' : 'element';
+    const resultId = `${content.id}/branch[${index}]/${viewKind}`;
+    branches.push({
+      ...(condition ? { condition } : {}),
+      effectIds,
+      resultId,
+      span: graphSpan(branch.span),
+    });
+    lowerView(result, resultId, content.id, index, { ...context, values });
+  });
+  addReadEdges(context.edges, content.id, conditions, 'reactive');
+};
 
 const lowerTextGroup = (
   children: readonly (InterpolationNode | TextNode)[],
@@ -1609,6 +3261,7 @@ const lowerMarkupChildren = (
   let conditionalIndex = 0;
   let collectionIndex = 0;
   let slotIndex = 0;
+  let contentReferenceIndex = 0;
   let textIndex = 0;
   let textGroup: (InterpolationNode | TextNode)[] = [];
 
@@ -1644,11 +3297,11 @@ const lowerMarkupChildren = (
       continue;
     }
 
-    if (child.kind === 'IfRegion') {
+    if (child.kind === 'ConditionalRegion') {
       flushText();
-      lowerIfRegion(
+      lowerConditionalRegion(
         child,
-        `${parentId}/if[${conditionalIndex}]`,
+        `${parentId}/conditional[${conditionalIndex}]`,
         parentId,
         semanticChildIndex,
         context,
@@ -1700,13 +3353,31 @@ const lowerMarkupChildren = (
       semanticChildIndex += 1;
       continue;
     }
+    const content =
+      child.kind === 'Interpolation' && child.expression.kind === 'Identifier'
+        ? context.component.contents.get(child.expression.name)
+        : undefined;
+    if (content) {
+      flushText();
+      const node: ContentReferenceNodeV1 = {
+        contentId: content.id,
+        id: `${parentId}/content-reference[${contentReferenceIndex}]`,
+        kind: 'content-reference',
+        span: graphSpan(child.span),
+      };
+      context.nodes.push(node);
+      context.edges.push({ kind: 'child', from: parentId, to: node.id, index: semanticChildIndex });
+      contentReferenceIndex += 1;
+      semanticChildIndex += 1;
+      continue;
+    }
     textGroup.push(child);
   }
   flushText();
 };
 
-const lowerIfRegion = (
-  region: IfRegionNode,
+const lowerConditionalRegion = (
+  region: ConditionalRegionNode,
   id: string,
   parentId: string,
   childIndex: number,
@@ -1723,7 +3394,7 @@ const lowerIfRegion = (
     const condition = lowerExpression(
       branch.condition,
       context.values,
-      `${context.scopeName} if condition`,
+      `${context.scopeName} conditional condition`,
       context.state,
     );
     if (!condition) {
@@ -1753,8 +3424,64 @@ const lowerIfRegion = (
   addReadEdges(context.edges, id, conditions, 'reactive');
 
   region.branches.forEach((branch, index) => {
-    const viewKind = /^[A-Z]/u.test(branch.result.name.name) ? 'instance' : 'element';
-    lowerView(branch.result, `${id}/branch[${index}]/${viewKind}`, id, index, context);
+    const result =
+      branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+    if (result.kind !== 'Element') {
+      return;
+    }
+    const values = callableValues(context.component);
+    const effectIds: string[] = [];
+    if (branch.result.kind === 'ConditionalResultBlock') {
+      for (const [statementIndex, statement] of branch.result.statements.entries()) {
+        if (statement.kind === 'ExpressionStatement') {
+          const expression = lowerExpression(
+            statement.expression,
+            values,
+            `${context.scopeName} conditional branch effect`,
+            context.state,
+          );
+          if (expression?.kind !== 'call') {
+            report(
+              context.state,
+              'OXE2008',
+              'A conditional branch expression statement must be an ordinary call.',
+              statement.span,
+            );
+            continue;
+          }
+          const effectId = `${id}/branch[${index}]/effect[${statementIndex}]`;
+          context.nodes.push({
+            expression,
+            id: effectId,
+            kind: 'effect',
+            ownerId: id,
+            span: graphSpan(statement.span),
+          });
+          addReadEdges(context.edges, effectId, [expression], 'reactive');
+          effectIds.push(effectId);
+          continue;
+        }
+        const expression = lowerExpression(
+          statement.value,
+          values,
+          `${context.scopeName} conditional branch`,
+          context.state,
+        );
+        if (expression) {
+          values.set(statement.target.name, {
+            id: `${id}/branch[${index}]/local/${identifierSegment(statement.target.name)}`,
+            substitution: expression,
+            type: inferStandaloneExpression(expression, context.valuesById, context.state),
+          });
+        }
+      }
+    }
+    if (effectIds.length > 0 && branches[index]) {
+      branches[index] = { ...branches[index], effectIds };
+    }
+    const nestedContext: RenderContext = { ...context, values };
+    const viewKind = /^[A-Z]/u.test(result.name.name) ? 'instance' : 'element';
+    lowerView(result, `${id}/branch[${index}]/${viewKind}`, id, index, nestedContext);
   });
 };
 
@@ -1802,10 +3529,32 @@ const lowerKeyedCollection = (
     type: itemType,
     span: graphSpan(map.parameter.span),
   };
+  const itemRecord = inferArrayItemRecordWithoutDiagnostics(source, context.valuesById);
+  const itemSymbol: ValueSymbol = {
+    id: item.id,
+    ...(itemRecord ? { expression: itemRecord } : {}),
+    type: item.type,
+  };
   const values = new Map(context.values);
-  values.set(map.parameter.name, item);
+  values.set(map.parameter.name, itemSymbol);
   const valuesById = new Map(context.valuesById);
-  valuesById.set(item.id, item);
+  valuesById.set(item.id, itemSymbol);
+  for (const assignment of map.assignments) {
+    const expression = lowerExpression(
+      assignment.value,
+      values,
+      `${context.scopeName} map callback`,
+      context.state,
+    );
+    if (!expression) {
+      continue;
+    }
+    values.set(assignment.target.name, {
+      id: `${id}/local/${identifierSegment(assignment.target.name)}`,
+      substitution: expression,
+      type: inferStandaloneExpression(expression, valuesById, context.state),
+    });
+  }
 
   const keyAttribute = map.body.attributes.find(
     (attribute): attribute is AttributeNode =>
@@ -1818,7 +3567,7 @@ const lowerKeyedCollection = (
     return;
   }
   const keyType = inferStandaloneExpression(key, valuesById, context.state);
-  if (keyType === 'array') {
+  if (keyType === 'array' || keyType === 'record') {
     report(context.state, 'OXE2009', 'A keyed map key must be scalar.', key.span);
   }
 
@@ -1883,6 +3632,9 @@ const lowerPlatformElement = (
         'The key attribute is only valid on the element produced by map.',
         attribute.name.span,
       );
+      continue;
+    }
+    if (attribute.name.name === 'ref') {
       continue;
     }
     const previous = attributeNames.get(attribute.name.name);
@@ -1999,6 +3751,25 @@ const lowerPlatformElement = (
     dynamicAttributes,
     span: graphSpan(element.span),
   });
+  for (const attribute of element.attributes) {
+    if (
+      attribute.kind !== 'Attribute' ||
+      attribute.name.name !== 'ref' ||
+      attribute.value.kind !== 'Identifier'
+    ) {
+      continue;
+    }
+    const ref = context.component.refs.get(attribute.value.name);
+    if (ref?.attribute === attribute) {
+      context.nodes.push({
+        elementId: id,
+        id: ref.id,
+        kind: 'ref',
+        name: ref.declaration.name,
+        span: graphSpan(attribute.span),
+      });
+    }
+  }
   context.edges.push({ kind: 'child', from: parentId, to: id, index: childIndex });
   addReadEdges(
     context.edges,
@@ -2006,6 +3777,29 @@ const lowerPlatformElement = (
     dynamicAttributes.map((attribute) => attribute.value),
     'reactive',
   );
+  lowerMarkupChildren(element.children, id, context);
+};
+
+const lowerContextProvider = (
+  element: ElementNode,
+  id: string,
+  parentId: string,
+  childIndex: number,
+  context: RenderContext,
+): void => {
+  const provider = context.contextProviders.get(element);
+  if (!provider) {
+    return;
+  }
+  context.nodes.push({
+    contextId: provider.context.id,
+    id,
+    kind: 'context-provider',
+    span: graphSpan(element.span),
+    value: provider.value,
+  });
+  context.edges.push({ kind: 'child', from: parentId, to: id, index: childIndex });
+  addReadEdges(context.edges, id, [provider.value], 'reactive');
   lowerMarkupChildren(element.children, id, context);
 };
 
@@ -2122,7 +3916,9 @@ const lowerView = (
   childIndex: number,
   context: RenderContext,
 ): void => {
-  if (/^[A-Z]/u.test(element.name.name)) {
+  if (context.contextProviders.has(element)) {
+    lowerContextProvider(element, id, parentId, childIndex, context);
+  } else if (/^[A-Z]/u.test(element.name.name)) {
     lowerComponentInstance(element, id, parentId, childIndex, context);
   } else {
     lowerPlatformElement(element, id, parentId, childIndex, context);
@@ -2135,10 +3931,10 @@ const evaluateResolvedConstant = (
 ): LiteralValue | undefined => {
   switch (expression.kind) {
     case 'array': {
-      const result: LiteralValueV1[] = [];
+      const result: ConstantValueV1[] = [];
       for (const element of expression.elements) {
         const value = evaluateResolvedConstant(element, values);
-        if (value === undefined || !isLiteralScalar(value)) {
+        if (value === undefined) {
           return undefined;
         }
         result.push(value);
@@ -2147,8 +3943,45 @@ const evaluateResolvedConstant = (
     }
     case 'literal':
       return expression.value;
+    case 'call':
+    case 'capability-read':
+    case 'collection':
+    case 'local-read':
+      return undefined;
+    case 'member': {
+      const object = evaluateResolvedConstant(expression.object, values);
+      if (!isConstantRecord(object)) {
+        return undefined;
+      }
+      return object[expression.property];
+    }
+    case 'record': {
+      const result: Record<string, ConstantValueV1> = {};
+      for (const entry of expression.entries) {
+        const value = evaluateResolvedConstant(entry.value, values);
+        if (value === undefined) {
+          return undefined;
+        }
+        result[entry.name] = value;
+      }
+      return result;
+    }
     case 'read':
       return values.get(expression.targetId);
+    case 'conditional':
+      for (const branch of expression.branches) {
+        if (!branch.condition) {
+          return evaluateResolvedConstant(branch.result, values);
+        }
+        const condition = evaluateResolvedConstant(branch.condition, values);
+        if (condition === true) {
+          return evaluateResolvedConstant(branch.result, values);
+        }
+        if (condition !== false) {
+          return undefined;
+        }
+      }
+      return undefined;
     case 'binary': {
       const left = evaluateResolvedConstant(expression.left, values);
       const right = evaluateResolvedConstant(expression.right, values);
@@ -2201,6 +4034,7 @@ const analyzeComponent = (
   nodes: UiNodeV1[],
   edges: UiEdgeV1[],
   invocations: ReadonlyMap<ElementNode, ComponentInvocation>,
+  contextProviders: ReadonlyMap<ElementNode, LoweredContextProvider>,
   props: ReadonlyMap<ComponentInvocation, ReadonlyMap<AttributeNode, LoweredValueProp>>,
   valuesById: ReadonlyMap<string, ValueSymbol>,
   state: AnalysisState,
@@ -2270,13 +4104,29 @@ const analyzeComponent = (
       );
     }
     for (const statement of procedure.declaration.body) {
-      const target = symbols.bindings.get(statement.target.name);
+      if (statement.kind === 'ExpressionStatement') {
+        continue;
+      }
+      const targetName =
+        statement.kind === 'CollectionMutationStatement'
+          ? statement.collection.name
+          : statement.kind === 'MemberAssignmentStatement'
+            ? memberRootAndPath(statement.target)?.root.name
+            : statement.target.name;
+      const target = targetName ? symbols.bindings.get(targetName) : undefined;
       if (!target) {
         report(
           state,
           'OXE2008',
-          `Procedure-local assignment "${statement.target.name}" is not supported by this compiler slice.`,
-          statement.target.span,
+          `Procedure write "${targetName ?? '<unknown>'}" must target a component value.`,
+          statement.span,
+        );
+      } else if (target.classification === 'resource') {
+        report(
+          state,
+          'OXE2008',
+          `Resource "${targetName}" is owned by the compiler and cannot be assigned procedurally.`,
+          statement.span,
         );
       } else {
         writtenIds.add(target.id);
@@ -2307,7 +4157,26 @@ const analyzeComponent = (
       continue;
     }
 
-    if (binding.classification === 'cell') {
+    if (binding.classification === 'resource' && binding.expression.kind === 'call') {
+      nodes.push({
+        expression: binding.expression,
+        id: binding.id,
+        kind: 'resource',
+        name: binding.declaration.target.name,
+        span: graphSpan(binding.declaration.span),
+      });
+      addReadEdges(edges, binding.id, [binding.expression], 'reactive');
+    } else if (binding.classification === 'context' && binding.context) {
+      nodes.push({
+        contextId: binding.context.id,
+        id: binding.id,
+        kind: 'context-consumer',
+        name: binding.declaration.target.name,
+        span: graphSpan(binding.declaration.span),
+        type: binding.type,
+        writable: writtenIds.has(binding.id),
+      });
+    } else if (binding.classification === 'cell') {
       const dynamicDependencies = uniqueReadIds(binding.expression).filter(
         (id) => bindingsById.get(id)?.classification !== 'constant',
       );
@@ -2353,12 +4222,240 @@ const analyzeComponent = (
   }
 
   for (const procedure of symbols.procedures.values()) {
-    const steps: WriteStepV1[] = [];
+    const steps: ProcedureStepV1[] = [];
+    const procedureValues = callableValues(symbols);
+    for (const parameter of procedure.declaration.parameters) {
+      procedureValues.set(parameter.name, {
+        id: parameter.name,
+        substitution: {
+          kind: 'local-read',
+          span: graphSpan(parameter.span),
+          targetId: parameter.name,
+          type: 'unknown',
+        },
+        type: 'unknown',
+      });
+    }
     for (const statement of procedure.declaration.body) {
+      if (statement.kind === 'ExpressionStatement') {
+        const expression = lowerExpression(
+          statement.expression,
+          procedureValues,
+          `procedure "${procedure.declaration.name.name}"`,
+          state,
+        );
+        if (expression?.kind !== 'call') {
+          report(
+            state,
+            'OXE2008',
+            'A procedural expression statement must be an ordinary call.',
+            statement.span,
+          );
+          continue;
+        }
+        steps.push({ expression, kind: 'call', span: graphSpan(statement.span) });
+        continue;
+      }
+
+      if (statement.kind === 'CollectionMutationStatement') {
+        const target = symbols.bindings.get(statement.collection.name);
+        if (!target) {
+          continue;
+        }
+        if (target.type !== 'array' && target.type !== 'unknown') {
+          report(
+            state,
+            'OXE2009',
+            `${statement.operation} requires an array cell, but "${statement.collection.name}" is ${target.type}.`,
+            statement.collection.span,
+          );
+          continue;
+        }
+        const source: ValueExpressionV1 = {
+          kind: 'read',
+          span: graphSpan(statement.collection.span),
+          targetId: target.id,
+        };
+        const value = statement.value
+          ? lowerExpression(
+              statement.value,
+              procedureValues,
+              `procedure "${procedure.declaration.name.name}"`,
+              state,
+            )
+          : undefined;
+        const predicate = lowerMutationPredicate(
+          statement,
+          source,
+          procedureValues,
+          `procedure "${procedure.declaration.name.name}"`,
+          state,
+        );
+        const updater = lowerMutationUpdater(
+          statement,
+          source,
+          procedureValues,
+          `procedure "${procedure.declaration.name.name}"`,
+          state,
+        );
+        const limit = statement.limit
+          ? lowerExpression(
+              statement.limit,
+              procedureValues,
+              `procedure "${procedure.declaration.name.name}"`,
+              state,
+            )
+          : undefined;
+        if (
+          (statement.value && !value) ||
+          (statement.predicate && !predicate) ||
+          (statement.updater && !updater) ||
+          (statement.limit && !limit)
+        ) {
+          continue;
+        }
+
+        const itemType = target.itemType ?? 'unknown';
+        if (value) {
+          const valueType = inferStandaloneExpression(value, valuesById, state);
+          if (itemType !== 'unknown' && valueType !== 'unknown' && itemType !== valueType) {
+            report(
+              state,
+              'OXE2009',
+              `Cannot add ${valueType} to a collection of ${itemType} values.`,
+              statement.value?.span ?? statement.span,
+            );
+          }
+          const expectedRecord = target.expression
+            ? inferArrayItemRecordWithoutDiagnostics(target.expression, valuesById)
+            : undefined;
+          const addedRecord = resolveRecordExpression(value, valuesById);
+          if (
+            expectedRecord &&
+            addedRecord &&
+            recordSchemaKey(expectedRecord, valuesById) !== recordSchemaKey(addedRecord, valuesById)
+          ) {
+            report(
+              state,
+              'OXE2009',
+              'The added record must have the same fields and field types as the collection items.',
+              statement.value?.span ?? statement.span,
+            );
+          }
+        }
+        if (predicate) {
+          const predicateType = inferStandaloneExpression(predicate.result, valuesById, state);
+          if (predicateType !== 'boolean' && predicateType !== 'unknown') {
+            report(
+              state,
+              'OXE2009',
+              `${statement.operation} predicates must produce Boolean, but received ${predicateType}.`,
+              statement.predicate?.span ?? statement.span,
+            );
+          }
+        }
+        if (updater) {
+          const updateType = inferStandaloneExpression(updater.result, valuesById, state);
+          if (itemType !== 'unknown' && updateType !== 'unknown' && itemType !== updateType) {
+            report(
+              state,
+              'OXE2009',
+              `update callbacks must preserve the ${itemType} collection item type, but received ${updateType}.`,
+              statement.updater?.span ?? statement.span,
+            );
+          }
+        }
+        if (limit) {
+          const limitType = inferStandaloneExpression(limit, valuesById, state);
+          if (limitType !== 'number' && limitType !== 'unknown') {
+            report(
+              state,
+              'OXE2009',
+              `A collection mutation limit must be a number, but received ${limitType}.`,
+              statement.limit?.span ?? statement.span,
+            );
+          }
+          const resolvedLimit = evaluateResolvedConstant(limit, constantValues);
+          if (
+            typeof resolvedLimit === 'number' &&
+            (!Number.isInteger(resolvedLimit) || resolvedLimit < 0)
+          ) {
+            report(
+              state,
+              'OXE2009',
+              'A collection mutation limit must be a nonnegative integer.',
+              statement.limit?.span ?? statement.span,
+            );
+          }
+        }
+        steps.push({
+          kind: 'collection-mutation',
+          ...(limit ? { limit } : {}),
+          operation: statement.operation,
+          ...(predicate ? { predicate } : {}),
+          span: graphSpan(statement.span),
+          targetId: target.id,
+          ...(updater ? { updater } : {}),
+          ...(value ? { value } : {}),
+        });
+        continue;
+      }
+
+      if (statement.kind === 'MemberAssignmentStatement') {
+        const member = memberRootAndPath(statement.target);
+        const target = member ? symbols.bindings.get(member.root.name) : undefined;
+        const value = lowerExpression(
+          statement.value,
+          procedureValues,
+          `procedure "${procedure.declaration.name.name}"`,
+          state,
+        );
+        if (!member || !target || !value) {
+          continue;
+        }
+        const schema = target.expression
+          ? resolveRecordExpression(target.expression, valuesById)
+          : undefined;
+        if (!schema) {
+          report(
+            state,
+            'OXE2009',
+            'A field assignment requires a value with a known record shape.',
+            statement.target.span,
+          );
+          continue;
+        }
+        const current: ValueExpressionV1 = {
+          kind: 'read',
+          span: graphSpan(member.root.span),
+          targetId: target.id,
+        };
+        const next = replaceRecordMember(
+          schema,
+          current,
+          member.path,
+          value,
+          valuesById,
+          state,
+          statement.span,
+        );
+        if (!next) {
+          continue;
+        }
+        steps.push({
+          kind: 'write',
+          path: member.path,
+          span: graphSpan(statement.span),
+          targetId: target.id,
+          value,
+        });
+        continue;
+      }
+
       const target = symbols.bindings.get(statement.target.name);
       const value = lowerExpression(
         statement.value,
-        symbols.values,
+        procedureValues,
         `procedure "${procedure.declaration.name.name}"`,
         state,
       );
@@ -2396,18 +4493,84 @@ const analyzeComponent = (
       id: procedure.id,
       kind: 'procedure',
       name: procedure.declaration.name.name,
-      parameters: [],
+      parameters: procedure.declaration.parameters.map((parameter) => ({
+        name: parameter.name,
+        span: graphSpan(parameter.span),
+        type: 'unknown',
+      })),
       steps,
       span: graphSpan(procedure.declaration.span),
     };
     nodes.push(procedureNode);
-    addReadEdges(
-      edges,
-      procedure.id,
-      steps.map((step) => step.value),
-      'procedural',
-    );
+    addReadEdges(edges, procedure.id, steps.flatMap(procedureStepExpressions), 'procedural');
     addWriteEdges(edges, procedureNode);
+  }
+
+  const effectValues = callableValues(symbols);
+  const declarativeWriters = new Map<string, SourceSpan>();
+  for (const [index, effect] of symbols.effects.entries()) {
+    const expression = lowerExpression(
+      effect.expression,
+      effectValues,
+      `component "${component.name.name}" effect`,
+      state,
+    );
+    if (expression?.kind !== 'call') {
+      report(
+        state,
+        'OXE2008',
+        'A top-level expression statement must be an ordinary call.',
+        effect.span,
+      );
+      continue;
+    }
+    const platform = [...state.platformCapabilities.values()].find(
+      (candidate) =>
+        expression.callee.kind === 'capability-read' && candidate.id === expression.callee.targetId,
+    );
+    if (platform?.contract.kind === 'pure') {
+      report(
+        state,
+        'OXE2008',
+        `Pure capability "${platform.contract.name}" returns a value and cannot be used as a top-level effect.`,
+        effect.span,
+      );
+      continue;
+    }
+    if (platform?.contract.writes) {
+      const previous = declarativeWriters.get(platform.contract.writes);
+      if (previous) {
+        report(
+          state,
+          'OXE2007',
+          `Multiple persistent relationships write "${platform.contract.writes}". Combine them into one relationship.`,
+          effect.span,
+          [{ message: 'The first persistent writer is here.', span: previous }],
+        );
+        continue;
+      }
+      declarativeWriters.set(platform.contract.writes, effect.span);
+    }
+    if (platform?.contract.kind === 'resource') {
+      nodes.push({
+        expression,
+        id: `${symbols.componentId}/resource[${index}]`,
+        kind: 'resource',
+        name: platform.contract.name,
+        span: graphSpan(effect.span),
+      });
+      addReadEdges(edges, `${symbols.componentId}/resource[${index}]`, [expression], 'reactive');
+      continue;
+    }
+    const node: EffectNodeV1 = {
+      expression,
+      id: `${symbols.componentId}/effect[${index}]`,
+      kind: 'effect',
+      ownerId: symbols.componentId,
+      span: graphSpan(effect.span),
+    };
+    nodes.push(node);
+    addReadEdges(edges, node.id, [expression], 'reactive');
   }
 
   if (symbols.renderRoots.length === 0) {
@@ -2424,6 +4587,7 @@ const analyzeComponent = (
     constantValues,
     edges,
     invocations,
+    contextProviders,
     nodes,
     props,
     scopeName: `component "${component.name.name}" markup`,
@@ -2432,11 +4596,14 @@ const analyzeComponent = (
     values: symbols.values,
     collectionKeys: new Set(),
   };
+  for (const content of symbols.contents.values()) {
+    lowerContentValue(content, renderContext);
+  }
   symbols.renderRoots.forEach((element, index) => {
-    if (element.kind === 'IfRegion') {
-      lowerIfRegion(
+    if (element.kind === 'ConditionalRegion') {
+      lowerConditionalRegion(
         element,
-        `${symbols.componentId}/view/if[${index}]`,
+        `${symbols.componentId}/view/conditional[${index}]`,
         symbols.componentId,
         index,
         renderContext,
@@ -2485,10 +4652,176 @@ const inferStandaloneExpression = (
       }
       return 'array';
     }
+    case 'call':
+      inferStandaloneExpression(expression.callee, valuesById, state);
+      for (const argument of expression.arguments) {
+        inferStandaloneExpression(argument, valuesById, state);
+      }
+      return expression.returnType ?? 'unknown';
+    case 'capability-read':
+      return 'unknown';
+    case 'local-read':
+      return expression.type;
+    case 'collection': {
+      const sourceType = inferStandaloneExpression(expression.source, valuesById, state);
+      if (sourceType !== 'array' && sourceType !== 'unknown') {
+        report(
+          state,
+          'OXE2009',
+          `${expression.operation} requires an array source, but received ${sourceType}.`,
+          expression.source.span,
+        );
+      }
+      const resultType = inferStandaloneExpression(expression.callback.result, valuesById, state);
+      if (
+        expression.operation === 'filter' &&
+        resultType !== 'boolean' &&
+        resultType !== 'unknown'
+      ) {
+        report(
+          state,
+          'OXE2009',
+          `filter callbacks must produce Boolean, but received ${resultType}.`,
+          expression.callback.result.span,
+        );
+      }
+      if (
+        expression.operation === 'flatMap' &&
+        resultType !== 'array' &&
+        resultType !== 'unknown'
+      ) {
+        report(
+          state,
+          'OXE2009',
+          `flatMap callbacks must produce arrays, but received ${resultType}.`,
+          expression.callback.result.span,
+        );
+      }
+      if (expression.operation === 'sort') {
+        if (
+          resultType !== 'boolean' &&
+          resultType !== 'number' &&
+          resultType !== 'string' &&
+          resultType !== 'unknown'
+        ) {
+          report(
+            state,
+            'OXE2009',
+            `sort callbacks must produce a scalar key, but received ${resultType}.`,
+            expression.callback.result.span,
+          );
+        }
+        if (expression.options) {
+          const optionsType = inferStandaloneExpression(expression.options, valuesById, state);
+          if (optionsType !== 'record' && optionsType !== 'unknown') {
+            report(
+              state,
+              'OXE2009',
+              `sort options must be a record, but received ${optionsType}.`,
+              expression.options.span,
+            );
+          }
+          const optionsRecord = resolveRecordExpression(expression.options, valuesById);
+          if (optionsRecord) {
+            for (const entry of optionsRecord.entries) {
+              if (entry.name !== 'descending') {
+                report(
+                  state,
+                  'OXE2009',
+                  `Unknown sort option "${entry.name}". The supported option is descending.`,
+                  entry.span,
+                );
+              } else {
+                const type = inferStandaloneExpression(entry.value, valuesById, state);
+                if (type !== 'boolean' && type !== 'unknown') {
+                  report(
+                    state,
+                    'OXE2009',
+                    `sort option descending must be Boolean, but received ${type}.`,
+                    entry.value.span,
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
+      if (expression.operation === 'reduce') {
+        const initialType = expression.initial
+          ? inferStandaloneExpression(expression.initial, valuesById, state)
+          : 'unknown';
+        if (initialType !== 'unknown' && resultType !== 'unknown' && initialType !== resultType) {
+          report(
+            state,
+            'OXE2009',
+            `reduce callback results must match the ${initialType} initial value, but received ${resultType}.`,
+            expression.callback.result.span,
+          );
+        }
+        return initialType === 'unknown' ? resultType : initialType;
+      }
+      return 'array';
+    }
     case 'literal':
       return typeof expression.value as 'boolean' | 'number' | 'string';
     case 'read':
       return valuesById.get(expression.targetId)?.type ?? 'unknown';
+    case 'member': {
+      const record = resolveRecordExpression(expression.object, valuesById);
+      if (record) {
+        const entry = record.entries.find((item) => item.name === expression.property);
+        if (!entry) {
+          report(
+            state,
+            'OXE2002',
+            `Record has no field "${expression.property}".`,
+            expression.span,
+          );
+          return 'unknown';
+        }
+        return inferStandaloneExpression(entry.value, valuesById, state);
+      }
+      const objectType = inferStandaloneExpression(expression.object, valuesById, state);
+      return expression.property === 'length' && (objectType === 'array' || objectType === 'string')
+        ? 'number'
+        : 'unknown';
+    }
+    case 'record':
+      for (const entry of expression.entries) {
+        inferStandaloneExpression(entry.value, valuesById, state);
+      }
+      return 'record';
+    case 'conditional': {
+      let resultType: PrimitiveTypeV1 = 'unknown';
+      for (const branch of expression.branches) {
+        if (branch.condition) {
+          const conditionType = inferStandaloneExpression(branch.condition, valuesById, state);
+          if (conditionType !== 'boolean' && conditionType !== 'unknown') {
+            report(
+              state,
+              'OXE2009',
+              `A conditional value condition must be Boolean, but received ${conditionType}.`,
+              branch.condition.span,
+            );
+          }
+        }
+        const current = inferStandaloneExpression(branch.result, valuesById, state);
+        if (current === 'unknown') {
+          continue;
+        }
+        if (resultType !== 'unknown' && resultType !== current) {
+          report(
+            state,
+            'OXE2009',
+            `Conditional value branches must share one type, but received ${resultType} and ${current}.`,
+            branch.result.span,
+          );
+          return 'unknown';
+        }
+        resultType = current;
+      }
+      return resultType;
+    }
     case 'binary': {
       const left = inferStandaloneExpression(expression.left, valuesById, state);
       const right = inferStandaloneExpression(expression.right, valuesById, state);
@@ -2519,6 +4852,7 @@ const edgeKey = (edge: UiEdgeV1): string => {
 interface SemanticModule {
   readonly ast: ModuleNode;
   readonly components: ReadonlyMap<string, ComponentSymbols>;
+  readonly contexts: ReadonlyMap<string, ContextInfo>;
   readonly moduleId: string;
 }
 
@@ -2543,6 +4877,22 @@ const registerSemanticModule = (
 ): SemanticModule => {
   const componentNames = new Map<string, SourceSpan>();
   const components = new Map<string, ComponentSymbols>();
+  const contexts = new Map<string, ContextInfo>();
+
+  for (const declaration of ast.contexts) {
+    const previous = contexts.get(declaration.name.name);
+    if (previous) {
+      report(state, 'OXE2001', `Duplicate context "${declaration.name.name}".`, declaration.span, [
+        { message: 'The first context is here.', span: previous.declaration.span },
+      ]);
+      continue;
+    }
+    contexts.set(declaration.name.name, {
+      declaration,
+      id: contextId(moduleId, declaration.name.name),
+      name: declaration.name.name,
+    });
+  }
 
   if (ast.declarations.length === 0) {
     report(state, 'OXE2008', 'An OXE UI module must declare at least one component.', ast.span);
@@ -2561,10 +4911,13 @@ const registerSemanticModule = (
       continue;
     }
     componentNames.set(component.name.name, component.name.span);
-    components.set(component.name.name, registerComponentSymbols(component, moduleId, state));
+    components.set(
+      component.name.name,
+      registerComponentSymbols(component, moduleId, contexts, state),
+    );
   }
 
-  return { ast, components, moduleId };
+  return { ast, components, contexts, moduleId };
 };
 
 const analyzeComponentSet = (
@@ -2582,6 +4935,17 @@ const analyzeComponentSet = (
   const components = new Map(
     componentList.map((component) => [component.componentId, component] as const),
   );
+
+  for (const module of modules) {
+    for (const context of module.contexts.values()) {
+      nodes.push({
+        id: context.id,
+        kind: 'context',
+        name: context.name,
+        span: graphSpan(context.declaration.span),
+      });
+    }
+  }
 
   for (const component of components.values()) {
     scanDirectParameterUses(component, state);
@@ -2611,14 +4975,51 @@ const analyzeComponentSet = (
   lowerParameterDefaults(componentList, state);
   for (const component of componentList) {
     for (const binding of component.bindings.values()) {
+      if (binding.classification === 'context') {
+        continue;
+      }
       binding.expression = lowerExpression(
         binding.declaration.value,
         component.values,
         `component "${component.component.name.name}"`,
         state,
       );
+      if (
+        binding.expression?.kind === 'call' &&
+        binding.expression.callee.kind === 'capability-read'
+      ) {
+        const capabilityTargetId = binding.expression.callee.targetId;
+        const platform = [...state.platformCapabilities.values()].find(
+          (candidate) => candidate.id === capabilityTargetId,
+        );
+        if (platform?.contract.kind === 'resource') {
+          binding.classification = 'resource';
+        } else if (platform?.contract.kind === 'effect') {
+          report(
+            state,
+            'OXE2008',
+            `Effect capability "${platform.contract.name}" cannot be captured as a value. Call it as a top-level relationship or inside a procedure.`,
+            binding.declaration.value.span,
+          );
+        } else if (platform && !platform.contract.returns) {
+          report(
+            state,
+            'OXE2008',
+            `Pure capability "${platform.contract.name}" must declare a return type before its result can be captured.`,
+            binding.declaration.value.span,
+          );
+        }
+      }
     }
   }
+  const contextProviders = collectLoweredContextProviders(componentList, state);
+  diagnoseMissingContextProviders(
+    componentList,
+    invocations,
+    contextProviders,
+    requestedEntries,
+    state,
+  );
   const loweredProps = lowerInvocationValueProps(invocations, state);
   if (state.diagnostics.length > 0) {
     return { diagnostics: sortDiagnostics(state.diagnostics) };
@@ -2638,10 +5039,28 @@ const analyzeComponentSet = (
       nodes,
       edges,
       invocationsByElement,
+      contextProviders,
       loweredProps.byInvocation,
       valuesById,
       state,
     );
+  }
+  for (const platform of state.platformCapabilities.values()) {
+    if (!platform.used) {
+      continue;
+    }
+    nodes.push({
+      capabilityKind: platform.contract.kind,
+      ...(platform.contract.dispose ? { dispose: platform.contract.dispose } : {}),
+      id: platform.id,
+      kind: 'platform-capability',
+      parameters: platform.contract.parameters,
+      path: platform.path,
+      ...(platform.contract.returns ? { returns: platform.contract.returns } : {}),
+      span: graphSpan(platform.span ?? modules[0]?.ast.span ?? componentList[0]!.component.span),
+      target: platform.contract.target ?? 'universal',
+      ...(platform.contract.writes ? { writes: platform.contract.writes } : {}),
+    });
   }
   if (state.diagnostics.length > 0) {
     return { diagnostics: sortDiagnostics(state.diagnostics) };
@@ -2680,14 +5099,15 @@ export const analyzeSource = (
   source: string,
   fileName = '<source>',
   requestedModuleId = fileName,
+  options?: AnalyzeOptions,
 ): AnalyzeResult => {
   const parsed = parseSource(source, fileName);
   if (parsed.diagnostics.length > 0) {
     return { ast: parsed.ast, diagnostics: parsed.diagnostics };
   }
 
-  const state: AnalysisState = { diagnostics: [], diagnosticKeys: new Set() };
   const moduleId = normalizeProjectModuleId(requestedModuleId);
+  const state = createAnalysisState(options, moduleId, parsed.ast.span);
   for (const declaration of parsed.ast.imports) {
     report(
       state,
@@ -2788,7 +5208,11 @@ const diagnoseImportCycles = (
 export const analyzeProject = async (
   options: AnalyzeProjectOptions,
 ): Promise<AnalyzeProjectResult> => {
-  const state: AnalysisState = { diagnostics: [], diagnosticKeys: new Set() };
+  let state = createAnalysisState(
+    undefined,
+    options.entryModuleId,
+    projectPointSpan(options.entryModuleId),
+  );
   let entryModuleId: string;
   try {
     entryModuleId = normalizeProjectModuleId(options.entryModuleId);
@@ -2816,6 +5240,7 @@ export const analyzeProject = async (
       diagnostics: sortDiagnostics(state.diagnostics),
     };
   }
+  state = createAnalysisState(options, entryModuleId, projectPointSpan(entryModuleId));
 
   const sourceLoads = new Map<string, Promise<string | undefined>>();
   const parsedModules = new Map<string, ModuleNode>();

@@ -45,12 +45,14 @@ describe('DOM code generation', () => {
       }),
     );
     expect(source).toContain(
-      'const { batch, createCell, createDerived, createRoot, untrack } = runtime;',
+      'const { batch, createCell, createDerived, createReaction, createRoot, untrack } = runtime;',
     );
     expect(source).toContain(
       'const { appendChild, bindDomValue, bindText, createConditionalRegion, createElement, createKeyedRegion, createText, listen, mount, setDomValue } = dom;',
     );
-    expect(source).toContain('const countCell = createCell(0, { name: "App.count" });');
+    expect(source).toContain(
+      'const countCell = createCell(0, { name: "App.count", traceId: "counter.oxe#component/App/binding/count" });',
+    );
     expect(source).toContain(
       'const doubledDerived = createDerived([countCell], () => (countCell.read() * 2)',
     );
@@ -88,17 +90,155 @@ describe('DOM code generation', () => {
     const artifact = generateDomArtifact(graph);
 
     expect(source).toMatch(
-      /^import \{ batch, createCell, createDerived, createRoot, untrack \} from '@oxe\/runtime';/u,
+      /^import \{ batch, createCell, createDerived, createReaction, createRoot, untrack \} from '@oxe\/runtime';/u,
     );
     expect(source).toContain("from '@oxe/runtime-dom';");
     expect(source).toContain('export { App, mountApp };');
     expect(source).not.toContain('(runtime, dom) =>');
-    expect(artifact).toEqual({
+    expect(artifact).toMatchObject({
       componentExport: 'App',
       factorySource: generateDomFactorySource(graph),
       moduleSource: source,
       mountExport: 'mountApp',
+      factorySourceMap: {
+        file: 'App.factory.js',
+        names: [],
+        sources: ['counter.oxe'],
+        version: 3,
+      },
+      moduleSourceMap: {
+        file: 'App.js',
+        names: [],
+        sources: ['counter.oxe'],
+        version: 3,
+      },
     });
+    expect(artifact.factorySourceMap.mappings.length).toBeGreaterThan(0);
+    expect(artifact.moduleSourceMap.mappings.length).toBeGreaterThan(0);
+  });
+
+  it('lowers standalone record member consumers to field-path sources', () => {
+    const result = analyzeSource(
+      `App():
+  profile = { name: "Ada", active: true }
+  deactivate():
+    profile.active = false
+  <main>
+    <p>{profile.name}
+`,
+      'record-path.oxe',
+      'record-path.oxe',
+    );
+    if (!result.graph) {
+      throw new Error(`Expected a graph, received: ${JSON.stringify(result.diagnostics)}`);
+    }
+
+    const source = generateDomFactorySource(result.graph);
+
+    expect(source).toContain('createRoot, selectPath, untrack } = runtime;');
+    expect(source).toContain(
+      'selectPath(profileCell, ["name"], { name: "profile.name", traceId: "record-path.oxe#component/App/binding/profile" })',
+    );
+    expect(source).toContain('profileCell.writePath(["active"], false);');
+  });
+
+  it('emits authored context identity, provider scope, and nearest-value reads', () => {
+    const result = analyzeSource(
+      `SessionContext = createContext()
+
+App():
+  session = { name: "Ada" }
+  <SessionContext value={session}>
+    <Header>
+
+Header():
+  session = SessionContext()
+  <p>{session.name}
+`,
+      'context.oxe',
+      'context.oxe',
+    );
+    if (!result.graph) {
+      throw new Error(`Expected a graph, received: ${JSON.stringify(result.diagnostics)}`);
+    }
+
+    const source = generateDomFactorySource(result.graph);
+    expect(source).toContain('const SessionContext = createContext("SessionContext");');
+    expect(source).toContain('withContext(SessionContext, contextValue, () => {');
+    expect(source).toContain('const sessionContextValue = readContext(SessionContext);');
+  });
+
+  it('emits typed host calls and compiler-owned disposable resources', () => {
+    const result = analyzeSource(
+      `App():
+  room = "general"
+  connection = messages.subscribe(room)
+  <main>
+`,
+      'resource.oxe',
+      'resource.oxe',
+      {
+        capabilities: [
+          {
+            dispose: 'dispose',
+            kind: 'resource',
+            name: 'messages.subscribe',
+            parameters: ['string'],
+          },
+        ],
+      },
+    );
+    if (!result.graph) {
+      throw new Error(`Expected a graph, received: ${JSON.stringify(result.diagnostics)}`);
+    }
+    const source = generateDomFactorySource(result.graph);
+    expect(source).toContain(
+      'createDisposableReaction([], () => globalThis["messages"]["subscribe"]',
+    );
+  });
+
+  it('hoists static DOM subtrees into cloneable direct-DOM templates', () => {
+    const result = analyzeSource(
+      `App():
+  <main class={"page"}>
+    <h1>OXE
+    <p>Static content
+`,
+      'static.oxe',
+      'static.oxe',
+    );
+    if (!result.graph) {
+      throw new Error(`Expected a graph, received: ${JSON.stringify(result.diagnostics)}`);
+    }
+    const source = generateDomFactorySource(result.graph);
+    expect(source).toContain('createStaticTemplate({"tag":"main"');
+    expect(source.match(/createStaticTemplate\(/gu)).toHaveLength(1);
+    expect(source).toContain('"children":[{"tag":"h1"');
+    expect(source).toMatch(/const mainElement = mainTemplate\d*\(document\);/u);
+  });
+
+  it('binds implicit platform refs before procedures or reactive work can use them', () => {
+    const result = analyzeSource(
+      `App():
+  focus():
+    field.focus()
+  <main>
+    <input ref={field}>
+    <button onClick={focus}>Focus
+`,
+      'ref.oxe',
+      'ref.oxe',
+    );
+    if (!result.graph) {
+      throw new Error(`Expected a graph, received: ${JSON.stringify(result.diagnostics)}`);
+    }
+    const source = generateDomFactorySource(result.graph);
+    expect(source).toContain('const fieldRef = createCell(undefined');
+    expect(source).toContain('fieldRef.write(inputElement);');
+    expect(source).toContain('fieldRef.read()["focus"]();');
+    expect(source.indexOf('fieldRef.write(inputElement);')).toBeLessThan(
+      source.indexOf('return mainElement;'),
+    );
   });
 
   it('emits static DOM attributes through the typed DOM value boundary', () => {

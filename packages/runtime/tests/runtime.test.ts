@@ -1,21 +1,77 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  addCollection,
   batch,
   createCell,
   createContext,
   createDerived,
+  createDisposableReaction,
   createReaction,
   createRoot,
   readContext,
+  removeCollection,
   registerCleanup,
+  selectPath,
+  sortCollection,
+  subscribeReactiveTrace,
   untrack,
+  updateCollection,
   withContext,
   type OxeRuntimeError,
+  type ReactiveTraceEvent,
   type Readable,
 } from '../src/index.js';
 
 describe('reactive graph', () => {
+  it('updates collections immutably with deterministic limits and stable sorting', () => {
+    const source: readonly {
+      readonly group: string;
+      readonly id: number;
+      readonly name: string;
+    }[] = [
+      { id: 1, group: 'a', name: 'Lin' },
+      { id: 2, group: 'a', name: 'Ada' },
+      { id: 3, group: 'b', name: 'Ada' },
+    ];
+
+    const added = addCollection(source, { id: 4, group: 'b', name: 'Grace' });
+    const updated = updateCollection(
+      added,
+      (user) => user.group === 'a',
+      (user) => ({ ...user, name: 'Chris' }),
+      1,
+    );
+    const removed = removeCollection(updated, (user) => user.name === 'Ada', 1);
+    const sorted = sortCollection(removed, (user) => user.name);
+    const descending = sortCollection(removed, (user) => user.name, { descending: true });
+
+    expect(source.map((user) => user.name)).toEqual(['Lin', 'Ada', 'Ada']);
+    expect(updated.map((user) => user.name)).toEqual(['Chris', 'Ada', 'Ada', 'Grace']);
+    expect(removed.map((user) => user.id)).toEqual([1, 3, 4]);
+    expect(sorted.map((user) => user.id)).toEqual([3, 1, 4]);
+    expect(descending.map((user) => user.id)).toEqual([4, 1, 3]);
+    expect(
+      updateCollection(
+        source,
+        () => false,
+        (user) => user,
+      ),
+    ).toBe(source);
+    expect(
+      updateCollection(
+        source,
+        () => true,
+        (user) => ({ ...user }),
+      ),
+    ).toBe(source);
+    expect(removeCollection(source, () => true, 0)).toBe(source);
+    expect(sortCollection(sorted, (user) => user.name)).toBe(sorted);
+    expect(() => removeCollection(source, () => true, -1)).toThrow(
+      'A collection mutation limit must be a nonnegative integer.',
+    );
+  });
+
   it('updates explicit dependencies and suppresses equal writes', () => {
     const values: number[] = [];
 
@@ -32,6 +88,122 @@ describe('reactive graph', () => {
     root.value.write(2);
     expect(values).toEqual([2, 4]);
 
+    root.dispose();
+  });
+
+  it('invalidates only changed paths of a standalone record cell', () => {
+    interface Profile {
+      readonly identity: { readonly name: string };
+      readonly stats: { readonly score: number };
+    }
+
+    const names: string[] = [];
+    const scores: number[] = [];
+    let wholeRecordRuns = 0;
+    const initial: Profile = {
+      identity: { name: 'Ada' },
+      stats: { score: 1 },
+    };
+
+    const root = createRoot(() => {
+      const profile = createCell(initial, { name: 'profile' });
+      const name = selectPath<Profile, string>(profile, ['identity', 'name']);
+      const score = selectPath<Profile, number>(profile, ['stats', 'score']);
+
+      createReaction([name], () => names.push(name.read()), { name: 'name consumer' });
+      createReaction([score], () => scores.push(score.read()), { name: 'score consumer' });
+      createReaction([profile], () => {
+        profile.read();
+        wholeRecordRuns += 1;
+      });
+
+      return profile;
+    });
+
+    const identityBeforeScore = root.value.read().identity;
+    root.value.writePath(['stats', 'score'], 2);
+
+    expect(names).toEqual(['Ada']);
+    expect(scores).toEqual([1, 2]);
+    expect(wholeRecordRuns).toBe(2);
+    expect(root.value.read().identity).toBe(identityBeforeScore);
+
+    root.value.writePath(['identity', 'name'], 'Grace');
+
+    expect(names).toEqual(['Ada', 'Grace']);
+    expect(scores).toEqual([1, 2]);
+    expect(wholeRecordRuns).toBe(3);
+    root.dispose();
+  });
+
+  it('suppresses unchanged paths selected from derived records', () => {
+    const stableValues: string[] = [];
+    const counts: number[] = [];
+
+    const root = createRoot(() => {
+      const count = createCell(1, { name: 'count' });
+      const summary = createDerived([count], () => ({ count: count.read(), stable: 'same' }), {
+        name: 'summary',
+      });
+      const stable = selectPath<{ readonly count: number; readonly stable: string }, string>(
+        summary,
+        ['stable'],
+      );
+      const selectedCount = selectPath<{ readonly count: number; readonly stable: string }, number>(
+        summary,
+        ['count'],
+      );
+
+      createReaction([stable], () => stableValues.push(stable.read()));
+      createReaction([selectedCount], () => counts.push(selectedCount.read()));
+      return count;
+    });
+
+    root.value.write(2);
+
+    expect(stableValues).toEqual(['same']);
+    expect(counts).toEqual([1, 2]);
+    root.dispose();
+  });
+
+  it('explains writes, invalidations, executions, and equality suppression', () => {
+    const events: ReactiveTraceEvent[] = [];
+    const trace = subscribeReactiveTrace((event) => events.push(event));
+    const root = createRoot(() => {
+      const profile = createCell(
+        { name: 'Ada', score: 1 },
+        { name: 'profile', traceId: 'cell:profile' },
+      );
+      const name = selectPath<{ readonly name: string; readonly score: number }, string>(
+        profile,
+        ['name'],
+        { traceId: 'cell:profile' },
+      );
+      createReaction([name], () => name.read(), {
+        name: 'name text',
+        traceId: 'text:name',
+      });
+      return profile;
+    });
+
+    events.length = 0;
+    root.value.writePath(['score'], 2);
+    root.value.writePath(['name'], 'Grace');
+    root.value.writePath(['name'], 'Grace');
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'write', reason: 'updated score' }),
+        expect.objectContaining({ kind: 'invalidate', reason: 'profile.name changed' }),
+        expect.objectContaining({
+          kind: 'execute',
+          computation: expect.objectContaining({ name: 'name text' }),
+        }),
+        expect.objectContaining({ kind: 'suppress', reason: 'field write to name remained equal' }),
+      ]),
+    );
+
+    trace.dispose();
     root.dispose();
   });
 
@@ -411,6 +583,30 @@ describe('reactive graph', () => {
     expect(count?.read()).toBe(0);
   });
 
+  it('rejects a reactive write cycle routed through a selected derived field', () => {
+    let count: ReturnType<typeof createCell<number>> | undefined;
+
+    expect(() =>
+      createRoot(() => {
+        const localCount = createCell(0, { name: 'count' });
+        count = localCount;
+        const summary = createDerived([localCount], () => ({ value: localCount.read() }), {
+          name: 'summary',
+        });
+        const value = selectPath<{ readonly value: number }, number>(summary, ['value']);
+        createReaction([value], () => localCount.write(value.read() + 1), {
+          name: 'selected self writer',
+        });
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<OxeRuntimeError>>({
+        code: 'OXE_RUNTIME_CYCLE',
+      }),
+    );
+
+    expect(count?.read()).toBe(0);
+  });
+
   it('requires computations to declare real OXE dependencies', () => {
     const fake = { read: () => 1 } as Readable<number>;
 
@@ -421,6 +617,27 @@ describe('reactive graph', () => {
         code: 'OXE_RUNTIME_INVALID_DEPENDENCY',
       }),
     );
+  });
+
+  it('disposes compiler-known resources before replacement and with their owner', () => {
+    const disposed: string[] = [];
+    const root = createRoot(() => {
+      const room = createCell('general');
+      createDisposableReaction(
+        [room],
+        () => {
+          const activeRoom = room.read();
+          return { dispose: () => disposed.push(activeRoom) };
+        },
+        { name: 'message subscription' },
+      );
+      return room;
+    });
+
+    root.value.write('random');
+    expect(disposed).toEqual(['general']);
+    root.dispose();
+    expect(disposed).toEqual(['general', 'random']);
   });
 
   it('rejects reactive dependencies owned by an unrelated root', () => {

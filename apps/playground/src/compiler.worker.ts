@@ -82,6 +82,7 @@ const compile = async (request: {
       componentExport: artifact.componentExport,
       mountExport: artifact.mountExport,
       factorySource: artifact.factorySource,
+      factorySourceMap: artifact.factorySourceMap,
       moduleSource: artifact.moduleSource,
       compileMilliseconds: performance.now() - startedAt,
     };

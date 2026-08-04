@@ -4,12 +4,15 @@ import compositionFeaturesSource from '../../../examples/composition-features/Ap
 import componentModulesAppSource from '../../../examples/component-modules/App.oxe?raw';
 import componentModulesCardSource from '../../../examples/component-modules/Card.oxe?raw';
 import conditionalRegionSource from '../../../examples/conditional-region/App.oxe?raw';
+import conditionalValuesSource from '../../../examples/conditional-values/App.oxe?raw';
+import contentValuesSource from '../../../examples/content-values/App.oxe?raw';
 import counterSource from '../../../examples/counter/App.oxe?raw';
 import cycleSource from '../../../examples/diagnostics-cycle/App.oxe?raw';
 import typeErrorSource from '../../../examples/diagnostics-type-error/App.oxe?raw';
 import unknownNameSource from '../../../examples/diagnostics-unknown-name/App.oxe?raw';
 import derivedSource from '../../../examples/derived/App.oxe?raw';
 import domAttributesSource from '../../../examples/dom-attributes/App.oxe?raw';
+import expressionValuesSource from '../../../examples/expression-values/App.oxe?raw';
 import keyedCollectionSource from '../../../examples/keyed-collection/App.oxe?raw';
 import staticSource from '../../../examples/static/App.oxe?raw';
 import untrackSnapshotSource from '../../../examples/untrack-snapshot/App.oxe?raw';
@@ -57,6 +60,30 @@ export const examples: readonly PlaygroundExample[] = [
     description: 'Incremental branch replacement with deterministic owner cleanup.',
     moduleId: 'examples/conditional-region/App.oxe',
     source: conditionalRegionSource,
+  }),
+  singleFileExample({
+    id: 'content-values',
+    label: 'Content values',
+    group: 'Reactivity',
+    description: 'Ownership-safe captured markup instantiated independently at each placement.',
+    moduleId: 'examples/content-values/App.oxe',
+    source: contentValuesSource,
+  }),
+  singleFileExample({
+    id: 'conditional-values',
+    label: 'Conditional values',
+    group: 'Reactivity',
+    description: 'Inline and multi-arm value choices that update as derived relationships.',
+    moduleId: 'examples/conditional-values/App.oxe',
+    source: conditionalValuesSource,
+  }),
+  singleFileExample({
+    id: 'expression-values',
+    label: 'Records and collections',
+    group: 'Basics',
+    description: 'Reactive records plus add, update, remove, filter, and pure stable sorting.',
+    moduleId: 'examples/expression-values/App.oxe',
+    source: expressionValuesSource,
   }),
   singleFileExample({
     id: 'counter',

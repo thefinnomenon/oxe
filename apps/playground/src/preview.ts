@@ -11,6 +11,7 @@ import {
   type PreviewConsoleLevel,
   type PreviewErrorPhase,
   type PreviewEvent,
+  type PreviewMountCommand,
 } from './protocol.js';
 import './preview.css';
 
@@ -27,6 +28,7 @@ let activeMount: runtimeDom.MountHandle | undefined;
 let activeRunId: number | null = null;
 let commandSequence = 0;
 let mutationObserver: MutationObserver | undefined;
+let reactiveTraceSubscription: runtime.Disposable | undefined;
 let counts: MutationCounts = emptyMutationCounts();
 
 function emptyMutationCounts(): MutationCounts {
@@ -137,6 +139,21 @@ const postMutations = (runId: number): void => {
   });
 };
 
+const observeReactivity = (runId: number): void => {
+  reactiveTraceSubscription?.dispose();
+  reactiveTraceSubscription = runtime.subscribeReactiveTrace((event) => {
+    if (activeRunId !== runId) {
+      return;
+    }
+    postToParent({
+      type: 'preview:reactivity',
+      version: OXE_PLAYGROUND_PROTOCOL_VERSION,
+      runId,
+      event,
+    });
+  });
+};
+
 const resetPostMountMutations = (runId: number): void => {
   mutationObserver?.takeRecords();
   counts = emptyMutationCounts();
@@ -199,14 +216,34 @@ const clearPreview = (command: PreviewCommand): void => {
   activeRunId = command.runId;
   mutationObserver?.disconnect();
   mutationObserver = undefined;
+  reactiveTraceSubscription?.dispose();
+  reactiveTraceSubscription = undefined;
   unmountActive(command.runId);
   previewRoot.replaceChildren();
 };
 
-const importFactory = async (source: string, runId: number): Promise<GeneratedFactory> => {
+const inlineSourceMap = (
+  sourceMap: NonNullable<PreviewMountCommand['factorySourceMap']>,
+): string => {
+  const bytes = new TextEncoder().encode(JSON.stringify(sourceMap));
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+};
+
+const importFactory = async (
+  source: string,
+  runId: number,
+  sourceMap?: PreviewMountCommand['factorySourceMap'],
+): Promise<GeneratedFactory> => {
   const moduleSource =
     `export default ${source.trim()}\n` +
-    `//# sourceURL=oxe-playground-run-${runId.toString()}.generated.js\n`;
+    `//# sourceURL=oxe-playground-run-${runId.toString()}.generated.js\n` +
+    (sourceMap
+      ? `//# sourceMappingURL=data:application/json;base64,${inlineSourceMap(sourceMap)}\n`
+      : '');
   const url = URL.createObjectURL(new Blob([moduleSource], { type: 'text/javascript' }));
   try {
     const generatedModule: unknown = await import(/* @vite-ignore */ url);
@@ -235,7 +272,11 @@ const mountPreview = async (
 
   let createGenerated: GeneratedFactory;
   try {
-    createGenerated = await importFactory(command.factorySource, command.runId);
+    createGenerated = await importFactory(
+      command.factorySource,
+      command.runId,
+      command.factorySourceMap,
+    );
   } catch (error) {
     if (sequence === commandSequence) {
       postError('import', error, command.runId);
@@ -266,6 +307,7 @@ const mountPreview = async (
   }
 
   observeMutations(command.runId);
+  observeReactivity(command.runId);
   const startedAt = performance.now();
   try {
     const result: unknown = mount(previewRoot);
@@ -282,6 +324,8 @@ const mountPreview = async (
   } catch (error) {
     mutationObserver?.disconnect();
     mutationObserver = undefined;
+    reactiveTraceSubscription?.dispose();
+    reactiveTraceSubscription = undefined;
     postError('mount', error, command.runId);
     return;
   }

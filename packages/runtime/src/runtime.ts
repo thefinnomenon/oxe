@@ -20,25 +20,46 @@ interface OwnerNode {
 interface SourceNode {
   readonly name: string;
   readonly observers: Set<ComputationNode>;
+  readonly sourceKind: 'cell' | 'computation' | 'selection';
+  readonly traceId: string | undefined;
   version: number;
 }
 
 interface CellNode<T> extends SourceNode {
   readonly equals: Equality<T>;
+  readonly selections: Map<string, SelectionNode>;
+  readonly sourceKind: 'cell';
   value: T;
+}
+
+interface SelectionNode extends SourceNode {
+  readonly parent: CellNode<unknown> | ComputationNode;
+  readonly path: readonly string[];
+  readonly sourceKind: 'selection';
+  seenVersion: number;
+  value: unknown;
 }
 
 interface ComputationNode extends OwnerNode, SourceNode {
   readonly equals: Equality<unknown>;
   readonly kind: 'derived' | 'reaction';
   readonly run: () => unknown;
+  readonly selections: Map<string, SelectionNode>;
+  readonly sourceKind: 'computation';
   readonly seenVersions: Map<SourceNode, number>;
   readonly sources: Set<SourceNode>;
+  readonly staleReasons: Map<string, ReactiveTraceSource>;
   initialized: boolean;
   queued: boolean;
   state: ComputationState;
   value: unknown;
 }
+
+const isComputation = (source: SourceNode): source is ComputationNode =>
+  source.sourceKind === 'computation';
+
+const isSelection = (source: SourceNode): source is SelectionNode =>
+  source.sourceKind === 'selection';
 
 export interface Readable<T> {
   read(): T;
@@ -46,6 +67,7 @@ export interface Readable<T> {
 
 export interface Cell<T> extends Readable<T> {
   write(next: T): T;
+  writePath(path: readonly string[], next: unknown): T;
 }
 
 export interface Disposable {
@@ -69,7 +91,25 @@ export interface Context<T> {
 
 export interface NamedOptions {
   readonly name?: string;
+  /** Stable compiler graph id used only by development tracing. */
+  readonly traceId?: string;
 }
+
+export interface ReactiveTraceSource {
+  readonly id?: string;
+  readonly name: string;
+  readonly path?: readonly string[];
+}
+
+export interface ReactiveTraceEvent {
+  readonly computation?: ReactiveTraceSource & { readonly kind: 'derived' | 'reaction' };
+  readonly kind: 'execute' | 'invalidate' | 'suppress' | 'write';
+  readonly reason: string;
+  readonly source: ReactiveTraceSource;
+  readonly timestamp: number;
+}
+
+export type ReactiveTraceListener = (event: ReactiveTraceEvent) => void;
 
 export interface CellOptions<T> extends NamedOptions {
   readonly equals?: Equality<T>;
@@ -84,6 +124,32 @@ let batchDepth = 0;
 let flushing = false;
 const pendingReactions: ComputationNode[] = [];
 const ownerScopes = new WeakMap<OwnerScope, OwnerNode>();
+const reactiveTraceListeners = new Set<ReactiveTraceListener>();
+
+const sourceTrace = (source: SourceNode): ReactiveTraceSource => ({
+  ...(source.traceId ? { id: source.traceId } : {}),
+  name: isSelection(source) ? source.parent.name : source.name,
+  ...(isSelection(source) ? { path: source.path } : {}),
+});
+
+const traceReasonKey = (source: ReactiveTraceSource): string =>
+  `${source.id ?? source.name}\0${source.path?.join('\0') ?? ''}`;
+
+const emitReactiveTrace = (event: Omit<ReactiveTraceEvent, 'timestamp'>): void => {
+  if (reactiveTraceListeners.size === 0) {
+    return;
+  }
+  const traced = Object.freeze({ ...event, timestamp: Date.now() });
+  for (const listener of reactiveTraceListeners) {
+    listener(traced);
+  }
+};
+
+/** Subscribes to development-only invalidation and execution explanations. */
+export const subscribeReactiveTrace = (listener: ReactiveTraceListener): Disposable => {
+  reactiveTraceListeners.add(listener);
+  return { dispose: () => reactiveTraceListeners.delete(listener) };
+};
 
 const createOwnerNode = (name: string, parent: OwnerNode | undefined): OwnerNode => ({
   name,
@@ -169,7 +235,12 @@ const disposeOwner = (owner: OwnerNode): void => {
     computation.state = 'disposed';
     computation.queued = false;
     detachSources(computation);
+    computation.staleReasons.clear();
     computation.observers.clear();
+    for (const selection of computation.selections.values()) {
+      selection.observers.clear();
+    }
+    computation.selections.clear();
   }
 
   try {
@@ -233,6 +304,12 @@ const assertNoRunningObserver = (source: SourceNode, visited = new Set<SourceNod
     }
     assertNoRunningObserver(observer, visited);
   }
+
+  if (isComputation(source)) {
+    for (const selection of source.selections.values()) {
+      assertNoRunningObserver(selection, visited);
+    }
+  }
 };
 
 const enqueueReaction = (reaction: ComputationNode): void => {
@@ -244,7 +321,25 @@ const enqueueReaction = (reaction: ComputationNode): void => {
   pendingReactions.push(reaction);
 };
 
-const markStale = (computation: ComputationNode, visited = new Set<ComputationNode>()): void => {
+const markStale = (
+  computation: ComputationNode,
+  visited = new Set<ComputationNode>(),
+  reason?: SourceNode,
+): void => {
+  if (reason) {
+    const tracedReason = sourceTrace(reason);
+    computation.staleReasons.set(traceReasonKey(tracedReason), tracedReason);
+    emitReactiveTrace({
+      computation: {
+        ...(computation.traceId ? { id: computation.traceId } : {}),
+        kind: computation.kind,
+        name: computation.name,
+      },
+      kind: 'invalidate',
+      reason: `${tracedReason.name}${tracedReason.path?.length ? `.${tracedReason.path.join('.')}` : ''} changed`,
+      source: tracedReason,
+    });
+  }
   if (computation.state === 'disposed' || visited.has(computation)) {
     return;
   }
@@ -256,8 +351,14 @@ const markStale = (computation: ComputationNode, visited = new Set<ComputationNo
 
   computation.state = 'stale';
 
+  for (const selection of computation.selections.values()) {
+    for (const observer of selection.observers) {
+      markStale(observer, visited, selection);
+    }
+  }
+
   for (const observer of computation.observers) {
-    markStale(observer, visited);
+    markStale(observer, visited, computation);
   }
 
   if (computation.kind === 'reaction') {
@@ -268,7 +369,7 @@ const markStale = (computation: ComputationNode, visited = new Set<ComputationNo
 const invalidate = (source: SourceNode): void => {
   const visited = new Set<ComputationNode>();
   for (const observer of source.observers) {
-    markStale(observer, visited);
+    markStale(observer, visited, source);
   }
 };
 
@@ -283,7 +384,7 @@ const executeComputation = (computation: ComputationNode): unknown => {
 
   if (computation.kind === 'reaction') {
     for (const source of computation.sources) {
-      refreshDerived(source);
+      refreshSource(source);
     }
   }
 
@@ -296,12 +397,39 @@ const executeComputation = (computation: ComputationNode): unknown => {
   computation.state = 'running';
 
   try {
+    const reasons = [...computation.staleReasons.values()];
+    const tracedComputation = {
+      ...(computation.traceId ? { id: computation.traceId } : {}),
+      kind: computation.kind,
+      name: computation.name,
+    } as const;
+    emitReactiveTrace({
+      computation: tracedComputation,
+      kind: 'execute',
+      reason: wasInitialized
+        ? reasons.length > 0
+          ? reasons
+              .map((reason) =>
+                reason.path?.length ? `${reason.name}.${reason.path.join('.')}` : reason.name,
+              )
+              .join(', ')
+          : 'dependency version changed'
+        : 'initial execution',
+      source: reasons[0] ?? sourceTrace(computation),
+    });
     const nextValue = computation.run();
 
     if (computation.kind === 'derived') {
       if (!wasInitialized || !computation.equals(previousValue, nextValue)) {
         computation.value = nextValue;
         computation.version += 1;
+      } else {
+        emitReactiveTrace({
+          computation: tracedComputation,
+          kind: 'suppress',
+          reason: 'derived output remained equal',
+          source: reasons[0] ?? sourceTrace(computation),
+        });
       }
     } else {
       computation.value = nextValue;
@@ -312,6 +440,7 @@ const executeComputation = (computation: ComputationNode): unknown => {
 
     computation.initialized = true;
     computation.state = 'clean';
+    computation.staleReasons.clear();
     return computation.value;
   } catch (error) {
     return cleanupFailedComputation(computation, error);
@@ -320,7 +449,59 @@ const executeComputation = (computation: ComputationNode): unknown => {
   }
 };
 
-const isComputation = (source: SourceNode): source is ComputationNode => 'kind' in source;
+const isSelectableSource = (source: SourceNode): source is CellNode<unknown> | ComputationNode =>
+  source.sourceKind === 'cell' || source.sourceKind === 'computation';
+
+const sourceValue = (source: CellNode<unknown> | ComputationNode): unknown => source.value;
+
+const readPath = (value: unknown, path: readonly string[]): unknown => {
+  let current = value;
+  for (const property of path) {
+    if (current === null || current === undefined) {
+      return undefined;
+    }
+    current = (Object(current) as Record<string, unknown>)[property];
+  }
+  return current;
+};
+
+const pathStartsWith = (path: readonly string[], prefix: readonly string[]): boolean =>
+  prefix.length <= path.length && prefix.every((property, index) => path[index] === property);
+
+const pathsOverlap = (left: readonly string[], right: readonly string[]): boolean =>
+  pathStartsWith(left, right) || pathStartsWith(right, left);
+
+const replacePath = (value: unknown, path: readonly string[], replacement: unknown): unknown => {
+  const [property, ...rest] = path;
+  if (!property) {
+    return replacement;
+  }
+  if (value === null || typeof value !== 'object') {
+    throw new OxeRuntimeError(
+      'OXE_RUNTIME_INVALID_WRITE_PATH',
+      `Cannot write path "${path.join('.')}" because "${property}" is not inside a record.`,
+    );
+  }
+
+  const record = value as Record<string, unknown>;
+  if (!Object.hasOwn(record, property)) {
+    throw new OxeRuntimeError(
+      'OXE_RUNTIME_INVALID_WRITE_PATH',
+      `Cannot write path "${path.join('.')}" because field "${property}" does not exist.`,
+    );
+  }
+  const current = record[property];
+  const next = replacePath(current, rest, replacement);
+  if (Object.is(current, next)) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const copy = [...value];
+    copy[Number(property)] = next;
+    return copy;
+  }
+  return { ...record, [property]: next };
+};
 
 const ownerIsWithin = (owner: OwnerNode, ancestor: OwnerNode): boolean => {
   let current: OwnerNode | undefined = owner;
@@ -335,13 +516,26 @@ const ownerIsWithin = (owner: OwnerNode, ancestor: OwnerNode): boolean => {
   return false;
 };
 
-function refreshDerived(source: SourceNode): void {
+function refreshSource(source: SourceNode): void {
   if (
     isComputation(source) &&
     source.kind === 'derived' &&
     (source.state === 'stale' || !source.initialized)
   ) {
     executeComputation(source);
+    return;
+  }
+
+  if (isSelection(source)) {
+    refreshSource(source.parent);
+    if (source.seenVersion !== source.parent.version) {
+      const nextValue = readPath(sourceValue(source.parent), source.path);
+      if (!Object.is(source.value, nextValue)) {
+        source.value = nextValue;
+        source.version += 1;
+      }
+      source.seenVersion = source.parent.version;
+    }
   }
 }
 
@@ -349,7 +543,7 @@ const reactionDependenciesChanged = (reaction: ComputationNode): boolean => {
   let changed = !reaction.initialized;
 
   for (const source of reaction.sources) {
-    refreshDerived(source);
+    refreshSource(source);
     if (reaction.seenVersions.get(source) !== source.version) {
       changed = true;
     }
@@ -393,6 +587,18 @@ const flush = (): void => {
           if (reactionDependenciesChanged(reaction)) {
             executeComputation(reaction);
           } else {
+            const reasons = [...reaction.staleReasons.values()];
+            emitReactiveTrace({
+              computation: {
+                ...(reaction.traceId ? { id: reaction.traceId } : {}),
+                kind: reaction.kind,
+                name: reaction.name,
+              },
+              kind: 'suppress',
+              reason: 'selected dependency values remained equal',
+              source: reasons[0] ?? sourceTrace(reaction),
+            });
+            reaction.staleReasons.clear();
             reaction.state = 'clean';
           }
         } catch (error) {
@@ -433,6 +639,10 @@ const createComputation = (
     disposed: false,
     equals,
     observers: new Set(),
+    sourceKind: 'computation',
+    selections: new Map(),
+    staleReasons: new Map(),
+    traceId: options.traceId,
     version: 0,
     seenVersions: new Map(),
     sources: new Set(),
@@ -457,14 +667,17 @@ const createComputation = (
       );
     }
 
+    const lifetimeSource = isSelection(source) ? source.parent : source;
     if (
-      isComputation(source) &&
-      (source.state === 'disposed' || !source.parent || !ownerIsWithin(parent, source.parent))
+      isComputation(lifetimeSource) &&
+      (lifetimeSource.state === 'disposed' ||
+        !lifetimeSource.parent ||
+        !ownerIsWithin(parent, lifetimeSource.parent))
     ) {
       disposeOwner(computation);
       throw new OxeRuntimeError(
         'OXE_RUNTIME_OWNER_LIFETIME',
-        `${kind} "${computation.name}" cannot depend on ${computationLabel(source)} because ` +
+        `${kind} "${computation.name}" cannot depend on ${computationLabel(lifetimeSource)} because ` +
           'that value belongs to a shorter-lived or unrelated owner. Move the value to a ' +
           'shared enclosing scope.',
       );
@@ -481,19 +694,62 @@ export const createCell = <T>(initialValue: T, options: CellOptions<T> = {}): Ce
   const node: CellNode<T> = {
     name: options.name ?? 'cell',
     observers: new Set(),
+    sourceKind: 'cell',
+    traceId: options.traceId,
     version: 0,
     value: initialValue,
     equals: options.equals ?? Object.is,
+    selections: new Map(),
   };
 
-  const commit = (value: T): T => {
+  const commit = (value: T, changedPath?: readonly string[]): T => {
     if (node.equals(node.value, value)) {
+      emitReactiveTrace({
+        kind: 'suppress',
+        reason: changedPath
+          ? `field write to ${changedPath.join('.')} remained equal`
+          : 'whole-value write remained equal',
+        source: sourceTrace(node),
+      });
       return node.value;
+    }
+
+    const changedSelections: { readonly node: SelectionNode; readonly value: unknown }[] = [];
+    for (const selection of node.selections.values()) {
+      if (changedPath && !pathsOverlap(selection.path, changedPath)) {
+        continue;
+      }
+      const nextValue = readPath(value, selection.path);
+      if (!Object.is(selection.value, nextValue)) {
+        assertNoRunningObserver(selection);
+        changedSelections.push({ node: selection, value: nextValue });
+      }
     }
 
     node.value = value;
     node.version += 1;
+    for (const changed of changedSelections) {
+      changed.node.value = changed.value;
+      changed.node.seenVersion = node.version;
+      changed.node.version += 1;
+    }
+    for (const selection of node.selections.values()) {
+      selection.seenVersion = node.version;
+    }
+    emitReactiveTrace({
+      kind: 'write',
+      reason: changedPath
+        ? `updated ${changedPath.join('.')}`
+        : `updated whole value; ${changedSelections.length} selected path${changedSelections.length === 1 ? '' : 's'} changed`,
+      source: {
+        ...sourceTrace(node),
+        ...(changedPath ? { path: changedPath } : {}),
+      },
+    });
     invalidate(node);
+    for (const changed of changedSelections) {
+      invalidate(changed.node);
+    }
     flush();
     return value;
   };
@@ -504,6 +760,16 @@ export const createCell = <T>(initialValue: T, options: CellOptions<T> = {}): Ce
     write: (next) => {
       assertNoRunningObserver(node);
       return commit(next);
+    },
+    writePath: (path, next) => {
+      if (path.length === 0) {
+        throw new OxeRuntimeError(
+          'OXE_RUNTIME_INVALID_WRITE_PATH',
+          'A field write requires at least one path segment.',
+        );
+      }
+      assertNoRunningObserver(node);
+      return commit(replacePath(node.value, path, next) as T, path);
     },
   } as Cell<T>;
 };
@@ -537,6 +803,69 @@ export const createDerived = <T>(
   } as Readable<T>;
 };
 
+/**
+ * Creates a stable reactive view of one nested property path. Cell-backed paths
+ * invalidate only when their selected value changes; derived paths retain the
+ * same equality suppression after their parent recomputes.
+ */
+export const selectPath = <T, Selected = unknown>(
+  source: Readable<T>,
+  path: readonly string[],
+  options: NamedOptions = {},
+): Readable<Selected> => {
+  if (path.length === 0) {
+    return source as unknown as Readable<Selected>;
+  }
+
+  const initialSource = (source as Readable<T> & { [REACTIVE_SOURCE]?: SourceNode })[
+    REACTIVE_SOURCE
+  ];
+  if (!initialSource) {
+    throw new OxeRuntimeError(
+      'OXE_RUNTIME_INVALID_DEPENDENCY',
+      'selectPath() received a value that is not an OXE reactive source.',
+    );
+  }
+
+  const parent = isSelection(initialSource) ? initialSource.parent : initialSource;
+  const fullPath = Object.freeze([
+    ...(isSelection(initialSource) ? initialSource.path : []),
+    ...path,
+  ]);
+  if (!isSelectableSource(parent)) {
+    throw new OxeRuntimeError(
+      'OXE_RUNTIME_INVALID_DEPENDENCY',
+      'selectPath() requires a readable cell or derived value.',
+    );
+  }
+
+  const key = JSON.stringify(fullPath);
+  let selection = parent.selections.get(key);
+  if (!selection) {
+    refreshSource(parent);
+    selection = {
+      name: options.name ?? `${parent.name}.${fullPath.join('.')}`,
+      observers: new Set(),
+      parent,
+      path: fullPath,
+      seenVersion: parent.version,
+      sourceKind: 'selection',
+      traceId: options.traceId ?? parent.traceId,
+      value: readPath(sourceValue(parent), fullPath),
+      version: 0,
+    };
+    parent.selections.set(key, selection);
+  }
+
+  return {
+    [REACTIVE_SOURCE]: selection,
+    read: () => {
+      refreshSource(selection);
+      return selection.value as Selected;
+    },
+  } as Readable<Selected>;
+};
+
 export const createReaction = (
   dependencies: readonly Readable<unknown>[],
   run: () => void,
@@ -552,6 +881,46 @@ export const createReaction = (
 
   return {
     dispose: () => disposeOwner(computation),
+  };
+};
+
+/**
+ * Owns an external resource whose adapter has a compiler-known dispose method.
+ * The previous resource is disposed before a dependency-driven replacement and
+ * the current resource is disposed with its owner.
+ */
+export const createDisposableReaction = (
+  dependencies: readonly Readable<unknown>[],
+  run: () => Disposable,
+  options: NamedOptions = {},
+): Disposable => {
+  let current: Disposable | undefined;
+  const disposeCurrent = (): void => {
+    const resource = current;
+    current = undefined;
+    resource?.dispose();
+  };
+  registerCleanup(disposeCurrent);
+  const reaction = createReaction(
+    dependencies,
+    () => {
+      disposeCurrent();
+      const next = run();
+      if (!next || typeof next.dispose !== 'function') {
+        throw new OxeRuntimeError(
+          'OXE_RUNTIME_INVALID_DISPOSABLE',
+          `${options.name ?? 'Resource adapter'} must return an object with dispose().`,
+        );
+      }
+      current = next;
+    },
+    options,
+  );
+  return {
+    dispose: () => {
+      reaction.dispose();
+      disposeCurrent();
+    },
   };
 };
 
@@ -696,4 +1065,132 @@ export const readContext = <T>(context: Context<T>): T => {
     'OXE_RUNTIME_MISSING_CONTEXT',
     `No provider exists for ${context.name}. Wrap this component in <${context.name} value={...}>.`,
   );
+};
+
+export interface CollectionSortOptions {
+  readonly descending?: boolean;
+}
+
+type CollectionKey = boolean | number | string;
+
+const equalRecordValue = (
+  previous: unknown,
+  next: unknown,
+  seen: WeakMap<object, object> = new WeakMap(),
+): boolean => {
+  if (Object.is(previous, next)) {
+    return true;
+  }
+  if (
+    previous === null ||
+    next === null ||
+    typeof previous !== 'object' ||
+    typeof next !== 'object' ||
+    Array.isArray(previous) ||
+    Array.isArray(next) ||
+    Object.prototype.toString.call(previous) !== '[object Object]' ||
+    Object.prototype.toString.call(next) !== '[object Object]'
+  ) {
+    return false;
+  }
+  if (seen.get(previous) === next) {
+    return true;
+  }
+  seen.set(previous, next);
+  const previousRecord = previous as Record<string, unknown>;
+  const nextRecord = next as Record<string, unknown>;
+  const previousKeys = Object.keys(previousRecord);
+  const nextKeys = Object.keys(nextRecord);
+  return (
+    previousKeys.length === nextKeys.length &&
+    previousKeys.every(
+      (key) =>
+        Object.hasOwn(nextRecord, key) &&
+        equalRecordValue(previousRecord[key], nextRecord[key], seen),
+    )
+  );
+};
+
+const collectionLimit = (limit: number | undefined): number => {
+  if (limit === undefined) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (!Number.isInteger(limit) || limit < 0) {
+    throw new RangeError('A collection mutation limit must be a nonnegative integer.');
+  }
+  return limit;
+};
+
+/** Returns a collection with one value appended. The source is never mutated. */
+export const addCollection = <T>(source: readonly T[], value: T): readonly T[] => [
+  ...source,
+  value,
+];
+
+/** Removes the first `limit` matching values, or every match when limit is omitted. */
+export const removeCollection = <T>(
+  source: readonly T[],
+  predicate: (value: T, index: number) => boolean,
+  limit?: number,
+): readonly T[] => {
+  const maximum = collectionLimit(limit);
+  if (maximum === 0) {
+    return source;
+  }
+  let removed = 0;
+  const result = source.filter((value, index) => {
+    if (removed >= maximum || !predicate(value, index)) {
+      return true;
+    }
+    removed += 1;
+    return false;
+  });
+  return removed === 0 ? source : result;
+};
+
+/** Updates the first `limit` matching values, or every match when limit is omitted. */
+export const updateCollection = <T>(
+  source: readonly T[],
+  predicate: (value: T, index: number) => boolean,
+  update: (value: T, index: number) => T,
+  limit?: number,
+): readonly T[] => {
+  const maximum = collectionLimit(limit);
+  if (maximum === 0) {
+    return source;
+  }
+  let matched = 0;
+  let changed = false;
+  const result = source.map((value, index) => {
+    if (matched >= maximum || !predicate(value, index)) {
+      return value;
+    }
+    matched += 1;
+    const next = update(value, index);
+    if (equalRecordValue(value, next)) {
+      return value;
+    }
+    changed = true;
+    return next;
+  });
+  return changed ? result : source;
+};
+
+/** Returns a stable key-sorted collection without changing the source. */
+export const sortCollection = <T>(
+  source: readonly T[],
+  key: (value: T, index: number) => CollectionKey,
+  options: CollectionSortOptions = {},
+): readonly T[] => {
+  const direction = options.descending === true ? -1 : 1;
+  const sorted = source
+    .map((value, index) => ({ index, key: key(value, index), value }))
+    .sort((left, right) => {
+      if (Object.is(left.key, right.key)) {
+        return left.index - right.index;
+      }
+      return (left.key < right.key ? -1 : 1) * direction;
+    })
+    .map((entry) => entry.value);
+  return sorted.every((value, index) => Object.is(value, source[index])) ? source : sorted;
 };

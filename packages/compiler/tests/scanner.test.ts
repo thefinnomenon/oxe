@@ -146,9 +146,9 @@ describe('OXE scanner', () => {
     ]);
   });
 
-  it('scans type-safe operators and the single conditional keywords', () => {
+  it('scans type-safe operators and punctuation-led conditionals', () => {
     expect(significantKinds('if user and !user.disabled ? user : fallback\n')).toEqual([
-      'if',
+      'identifier',
       'identifier',
       'and',
       'bang',
@@ -160,6 +160,22 @@ describe('OXE scanner', () => {
       'colon',
       'identifier',
       'newline',
+      'endOfFile',
+    ]);
+
+    expect(significantKinds('view =?\n  user ? result\n  : fallback\n')).toEqual([
+      'identifier',
+      'equalQuestion',
+      'newline',
+      'indent',
+      'identifier',
+      'question',
+      'identifier',
+      'newline',
+      'colon',
+      'identifier',
+      'newline',
+      'dedent',
       'endOfFile',
     ]);
 

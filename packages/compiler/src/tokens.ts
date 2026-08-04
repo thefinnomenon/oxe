@@ -13,11 +13,11 @@ export type TokenKind =
   | 'endOfFile'
   | 'equal'
   | 'equalEqual'
+  | 'equalQuestion'
   | 'export'
   | 'from'
   | 'greaterThan'
   | 'identifier'
-  | 'if'
   | 'import'
   | 'indent'
   | 'leftBrace'
@@ -43,4 +43,10 @@ export interface Token {
   readonly lexeme: string;
   readonly span: SourceSpan;
   readonly value?: number | string;
+}
+
+export interface Trivia {
+  readonly kind: 'comment' | 'whitespace';
+  readonly span: SourceSpan;
+  readonly text: string;
 }

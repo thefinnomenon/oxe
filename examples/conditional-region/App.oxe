@@ -11,4 +11,6 @@ export App():
     <h1>Conditional region
     <button onClick={hide}>Hide
     <button onClick={show}>Show
-    if visible ? <section>Visible branch : <p>Hidden branch
+    ?
+      visible ? <section>Visible branch
+      : <p>Hidden branch

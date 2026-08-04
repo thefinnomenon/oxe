@@ -15,11 +15,39 @@ export interface GraphSpanV1 {
   readonly start: GraphPositionV1;
 }
 
-export type PrimitiveTypeV1 = 'array' | 'boolean' | 'number' | 'string' | 'unknown';
+export interface GraphAccessV1 {
+  /** Empty for a whole-value access; otherwise the selected nested field path. */
+  readonly path: readonly string[];
+  readonly span: GraphSpanV1;
+}
+
+export type PrimitiveTypeV1 = 'array' | 'boolean' | 'number' | 'record' | 'string' | 'unknown';
 
 export type LiteralValueV1 = boolean | number | string;
 
+export type ConstantValueV1 =
+  LiteralValueV1 | readonly ConstantValueV1[] | { readonly [name: string]: ConstantValueV1 };
+
 export type BinaryOperatorV1 = '!=' | '%' | '*' | '+' | '-' | '/' | '==' | 'and' | 'or';
+
+export interface ConditionalValueBranchV1 {
+  readonly condition?: ValueExpressionV1;
+  readonly result: ValueExpressionV1;
+  readonly span: GraphSpanV1;
+}
+
+export interface RecordEntryV1 {
+  readonly name: string;
+  readonly span: GraphSpanV1;
+  readonly value: ValueExpressionV1;
+}
+
+export interface CollectionCallbackV1 {
+  /** Stable local ids referenced by local-read expressions in the callback body. */
+  readonly parameters: readonly (ParameterV1 & { readonly id: string })[];
+  readonly result: ValueExpressionV1;
+  readonly span: GraphSpanV1;
+}
 
 export type ValueExpressionV1 =
   | {
@@ -35,9 +63,54 @@ export type ValueExpressionV1 =
       readonly span: GraphSpanV1;
     }
   | {
+      readonly arguments: readonly ValueExpressionV1[];
+      readonly callee: ValueExpressionV1;
+      readonly kind: 'call';
+      /** Declared result for a compiler-known external capability. */
+      readonly returnType?: PrimitiveTypeV1;
+      readonly span: GraphSpanV1;
+    }
+  | {
+      readonly kind: 'capability-read';
+      readonly span: GraphSpanV1;
+      readonly targetId: NodeIdV1;
+    }
+  | {
+      readonly callback: CollectionCallbackV1;
+      readonly initial?: ValueExpressionV1;
+      readonly kind: 'collection';
+      readonly operation: 'filter' | 'flatMap' | 'map' | 'reduce' | 'sort';
+      readonly options?: ValueExpressionV1;
+      readonly source: ValueExpressionV1;
+      readonly span: GraphSpanV1;
+    }
+  | {
+      readonly branches: readonly ConditionalValueBranchV1[];
+      readonly kind: 'conditional';
+      readonly span: GraphSpanV1;
+    }
+  | {
       readonly kind: 'literal';
       readonly span: GraphSpanV1;
       readonly value: boolean | number | string;
+    }
+  | {
+      readonly kind: 'local-read';
+      readonly record?: Extract<ValueExpressionV1, { readonly kind: 'record' }>;
+      readonly span: GraphSpanV1;
+      readonly targetId: string;
+      readonly type: PrimitiveTypeV1;
+    }
+  | {
+      readonly kind: 'member';
+      readonly object: ValueExpressionV1;
+      readonly property: string;
+      readonly span: GraphSpanV1;
+    }
+  | {
+      readonly entries: readonly RecordEntryV1[];
+      readonly kind: 'record';
+      readonly span: GraphSpanV1;
     }
   | {
       readonly kind: 'read';
@@ -101,8 +174,27 @@ export interface ContentSlotNodeV1 extends NodeBaseV1 {
   readonly parameterId: NodeIdV1;
 }
 
+export interface ContentValueBranchV1 {
+  readonly condition?: ValueExpressionV1;
+  readonly effectIds: readonly NodeIdV1[];
+  readonly resultId: NodeIdV1;
+  readonly span: GraphSpanV1;
+}
+
+export interface ContentValueNodeV1 extends NodeBaseV1 {
+  readonly branches: readonly ContentValueBranchV1[];
+  readonly kind: 'content-value';
+  readonly name: string;
+}
+
+export interface ContentReferenceNodeV1 extends NodeBaseV1 {
+  readonly contentId: NodeIdV1;
+  readonly kind: 'content-reference';
+}
+
 export interface ConditionalBranchV1 {
   readonly condition?: ValueExpressionV1;
+  readonly effectIds?: readonly NodeIdV1[];
   readonly span: GraphSpanV1;
 }
 
@@ -129,7 +221,7 @@ export interface ConstantNodeV1 extends NodeBaseV1 {
   readonly kind: 'constant';
   readonly name: string;
   readonly type: PrimitiveTypeV1;
-  readonly value: LiteralValueV1 | readonly LiteralValueV1[];
+  readonly value: ConstantValueV1;
 }
 
 export interface CellNodeV1 extends NodeBaseV1 {
@@ -146,18 +238,91 @@ export interface ComputedNodeV1 extends NodeBaseV1 {
   readonly type: PrimitiveTypeV1;
 }
 
+export interface ContextNodeV1 extends NodeBaseV1 {
+  readonly kind: 'context';
+  readonly name: string;
+}
+
+/** A component-local readable obtained from the nearest matching provider. */
+export interface ContextConsumerNodeV1 extends NodeBaseV1 {
+  readonly contextId: NodeIdV1;
+  readonly kind: 'context-consumer';
+  readonly name: string;
+  readonly type: PrimitiveTypeV1;
+  /** True when a procedure writes through this context value. */
+  readonly writable: boolean;
+}
+
+/** A view scope that provides the original reactive value to its descendants. */
+export interface ContextProviderNodeV1 extends NodeBaseV1 {
+  readonly contextId: NodeIdV1;
+  readonly kind: 'context-provider';
+  readonly value: ValueExpressionV1;
+}
+
+export interface PlatformCapabilityNodeV1 extends NodeBaseV1 {
+  readonly capabilityKind: 'effect' | 'pure' | 'resource';
+  readonly dispose?: 'dispose';
+  readonly kind: 'platform-capability';
+  readonly parameters: readonly PrimitiveTypeV1[];
+  readonly path: readonly string[];
+  readonly returns?: PrimitiveTypeV1;
+  readonly target: 'client' | 'server' | 'universal';
+  /** Stable host target used to reject competing persistent writers. */
+  readonly writes?: string;
+}
+
+export interface ResourceNodeV1 extends NodeBaseV1 {
+  readonly expression: Extract<ValueExpressionV1, { readonly kind: 'call' }>;
+  readonly kind: 'resource';
+  readonly name: string;
+}
+
+export interface RefNodeV1 extends NodeBaseV1 {
+  readonly elementId: NodeIdV1;
+  readonly kind: 'ref';
+  readonly name: string;
+}
+
 export interface WriteStepV1 {
   readonly kind: 'write';
+  /** Nested record path for a field write; omitted for whole-value replacement. */
+  readonly path?: readonly string[];
   readonly span: GraphSpanV1;
   readonly targetId: NodeIdV1;
   readonly value: ValueExpressionV1;
 }
 
+export interface CallStepV1 {
+  readonly expression: Extract<ValueExpressionV1, { readonly kind: 'call' }>;
+  readonly kind: 'call';
+  readonly span: GraphSpanV1;
+}
+
+export interface CollectionMutationStepV1 {
+  readonly kind: 'collection-mutation';
+  readonly limit?: ValueExpressionV1;
+  readonly operation: 'add' | 'remove' | 'update';
+  readonly predicate?: CollectionCallbackV1;
+  readonly span: GraphSpanV1;
+  readonly targetId: NodeIdV1;
+  readonly updater?: CollectionCallbackV1;
+  readonly value?: ValueExpressionV1;
+}
+
+export type ProcedureStepV1 = CallStepV1 | CollectionMutationStepV1 | WriteStepV1;
+
 export interface ProcedureNodeV1 extends NodeBaseV1 {
   readonly kind: 'procedure';
   readonly name: string;
   readonly parameters: readonly ParameterV1[];
-  readonly steps: readonly WriteStepV1[];
+  readonly steps: readonly ProcedureStepV1[];
+}
+
+export interface EffectNodeV1 extends NodeBaseV1 {
+  readonly expression: Extract<ValueExpressionV1, { readonly kind: 'call' }>;
+  readonly kind: 'effect';
+  readonly ownerId: NodeIdV1;
 }
 
 export interface StaticAttributeV1 {
@@ -218,11 +383,20 @@ export type UiNodeV1 =
   | ComponentParameterNodeV1
   | ConditionalRegionNodeV1
   | ComputedNodeV1
+  | ContextConsumerNodeV1
+  | ContextNodeV1
+  | ContextProviderNodeV1
   | ConstantNodeV1
   | ContentSlotNodeV1
+  | ContentReferenceNodeV1
+  | ContentValueNodeV1
   | ElementNodeV1
+  | EffectNodeV1
   | KeyedCollectionNodeV1
+  | PlatformCapabilityNodeV1
   | ProcedureNodeV1
+  | ResourceNodeV1
+  | RefNodeV1
   | TextNodeV1;
 
 export type UiEdgeV1 =
@@ -282,6 +456,7 @@ export type UiEdgeV1 =
       readonly to: NodeIdV1;
     }
   | {
+      readonly accesses?: readonly GraphAccessV1[];
       readonly from: NodeIdV1;
       readonly kind: 'read';
       readonly mode: 'procedural' | 'reactive';
@@ -289,6 +464,7 @@ export type UiEdgeV1 =
       readonly to: NodeIdV1;
     }
   | {
+      readonly accesses?: readonly GraphAccessV1[];
       readonly from: NodeIdV1;
       readonly kind: 'write';
       readonly mode: 'procedural';

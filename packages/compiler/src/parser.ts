@@ -5,26 +5,43 @@ import type {
   AttributeNode,
   BinaryExpressionNode,
   BooleanLiteralNode,
+  CallExpressionNode,
+  CallbackBlockNode,
+  CollectionExpressionNode,
+  CollectionMutationPredicateNode,
+  CollectionMutationStatementNode,
+  CollectionMutationUpdaterNode,
+  CollectionUpdateAssignmentNode,
   ComponentDeclarationNode,
   ComponentParameterNode,
   ComponentStatementNode,
+  ContextDeclarationNode,
+  ConditionalBranchNode,
+  ConditionalResultBlockNode,
+  ConditionalResultNode,
+  ConditionalRegionNode,
+  ConditionalValueBranchNode,
+  ConditionalValueExpressionNode,
   DefaultComponentParameterNode,
   ElementNode,
   ElementAttributeNode,
   ExpressionNode,
+  ExpressionStatementNode,
   HandlerDeclarationNode,
   IdentifierNode,
-  IfBranchNode,
-  IfRegionNode,
   ImportDeclarationNode,
   ImportSpecifierNode,
   InterpolationNode,
   MarkupChildNode,
   MapExpressionNode,
+  MemberExpressionNode,
+  MemberAssignmentStatementNode,
   ModuleNode,
   NumberLiteralNode,
   ParenthesizedExpressionNode,
   RequiredComponentParameterNode,
+  RecordEntryNode,
+  RecordLiteralNode,
   RestComponentParameterNode,
   SpreadAttributeNode,
   StringLiteralNode,
@@ -34,12 +51,13 @@ import type {
 import type { Diagnostic, DiagnosticCode } from './diagnostics.js';
 import { scanSource } from './scanner.js';
 import type { SourcePosition, SourceSpan } from './source.js';
-import type { Token, TokenKind } from './tokens.js';
+import type { Token, TokenKind, Trivia } from './tokens.js';
 
 export interface ParseResult {
   readonly ast: ModuleNode;
   readonly diagnostics: readonly Diagnostic[];
   readonly tokens: readonly Token[];
+  readonly trivia: readonly Trivia[];
 }
 
 interface BinaryOperatorDefinition {
@@ -101,6 +119,7 @@ class Parser {
 
   parseModule(): ModuleNode {
     const imports: ImportDeclarationNode[] = [];
+    const contexts: ContextDeclarationNode[] = [];
     const declarations: ComponentDeclarationNode[] = [];
     let sawDeclaration = false;
 
@@ -135,6 +154,12 @@ class Parser {
         if (declaration) {
           declarations.push(declaration);
         }
+      } else if (this.#check('identifier') && this.#checkNext('equal')) {
+        sawDeclaration = true;
+        const declaration = this.#parseContextDeclaration();
+        if (declaration) {
+          contexts.push(declaration);
+        }
       } else if (this.#check('identifier') && this.#checkNext('leftParen')) {
         sawDeclaration = true;
         const declaration = this.#parseComponentDeclaration();
@@ -147,12 +172,14 @@ class Parser {
           'Expected a component declaration at the top level.',
           this.#current().span,
         );
-        this.#synchronizeLine();
+        if (!this.#match('dedent')) {
+          this.#synchronizeLine();
+        }
       }
       this.#skipNewlines();
     }
 
-    const firstTopLevelSpan = [...imports, ...declarations].sort(
+    const firstTopLevelSpan = [...imports, ...contexts, ...declarations].sort(
       (left, right) => left.span.start.offset - right.span.start.offset,
     )[0]?.span;
     const start = firstTopLevelSpan?.start ?? this.#current().span.start;
@@ -160,8 +187,54 @@ class Parser {
     return freezeNode({
       kind: 'Module',
       imports: freezeNodes(imports),
+      contexts: freezeNodes(contexts),
       declarations: freezeNodes(declarations),
+      schemaVersion: 'oxe.syntax.v1',
       span: moduleSpan,
+    });
+  }
+
+  #parseContextDeclaration(): ContextDeclarationNode | undefined {
+    const name = this.#identifierFromToken(this.#advance());
+    this.#advance();
+    if (!this.#check('identifier') || this.#current().lexeme !== 'createContext') {
+      this.#addDiagnostic(
+        'OXE1103',
+        'A top-level assignment must declare a context with createContext().',
+        this.#current().span,
+      );
+      this.#synchronizeLine();
+      return undefined;
+    }
+    this.#advance();
+    if (!this.#consume('leftParen', 'OXE1101', 'Expected ( after createContext.')) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    if (!this.#check('rightParen')) {
+      this.#addDiagnostic(
+        'OXE1101',
+        'createContext does not accept arguments.',
+        this.#current().span,
+      );
+      this.#synchronizeLine();
+      return undefined;
+    }
+    const end = this.#advance().span;
+    if (!this.#check('newline') && !this.#check('endOfFile')) {
+      this.#addDiagnostic(
+        'OXE1101',
+        'Expected the context declaration to end after createContext().',
+        this.#current().span,
+      );
+      this.#synchronizeLine();
+      return undefined;
+    }
+    this.#match('newline');
+    return freezeNode({
+      kind: 'ContextDeclaration',
+      name,
+      span: spanFrom(name.span, end),
     });
   }
 
@@ -526,30 +599,39 @@ class Parser {
     return freezeNodes(parameters);
   }
 
-  #parseZeroArgumentHeader(declarationKind: 'handler'): boolean {
-    if (!this.#consume('leftParen', 'OXE1101', `Expected ( after the ${declarationKind} name.`)) {
-      return false;
+  #parseHandlerParameters(): readonly IdentifierNode[] | undefined {
+    if (!this.#consume('leftParen', 'OXE1101', 'Expected ( after the handler name.')) {
+      return undefined;
     }
 
-    if (!this.#check('rightParen')) {
-      this.#addDiagnostic(
-        'OXE1101',
-        'Handlers in this language slice must have zero arguments.',
-        this.#current().span,
-      );
-      while (
-        !this.#check('rightParen') &&
-        !this.#check('colon') &&
-        !this.#check('newline') &&
-        !this.#check('endOfFile')
-      ) {
-        this.#advance();
+    const parameters: IdentifierNode[] = [];
+    const names = new Set<string>();
+    if (this.#match('rightParen')) {
+      return freezeNodes(parameters);
+    }
+
+    while (!this.#check('endOfFile')) {
+      const parameter = this.#parseIdentifier();
+      if (!parameter) {
+        return undefined;
+      }
+      if (names.has(parameter.name)) {
+        this.#addDiagnostic(
+          'OXE1101',
+          `Handler parameter "${parameter.name}" is declared more than once.`,
+          parameter.span,
+        );
+      }
+      names.add(parameter.name);
+      parameters.push(parameter);
+      if (this.#match('rightParen')) {
+        return freezeNodes(parameters);
+      }
+      if (!this.#consume('comma', 'OXE1101', 'Expected , or ) after the handler parameter.')) {
+        return undefined;
       }
     }
-
-    return Boolean(
-      this.#consume('rightParen', 'OXE1101', `Expected ) after the ${declarationKind} parameters.`),
-    );
+    return undefined;
   }
 
   #consumeDeclarationLineEnd(declarationKind: string): boolean {
@@ -570,22 +652,37 @@ class Parser {
       return this.#parseElement();
     }
 
-    if (this.#check('if')) {
-      return this.#parseIfRegion();
+    if (this.#check('question')) {
+      return this.#parseConditionalBlock();
     }
 
     if (this.#check('identifier')) {
-      if (this.#checkNext('equal')) {
+      if (this.#checkNext('equal') || this.#checkNext('equalQuestion')) {
         return this.#parseAssignment();
       }
-      if (this.#checkNext('leftParen')) {
+      if (this.#checkNext('leftParen') && this.#looksLikeDeclarationHeader()) {
         return this.#parseHandlerDeclaration();
       }
+      if (this.#isRetiredIfSyntax()) {
+        this.#diagnoseRetiredIfSyntax();
+        return undefined;
+      }
+    }
+
+    if (
+      this.#canStartExpression() &&
+      (this.#lineContains('question') || this.#lineContainsUiArrow())
+    ) {
+      return this.#parseInlineConditionalRegion();
+    }
+
+    if (this.#canStartExpression()) {
+      return this.#parseExpressionStatement();
     }
 
     this.#addDiagnostic(
       'OXE1103',
-      'Expected an assignment, zero-argument handler, or element in the component body.',
+      'Expected an assignment, handler, call, element, or conditional in the component body.',
       this.#current().span,
     );
     this.#synchronizeLine();
@@ -599,7 +696,8 @@ class Parser {
       return undefined;
     }
 
-    if (!this.#parseZeroArgumentHeader('handler')) {
+    const parameters = this.#parseHandlerParameters();
+    if (!parameters) {
       this.#synchronizeLine();
       return undefined;
     }
@@ -620,23 +718,47 @@ class Parser {
       return freezeNode({
         kind: 'HandlerDeclaration',
         name,
+        parameters,
         body: freezeNodes([]),
         span: spanFrom(name.span, colon.span),
       });
     }
 
-    const body: AssignmentStatementNode[] = [];
+    const body: (
+      | AssignmentStatementNode
+      | CollectionMutationStatementNode
+      | ExpressionStatementNode
+      | MemberAssignmentStatementNode
+    )[] = [];
     this.#skipNewlines();
     while (!this.#check('dedent') && !this.#check('endOfFile')) {
-      if (this.#check('identifier') && this.#checkNext('equal')) {
+      if (this.#looksLikeCollectionMutation()) {
+        const statement = this.#parseCollectionMutation();
+        if (statement) {
+          body.push(statement);
+        }
+      } else if (
+        this.#check('identifier') &&
+        (this.#checkNext('equal') || this.#checkNext('equalQuestion'))
+      ) {
         const statement = this.#parseAssignment();
+        if (statement) {
+          body.push(statement);
+        }
+      } else if (this.#looksLikeMemberAssignment()) {
+        const statement = this.#parseMemberAssignment();
+        if (statement) {
+          body.push(statement);
+        }
+      } else if (this.#canStartExpression()) {
+        const statement = this.#parseExpressionStatement();
         if (statement) {
           body.push(statement);
         }
       } else {
         this.#addDiagnostic(
           'OXE1104',
-          'Expected an assignment in the handler body.',
+          'Expected an assignment or call in the handler body.',
           this.#current().span,
         );
         this.#synchronizeLine();
@@ -649,6 +771,7 @@ class Parser {
     return freezeNode({
       kind: 'HandlerDeclaration',
       name,
+      parameters,
       body: freezeNodes(body),
       span: spanFrom(name.span, endSpan),
     });
@@ -661,25 +784,39 @@ class Parser {
       return undefined;
     }
 
-    if (!this.#consume('equal', 'OXE1101', 'Expected = after the assignment target.')) {
+    if (!this.#check('equal') && !this.#check('equalQuestion')) {
+      this.#addDiagnostic(
+        'OXE1101',
+        'Expected = or =? after the assignment target.',
+        this.#current().span,
+      );
       this.#synchronizeLine();
       return undefined;
     }
+    const operator = this.#advance();
 
-    const value = this.#parseExpression();
+    const value =
+      operator.kind === 'equalQuestion'
+        ? this.#parseValueChoiceExpression(operator)
+        : this.#parseExpression();
     if (!value) {
       this.#synchronizeLine();
       return undefined;
     }
 
-    if (!this.#check('newline') && !this.#check('dedent') && !this.#check('endOfFile')) {
+    if (
+      operator.kind === 'equal' &&
+      !this.#check('newline') &&
+      !this.#check('dedent') &&
+      !this.#check('endOfFile')
+    ) {
       this.#addDiagnostic(
         'OXE1101',
         'Expected the assignment to end after its value.',
         this.#current().span,
       );
       this.#synchronizeLine();
-    } else {
+    } else if (operator.kind === 'equal') {
       this.#match('newline');
     }
 
@@ -691,7 +828,473 @@ class Parser {
     });
   }
 
-  #parseExpression(minimumPrecedence = 0): ExpressionNode | undefined {
+  #parseMemberAssignment(): MemberAssignmentStatementNode | undefined {
+    const target = this.#parseMemberAssignmentTarget();
+    if (!target) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    if (!this.#consume('equal', 'OXE1101', 'Expected = after the record field.')) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    const value = this.#parseExpression();
+    if (!value) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    if (!this.#check('newline') && !this.#check('dedent') && !this.#check('endOfFile')) {
+      this.#addDiagnostic(
+        'OXE1101',
+        'Expected the record field assignment to end after its value.',
+        this.#current().span,
+      );
+      this.#synchronizeLine();
+    } else {
+      this.#match('newline');
+    }
+    return freezeNode({
+      kind: 'MemberAssignmentStatement',
+      target,
+      value,
+      span: spanFrom(target.span, value.span),
+    });
+  }
+
+  #parseMemberAssignmentTarget(): MemberExpressionNode | undefined {
+    let object: ExpressionNode | undefined = this.#parseIdentifier();
+    if (!object) {
+      return undefined;
+    }
+    let member: MemberExpressionNode | undefined;
+    while (this.#match('dot')) {
+      const property = this.#parseIdentifier();
+      if (!property) {
+        return undefined;
+      }
+      member = freezeNode({
+        kind: 'MemberExpression',
+        object,
+        property,
+        span: spanFrom(object.span, property.span),
+      });
+      object = member;
+    }
+    return member;
+  }
+
+  #parseCollectionMutation(): CollectionMutationStatementNode | undefined {
+    const collection = this.#parseIdentifier();
+    if (
+      !collection ||
+      !this.#consume('dot', 'OXE1101', 'Expected . before the collection operation.')
+    ) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    const operationName = this.#parseIdentifier();
+    if (!operationName) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    const operation = operationName.name as CollectionMutationStatementNode['operation'];
+    if (operation !== 'add' && operation !== 'remove' && operation !== 'update') {
+      this.#addDiagnostic('OXE1105', 'Expected add, update, or remove.', operationName.span);
+      this.#synchronizeLine();
+      return undefined;
+    }
+    if (!this.#consume('leftParen', 'OXE1101', `Expected ( after ${operation}.`)) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    const multilineCall = this.#beginCollectionMutationCall();
+    if (multilineCall === undefined) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+
+    if (operation === 'add') {
+      const value = this.#parseExpression();
+      if (!value) {
+        this.#synchronizeLine();
+        return undefined;
+      }
+      const closing = this.#closeCollectionMutationCall(
+        multilineCall,
+        'Expected ) after the added value.',
+      );
+      if (!closing || !this.#finishCollectionMutationLine()) {
+        return undefined;
+      }
+      return freezeNode({
+        collection,
+        kind: 'CollectionMutationStatement',
+        operation,
+        span: spanFrom(collection.span, closing.span),
+        value,
+      });
+    }
+
+    const predicate = this.#parseCollectionMutationPredicate(operation);
+    if (!predicate) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+
+    let updater: CollectionMutationUpdaterNode | undefined;
+    if (operation === 'update') {
+      if (!this.#consume('comma', 'OXE1101', 'Expected , before the update callback.')) {
+        this.#synchronizeLine();
+        return undefined;
+      }
+      this.#skipNewlines();
+      updater = this.#parseCollectionMutationUpdater();
+      if (!updater) {
+        this.#synchronizeLine();
+        return undefined;
+      }
+    }
+
+    let limit: ExpressionNode | undefined;
+    if (this.#match('comma')) {
+      this.#skipNewlines();
+      limit = this.#parseExpression();
+      if (!limit) {
+        this.#synchronizeLine();
+        return undefined;
+      }
+    }
+    const closing = this.#closeCollectionMutationCall(
+      multilineCall,
+      `Expected ) after the ${operation} operation.`,
+    );
+    if (!closing || !this.#finishCollectionMutationLine()) {
+      return undefined;
+    }
+    return freezeNode({
+      collection,
+      kind: 'CollectionMutationStatement',
+      ...(limit ? { limit } : {}),
+      operation,
+      predicate,
+      span: spanFrom(collection.span, closing.span),
+      ...(updater ? { updater } : {}),
+    });
+  }
+
+  #parseCollectionMutationPredicate(
+    operation: 'remove' | 'update',
+  ): CollectionMutationPredicateNode | undefined {
+    const parameter = this.#parseSingleCallbackParameter(operation);
+    if (!parameter) {
+      return undefined;
+    }
+    if (!this.#consume('arrow', 'OXE1101', `Expected => after the ${operation} parameter.`)) {
+      return undefined;
+    }
+    const callback = this.#parseCallbackBlock();
+    if (!callback) {
+      return undefined;
+    }
+    if (callback.result.kind === 'Element') {
+      this.#addDiagnostic(
+        'OXE1105',
+        `${operation} predicates must produce a value, not markup.`,
+        callback.result.span,
+      );
+      return undefined;
+    }
+    return freezeNode({
+      callback,
+      parameter,
+      span: spanFrom(parameter.span, callback.span),
+    });
+  }
+
+  #parseCollectionMutationUpdater(): CollectionMutationUpdaterNode | undefined {
+    const parameter = this.#parseSingleCallbackParameter('update');
+    if (!parameter) {
+      return undefined;
+    }
+    if (!this.#consume('arrow', 'OXE1101', 'Expected => after the update parameter.')) {
+      return undefined;
+    }
+
+    const assignments: CollectionUpdateAssignmentNode[] = [];
+    if (!this.#match('newline')) {
+      const assignment = this.#parseCollectionUpdateAssignment(false);
+      if (assignment) {
+        assignments.push(assignment);
+      }
+    } else {
+      this.#skipNewlines();
+      if (!this.#match('indent')) {
+        this.#addDiagnostic(
+          'OXE1102',
+          'Expected an indented update callback body after =>.',
+          pointSpan(this.#current().span.start, this.#fileName),
+        );
+        return undefined;
+      }
+      this.#skipNewlines();
+      while (!this.#check('dedent') && !this.#check('endOfFile')) {
+        const assignment = this.#parseCollectionUpdateAssignment(true);
+        if (assignment) {
+          assignments.push(assignment);
+        }
+        this.#skipNewlines();
+      }
+      this.#match('dedent');
+    }
+
+    if (assignments.length === 0) {
+      this.#addDiagnostic(
+        'OXE1105',
+        'An update callback must assign at least one field or replace its value.',
+        parameter.span,
+      );
+      return undefined;
+    }
+    return freezeNode({
+      assignments: freezeNodes(assignments),
+      kind: 'CollectionMutationUpdater',
+      parameter,
+      span: spanFrom(parameter.span, assignments.at(-1)?.span ?? parameter.span),
+    });
+  }
+
+  #parseCollectionUpdateAssignment(
+    consumeLineEnd: boolean,
+  ): CollectionUpdateAssignmentNode | undefined {
+    const identifier = this.#parseIdentifier();
+    if (!identifier) {
+      return undefined;
+    }
+    let target: IdentifierNode | MemberExpressionNode = identifier;
+    while (this.#match('dot')) {
+      const property = this.#parseIdentifier();
+      if (!property) {
+        return undefined;
+      }
+      target = freezeNode({
+        kind: 'MemberExpression',
+        object: target,
+        property,
+        span: spanFrom(target.span, property.span),
+      });
+    }
+    if (!this.#consume('equal', 'OXE1101', 'Expected = in the update callback.')) {
+      return undefined;
+    }
+    const value = this.#parseExpression();
+    if (!value) {
+      return undefined;
+    }
+    if (consumeLineEnd) {
+      if (!this.#check('newline') && !this.#check('dedent') && !this.#check('endOfFile')) {
+        this.#addDiagnostic(
+          'OXE1101',
+          'Expected the update assignment to end after its value.',
+          this.#current().span,
+        );
+        this.#synchronizeLine();
+      } else {
+        this.#match('newline');
+      }
+    }
+    return freezeNode({
+      kind: 'CollectionUpdateAssignment',
+      target,
+      value,
+      span: spanFrom(target.span, value.span),
+    });
+  }
+
+  #parseSingleCallbackParameter(operation: string): IdentifierNode | undefined {
+    if (!this.#match('leftParen')) {
+      return this.#parseIdentifier();
+    }
+    const parameter = this.#parseIdentifier();
+    if (!parameter) {
+      return undefined;
+    }
+    if (!this.#consume('rightParen', 'OXE1101', `Expected ) after the ${operation} parameter.`)) {
+      return undefined;
+    }
+    return parameter;
+  }
+
+  #finishCollectionMutationLine(): boolean {
+    if (!this.#check('newline') && !this.#check('dedent') && !this.#check('endOfFile')) {
+      this.#addDiagnostic(
+        'OXE1101',
+        'Expected the collection operation to end after the call.',
+        this.#current().span,
+      );
+      this.#synchronizeLine();
+      return false;
+    }
+    this.#match('newline');
+    return true;
+  }
+
+  #beginCollectionMutationCall(): boolean | undefined {
+    if (!this.#match('newline')) {
+      return false;
+    }
+    this.#skipNewlines();
+    if (!this.#match('indent')) {
+      this.#addDiagnostic(
+        'OXE1102',
+        'Expected indented collection operation arguments.',
+        pointSpan(this.#current().span.start, this.#fileName),
+      );
+      return undefined;
+    }
+    this.#skipNewlines();
+    return true;
+  }
+
+  #closeCollectionMutationCall(multiline: boolean, message: string): Token | undefined {
+    if (multiline) {
+      this.#match('newline');
+      this.#skipNewlines();
+      if (!this.#match('dedent')) {
+        this.#addDiagnostic(
+          'OXE1102',
+          'Expected collection operation arguments to return to the call indentation.',
+          pointSpan(this.#current().span.start, this.#fileName),
+        );
+        return undefined;
+      }
+    }
+    return this.#consume('rightParen', 'OXE1101', message);
+  }
+
+  #parseExpressionStatement(): ExpressionStatementNode | undefined {
+    const expression = this.#parseExpression();
+    if (!expression) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    if (!this.#check('newline') && !this.#check('dedent') && !this.#check('endOfFile')) {
+      this.#addDiagnostic(
+        'OXE1101',
+        'Expected the expression statement to end after the call.',
+        this.#current().span,
+      );
+      this.#synchronizeLine();
+    } else {
+      this.#match('newline');
+    }
+    return freezeNode({
+      expression,
+      kind: 'ExpressionStatement',
+      span: copySpan(expression.span),
+    });
+  }
+
+  #parseValueChoiceExpression(opening: Token): ConditionalValueExpressionNode | undefined {
+    if (!this.#match('newline')) {
+      this.#addDiagnostic('OXE1101', 'Expected a newline after =?.', this.#current().span);
+      return undefined;
+    }
+
+    this.#skipNewlines();
+    if (!this.#match('indent')) {
+      this.#addDiagnostic(
+        'OXE1102',
+        'Expected indented branches after =?.',
+        pointSpan(this.#current().span.start, this.#fileName),
+      );
+      return undefined;
+    }
+
+    const branches: ConditionalValueBranchNode[] = [];
+    let sawCatchall = false;
+    this.#skipNewlines();
+    while (!this.#check('dedent') && !this.#check('endOfFile')) {
+      const start = this.#current().span;
+      if (sawCatchall) {
+        this.#addDiagnostic(
+          'OXE1105',
+          'The conditionless value choice branch must be last.',
+          start,
+        );
+      }
+
+      let condition: ExpressionNode | undefined;
+      if (this.#match('colon')) {
+        sawCatchall = true;
+      } else {
+        condition = this.#parseExpression(0, false);
+        if (!condition) {
+          this.#synchronizeLine();
+          this.#skipNewlines();
+          continue;
+        }
+        if (!this.#consume('question', 'OXE1101', 'Expected ? after the value choice condition.')) {
+          this.#synchronizeLine();
+          this.#skipNewlines();
+          continue;
+        }
+      }
+
+      const result = this.#parseConditionalResult();
+      if (!result) {
+        this.#synchronizeLine();
+        this.#skipNewlines();
+        continue;
+      }
+
+      if (
+        result.kind !== 'ConditionalResultBlock' &&
+        !this.#check('newline') &&
+        !this.#check('dedent') &&
+        !this.#check('endOfFile')
+      ) {
+        this.#addDiagnostic(
+          'OXE1101',
+          'Expected the value choice branch to end after its result.',
+          this.#current().span,
+        );
+        this.#synchronizeLine();
+      } else if (result.kind !== 'ConditionalResultBlock') {
+        this.#match('newline');
+      }
+
+      branches.push(
+        freezeNode({
+          kind: 'ConditionalValueBranch',
+          ...(condition ? { condition } : {}),
+          result,
+          span: spanFrom(condition?.span ?? start, result.span),
+        }),
+      );
+      this.#skipNewlines();
+    }
+    this.#match('dedent');
+
+    if (branches.length === 0) {
+      this.#addDiagnostic('OXE1105', 'A value choice requires at least one branch.', opening.span);
+      return undefined;
+    }
+    if (!sawCatchall) {
+      this.#addDiagnostic(
+        'OXE1105',
+        'A value-producing choice must end with a : fallback.',
+        branches.at(-1)?.span ?? opening.span,
+      );
+    }
+
+    return freezeNode({
+      kind: 'ConditionalValueExpression',
+      branches: freezeNodes(branches),
+      span: spanFrom(opening.span, branches.at(-1)?.span ?? opening.span),
+    });
+  }
+
+  #parseExpression(minimumPrecedence = 0, allowConditional = true): ExpressionNode | undefined {
     let left = this.#parsePrimaryExpression();
     if (!left) {
       return undefined;
@@ -709,7 +1312,7 @@ class Parser {
       }
 
       this.#advance();
-      const right = this.#parseExpression(definition.precedence + 1);
+      const right = this.#parseExpression(definition.precedence + 1, allowConditional);
       if (!right) {
         return undefined;
       }
@@ -722,6 +1325,43 @@ class Parser {
         span: spanFrom(left.span, right.span),
       });
       left = binary;
+    }
+
+    if (allowConditional && minimumPrecedence === 0 && this.#match('question')) {
+      const result = this.#parseExpression();
+      if (!result) {
+        return undefined;
+      }
+      const fallbackOpening = this.#consume(
+        'colon',
+        'OXE1105',
+        'A value-producing inline conditional requires a : fallback.',
+      );
+      if (!fallbackOpening) {
+        return undefined;
+      }
+      const fallback = this.#parseExpression();
+      if (!fallback) {
+        return undefined;
+      }
+      const conditional: ConditionalValueExpressionNode = freezeNode({
+        kind: 'ConditionalValueExpression',
+        branches: freezeNodes([
+          freezeNode({
+            kind: 'ConditionalValueBranch',
+            condition: left,
+            result,
+            span: spanFrom(left.span, result.span),
+          }),
+          freezeNode({
+            kind: 'ConditionalValueBranch',
+            result: fallback,
+            span: spanFrom(fallbackOpening.span, fallback.span),
+          }),
+        ]),
+        span: spanFrom(left.span, fallback.span),
+      });
+      return conditional;
     }
 
     return left;
@@ -749,60 +1389,262 @@ class Parser {
       });
       expression = snapshot;
     }
-    while (this.#match('dot')) {
-      if (!this.#check('identifier')) {
-        this.#addDiagnostic(
-          'OXE1105',
-          'Expected a collection operation after .',
-          this.#current().span,
-        );
+    while (true) {
+      if (this.#match('dot')) {
+        const property = this.#parseIdentifier();
+        if (!property) {
+          return undefined;
+        }
+        if (
+          this.#check('leftParen') &&
+          (property.name === 'map' ||
+            property.name === 'filter' ||
+            property.name === 'flatMap' ||
+            property.name === 'reduce' ||
+            property.name === 'sort') &&
+          this.#callContainsArrow()
+        ) {
+          const collection = this.#parseCollectionExpression(expression, property);
+          if (!collection) {
+            return undefined;
+          }
+          expression = collection;
+          continue;
+        }
+        const member: MemberExpressionNode = freezeNode({
+          kind: 'MemberExpression',
+          object: expression,
+          property,
+          span: spanFrom(expression.span, property.span),
+        });
+        expression = member;
+        continue;
+      }
+      if (this.#match('leftParen')) {
+        const arguments_: ExpressionNode[] = [];
+        if (!this.#check('rightParen')) {
+          while (!this.#check('endOfFile')) {
+            const argument = this.#parseExpression();
+            if (!argument) {
+              return undefined;
+            }
+            arguments_.push(argument);
+            if (this.#check('rightParen')) {
+              break;
+            }
+            if (!this.#consume('comma', 'OXE1101', 'Expected , or ) after the call argument.')) {
+              return undefined;
+            }
+          }
+        }
+        const closing = this.#consume('rightParen', 'OXE1101', 'Expected ) after the call.');
+        if (!closing) {
+          return undefined;
+        }
+        const call: CallExpressionNode = freezeNode({
+          arguments: freezeNodes(arguments_),
+          callee: expression,
+          kind: 'CallExpression',
+          span: spanFrom(expression.span, closing.span),
+        });
+        expression = call;
+        continue;
+      }
+      break;
+    }
+    return expression;
+  }
+
+  #parseCollectionExpression(
+    collection: ExpressionNode,
+    operationName: IdentifierNode,
+  ): CollectionExpressionNode | MapExpressionNode | undefined {
+    const operation = operationName.name as CollectionExpressionNode['operation'];
+    this.#advance();
+    const parameters: IdentifierNode[] = [];
+    if (this.#match('leftParen')) {
+      while (!this.#check('rightParen') && !this.#check('endOfFile')) {
+        const parameter = this.#parseIdentifier();
+        if (!parameter) {
+          return undefined;
+        }
+        parameters.push(parameter);
+        if (!this.#match('comma')) {
+          break;
+        }
+      }
+      if (!this.#consume('rightParen', 'OXE1101', 'Expected ) after callback parameters.')) {
         return undefined;
       }
-      const operation = this.#advance();
-      if (operation.lexeme !== 'map') {
-        this.#addDiagnostic(
-          'OXE1105',
-          `Collection operation "${operation.lexeme}" is not implemented yet.`,
-          operation.span,
-        );
-        return undefined;
-      }
-      if (!this.#consume('leftParen', 'OXE1101', 'Expected ( after map.')) {
-        return undefined;
-      }
+    } else {
       const parameter = this.#parseIdentifier();
       if (!parameter) {
         return undefined;
       }
-      if (!this.#consume('arrow', 'OXE1101', 'Expected => after the map item parameter.')) {
+      parameters.push(parameter);
+    }
+
+    const expectedParameters = operation === 'reduce' ? 2 : 1;
+    if (parameters.length !== expectedParameters) {
+      this.#addDiagnostic(
+        'OXE1105',
+        `${operation} callbacks require exactly ${expectedParameters} parameter${expectedParameters === 1 ? '' : 's'}.`,
+        operationName.span,
+      );
+    }
+    if (!this.#consume('arrow', 'OXE1101', `Expected => after the ${operation} parameters.`)) {
+      return undefined;
+    }
+
+    const callback = this.#parseCallbackBlock();
+    if (!callback) {
+      return undefined;
+    }
+
+    let initial: ExpressionNode | undefined;
+    let options: ExpressionNode | undefined;
+    if (operation === 'reduce') {
+      if (!this.#match('comma')) {
+        this.#addDiagnostic('OXE1105', 'reduce requires an initial value.', this.#current().span);
+      } else {
+        initial = this.#parseExpression();
+        if (!initial) {
+          return undefined;
+        }
+      }
+    } else if (operation === 'sort' && this.#match('comma')) {
+      options = this.#parseExpression();
+      if (!options) {
         return undefined;
       }
-      if (!this.#check('lessThan')) {
+    }
+    const closing = this.#consume(
+      'rightParen',
+      'OXE1101',
+      `Expected ) after the ${operation} callback.`,
+    );
+    if (!closing) {
+      return undefined;
+    }
+
+    if (callback.result.kind === 'Element') {
+      if (operation !== 'map' || parameters.length !== 1) {
         this.#addDiagnostic(
           'OXE1105',
-          'A markup-producing map callback must return an element.',
-          this.#current().span,
+          'Only map may use a markup-producing callback.',
+          callback.result.span,
         );
         return undefined;
       }
-      const body = this.#parseElement(true);
-      if (!body) {
+      const parameter = parameters[0];
+      if (!parameter) {
         return undefined;
       }
-      const closing = this.#consume('rightParen', 'OXE1101', 'Expected ) after the map callback.');
-      if (!closing) {
-        return undefined;
-      }
-      const mapped: MapExpressionNode = freezeNode({
+      return freezeNode({
+        assignments: callback.assignments,
+        body: callback.result,
+        collection,
         kind: 'MapExpression',
-        collection: expression,
         parameter,
-        body,
-        span: spanFrom(expression.span, closing.span),
+        span: spanFrom(collection.span, closing.span),
       });
-      expression = mapped;
     }
-    return expression;
+
+    return freezeNode({
+      callback,
+      collection,
+      ...(initial ? { initial } : {}),
+      kind: 'CollectionExpression',
+      operation,
+      ...(options ? { options } : {}),
+      parameters: freezeNodes(parameters),
+      span: spanFrom(collection.span, closing.span),
+    });
+  }
+
+  #parseCallbackBlock(): CallbackBlockNode | undefined {
+    if (!this.#match('newline')) {
+      const result = this.#check('lessThan') ? this.#parseElement(true) : this.#parseExpression();
+      return result
+        ? freezeNode({
+            assignments: freezeNodes([]),
+            kind: 'CallbackBlock',
+            result,
+            span: copySpan(result.span),
+          })
+        : undefined;
+    }
+
+    this.#skipNewlines();
+    if (!this.#match('indent')) {
+      this.#addDiagnostic(
+        'OXE1102',
+        'Expected an indented callback body after =>.',
+        pointSpan(this.#current().span.start, this.#fileName),
+      );
+      return undefined;
+    }
+
+    const assignments: AssignmentStatementNode[] = [];
+    this.#skipNewlines();
+    while (
+      this.#check('identifier') &&
+      (this.#checkNext('equal') || this.#checkNext('equalQuestion'))
+    ) {
+      const assignment = this.#parseAssignment();
+      if (assignment) {
+        assignments.push(assignment);
+      }
+      this.#skipNewlines();
+    }
+
+    const result = this.#check('lessThan') ? this.#parseElement() : this.#parseExpression();
+    if (!result) {
+      this.#synchronizeLine();
+      this.#match('dedent');
+      return undefined;
+    }
+    if (result.kind !== 'Element') {
+      if (!this.#check('newline') && !this.#check('dedent') && !this.#check('endOfFile')) {
+        this.#addDiagnostic(
+          'OXE1101',
+          'Expected the callback result to end at the end of the line.',
+          this.#current().span,
+        );
+        this.#synchronizeLine();
+      } else {
+        this.#match('newline');
+      }
+    }
+    this.#skipNewlines();
+    this.#match('dedent');
+    return freezeNode({
+      assignments: freezeNodes(assignments),
+      kind: 'CallbackBlock',
+      result,
+      span: spanFrom(assignments[0]?.span ?? result.span, result.span),
+    });
+  }
+
+  #callContainsArrow(): boolean {
+    let depth = 0;
+    for (let index = this.#index; index < this.#tokens.length; index += 1) {
+      const token = this.#tokens[index];
+      if (!token || token.kind === 'endOfFile') {
+        return false;
+      }
+      if (token.kind === 'leftParen') {
+        depth += 1;
+      } else if (token.kind === 'rightParen') {
+        depth -= 1;
+        if (depth === 0) {
+          return false;
+        }
+      } else if (token.kind === 'arrow' && depth > 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   #parsePrimaryExpression(): ExpressionNode | undefined {
@@ -897,9 +1739,66 @@ class Parser {
       return array;
     }
 
+    if (token.kind === 'leftBrace') {
+      const opening = this.#advance();
+      const entries: RecordEntryNode[] = [];
+      const names = new Set<string>();
+      if (!this.#check('rightBrace')) {
+        while (!this.#check('endOfFile')) {
+          const name = this.#parseIdentifier();
+          if (!name) {
+            return undefined;
+          }
+          if (names.has(name.name)) {
+            this.#addDiagnostic(
+              'OXE1105',
+              `Record field "${name.name}" is written more than once.`,
+              name.span,
+            );
+          }
+          names.add(name.name);
+          if (!this.#consume('colon', 'OXE1101', 'Expected : after the record field name.')) {
+            return undefined;
+          }
+          const value = this.#parseExpression();
+          if (!value) {
+            return undefined;
+          }
+          entries.push(
+            freezeNode({
+              kind: 'RecordEntry',
+              name,
+              value,
+              span: spanFrom(name.span, value.span),
+            }),
+          );
+          if (this.#check('rightBrace')) {
+            break;
+          }
+          if (!this.#consume('comma', 'OXE1101', 'Expected , or } in the record literal.')) {
+            return undefined;
+          }
+        }
+      }
+      const closing = this.#consume(
+        'rightBrace',
+        'OXE1101',
+        'Expected } after the record literal.',
+      );
+      if (!closing) {
+        return undefined;
+      }
+      const record: RecordLiteralNode = freezeNode({
+        entries: freezeNodes(entries),
+        kind: 'RecordLiteral',
+        span: spanFrom(opening.span, closing.span),
+      });
+      return record;
+    }
+
     this.#addDiagnostic(
       'OXE1105',
-      'Expected an identifier, number, string, Boolean, or parenthesized expression.',
+      'Expected an identifier, number, string, Boolean, array, record, or parenthesized expression.',
       pointSpan(token.span.start, this.#fileName),
     );
     if (
@@ -991,105 +1890,230 @@ class Parser {
     });
   }
 
-  #parseIfRegion(): IfRegionNode | undefined {
-    const opening = this.#advance();
-    const branches: IfBranchNode[] = [];
-
-    const parseBranch = (stopAtInlineFallback = false): IfBranchNode | undefined => {
-      const start = this.#current().span;
-      let condition: ExpressionNode | undefined;
-      if (this.#match('colon')) {
-        condition = undefined;
-      } else if (this.#check('arrow')) {
-        this.#addDiagnostic(
-          'OXE1101',
-          'Use : for an if fallback. => is reserved for functions and callbacks.',
-          this.#advance().span,
-        );
-      } else {
-        condition = this.#parseExpression();
-        if (!condition) {
-          this.#synchronizeLine();
-          return undefined;
-        }
-        if (
-          !this.#consume(
-            'question',
-            'OXE1101',
-            'Expected ? after the if condition. => is reserved for functions and callbacks.',
-          )
-        ) {
-          this.#synchronizeLine();
-          return undefined;
-        }
+  #parseConditionalBranch(stopAtInlineFallback = false): ConditionalBranchNode | undefined {
+    const start = this.#current().span;
+    let condition: ExpressionNode | undefined;
+    if (this.#match('colon')) {
+      condition = undefined;
+    } else {
+      condition = this.#parseExpression(0, false);
+      if (!condition) {
+        this.#synchronizeLine();
+        return undefined;
       }
-      if (!this.#check('lessThan')) {
+      if (
+        !this.#consume(
+          'question',
+          'OXE1101',
+          'Expected ? after the conditional condition. => is reserved for functions and callbacks.',
+        )
+      ) {
+        this.#synchronizeLine();
+        return undefined;
+      }
+    }
+    const result = this.#parseConditionalResult(true, stopAtInlineFallback);
+    if (!result) {
+      return undefined;
+    }
+    return freezeNode({
+      kind: 'ConditionalBranch',
+      ...(condition ? { condition } : {}),
+      result,
+      span: spanFrom(condition?.span ?? start, result.span),
+    });
+  }
+
+  #parseConditionalResult(
+    requireElement = false,
+    stopAtInlineFallback = false,
+  ): ConditionalResultNode | undefined {
+    if (!this.#match('newline')) {
+      if (this.#check('lessThan')) {
+        return this.#parseElement(false, stopAtInlineFallback);
+      }
+      if (requireElement) {
         this.#addDiagnostic(
           'OXE1105',
-          'A UI if branch must produce an element.',
+          'A UI conditional branch must produce an element.',
           this.#current().span,
         );
         this.#synchronizeLine();
         return undefined;
       }
-      const result = this.#parseElement(false, stopAtInlineFallback);
-      if (!result) {
-        return undefined;
-      }
-      return freezeNode({
-        kind: 'IfBranch',
-        ...(condition ? { condition } : {}),
-        result,
-        span: spanFrom(condition?.span ?? start, result.span),
-      });
-    };
+      return this.#parseExpression();
+    }
 
-    if (!this.#match('newline')) {
-      const branch = parseBranch(true);
+    this.#skipNewlines();
+    if (!this.#match('indent')) {
+      this.#addDiagnostic(
+        'OXE1102',
+        'Expected an indented conditional result block.',
+        pointSpan(this.#current().span.start, this.#fileName),
+      );
+      return undefined;
+    }
+
+    const statements: (AssignmentStatementNode | ExpressionStatementNode)[] = [];
+    this.#skipNewlines();
+    while (!this.#check('dedent') && !this.#check('endOfFile')) {
+      if (
+        this.#check('identifier') &&
+        (this.#checkNext('equal') || this.#checkNext('equalQuestion'))
+      ) {
+        const assignment = this.#parseAssignment();
+        if (assignment) {
+          statements.push(assignment);
+        }
+        this.#skipNewlines();
+        continue;
+      }
+      if (this.#check('lessThan')) {
+        const result = this.#parseElement();
+        this.#skipNewlines();
+        this.#match('dedent');
+        return result
+          ? freezeNode({
+              kind: 'ConditionalResultBlock',
+              result,
+              span: spanFrom(statements[0]?.span ?? result.span, result.span),
+              statements: freezeNodes(statements),
+            })
+          : undefined;
+      }
+
+      const expression = this.#parseExpression();
+      if (!expression) {
+        this.#synchronizeLine();
+        this.#skipNewlines();
+        continue;
+      }
+      if (!this.#check('newline') && !this.#check('dedent') && !this.#check('endOfFile')) {
+        this.#addDiagnostic(
+          'OXE1101',
+          'Expected the conditional result line to end after its expression.',
+          this.#current().span,
+        );
+        this.#synchronizeLine();
+      } else {
+        this.#match('newline');
+      }
+      this.#skipNewlines();
+      if (this.#check('dedent')) {
+        this.#advance();
+        if (requireElement) {
+          this.#addDiagnostic(
+            'OXE1105',
+            'A UI conditional branch must end with an element.',
+            expression.span,
+          );
+          return undefined;
+        }
+        const block: ConditionalResultBlockNode = freezeNode({
+          kind: 'ConditionalResultBlock',
+          result: expression,
+          span: spanFrom(statements[0]?.span ?? expression.span, expression.span),
+          statements: freezeNodes(statements),
+        });
+        return block;
+      }
+      statements.push(
+        freezeNode({
+          expression,
+          kind: 'ExpressionStatement',
+          span: copySpan(expression.span),
+        }),
+      );
+    }
+
+    this.#match('dedent');
+    this.#addDiagnostic(
+      'OXE1105',
+      'A conditional result block must end with a value or element.',
+      this.#current().span,
+    );
+    return undefined;
+  }
+
+  #parseConditionalBranches(
+    opening: Token,
+    constructName: 'conditional choice',
+  ): ConditionalBranchNode[] {
+    const branches: ConditionalBranchNode[] = [];
+    this.#skipNewlines();
+    if (!this.#match('indent')) {
+      this.#addDiagnostic(
+        'OXE1102',
+        `Expected indented branches after the ${constructName} opener.`,
+        pointSpan(this.#current().span.start, this.#fileName),
+      );
+      return branches;
+    }
+
+    this.#skipNewlines();
+    let sawCatchall = false;
+    while (!this.#check('dedent') && !this.#check('endOfFile')) {
+      if (sawCatchall) {
+        this.#addDiagnostic(
+          'OXE1105',
+          'The conditionless conditional branch must be last.',
+          this.#current().span,
+        );
+      }
+      const branch = this.#parseConditionalBranch();
       if (branch) {
+        sawCatchall = branch.condition === undefined;
         branches.push(branch);
       }
-      if (this.#check('colon')) {
-        const fallback = parseBranch();
-        if (fallback) {
-          branches.push(fallback);
-        }
-      }
-    } else {
-      if (!this.#match('indent')) {
-        this.#addDiagnostic(
-          'OXE1102',
-          'Expected indented branches after if.',
-          pointSpan(this.#current().span.start, this.#fileName),
-        );
-      } else {
-        this.#skipNewlines();
-        let sawCatchall = false;
-        while (!this.#check('dedent') && !this.#check('endOfFile')) {
-          if (sawCatchall) {
-            this.#addDiagnostic(
-              'OXE1105',
-              'The conditionless if branch must be last.',
-              this.#current().span,
-            );
-          }
-          const branch = parseBranch();
-          if (branch) {
-            sawCatchall = branch.condition === undefined;
-            branches.push(branch);
-          }
-          this.#skipNewlines();
-        }
-        this.#match('dedent');
-      }
+      this.#skipNewlines();
     }
+    this.#match('dedent');
 
     if (branches.length === 0) {
-      this.#addDiagnostic('OXE1105', 'An if region requires at least one branch.', opening.span);
+      this.#addDiagnostic(
+        'OXE1105',
+        'A conditional choice requires at least one branch.',
+        opening.span,
+      );
+    }
+    return branches;
+  }
+
+  #parseConditionalBlock(): ConditionalRegionNode | undefined {
+    const opening = this.#advance();
+    if (!this.#match('newline')) {
+      this.#addDiagnostic(
+        'OXE1101',
+        'A standalone ? opens an indented first-match conditional choice.',
+        this.#current().span,
+      );
+      this.#synchronizeLine();
+      return undefined;
     }
 
+    const branches = this.#parseConditionalBranches(opening, 'conditional choice');
     return freezeNode({
-      kind: 'IfRegion',
+      kind: 'ConditionalRegion',
+      branches: freezeNodes(branches),
+      span: spanFrom(opening.span, branches.at(-1)?.span ?? opening.span),
+    });
+  }
+
+  #parseInlineConditionalRegion(): ConditionalRegionNode | undefined {
+    const opening = this.#current();
+    const branches: ConditionalBranchNode[] = [];
+    const branch = this.#parseConditionalBranch(true);
+    if (branch) {
+      branches.push(branch);
+    }
+    if (this.#check('colon')) {
+      const fallback = this.#parseConditionalBranch();
+      if (fallback) {
+        branches.push(fallback);
+      }
+    }
+    return freezeNode({
+      kind: 'ConditionalRegion',
       branches: freezeNodes(branches),
       span: spanFrom(opening.span, branches.at(-1)?.span ?? opening.span),
     });
@@ -1252,16 +2276,26 @@ class Parser {
     if (this.#check('lessThan')) {
       return this.#parseElement();
     }
-    if (this.#check('if')) {
-      return this.#parseIfRegion();
+    if (this.#check('question')) {
+      return this.#parseConditionalBlock();
     }
     if (this.#check('leftBrace')) {
       return this.#parseMarkupInterpolationLine();
     }
+    if (this.#isRetiredIfSyntax()) {
+      this.#diagnoseRetiredIfSyntax();
+      return undefined;
+    }
+    if (
+      this.#canStartExpression() &&
+      (this.#lineContains('question') || this.#lineContainsUiArrow())
+    ) {
+      return this.#parseInlineConditionalRegion();
+    }
 
     this.#addDiagnostic(
       'OXE1109',
-      'Expected an element or interpolation in the indented markup block.',
+      'Expected an element, interpolation, or conditional in the indented markup block.',
       this.#current().span,
     );
     this.#synchronizeLine();
@@ -1329,6 +2363,138 @@ class Parser {
       return undefined;
     }
     return this.#identifierFromToken(this.#advance());
+  }
+
+  #canStartExpression(): boolean {
+    return (
+      this.#check('identifier') ||
+      this.#check('number') ||
+      this.#check('string') ||
+      this.#check('leftParen') ||
+      this.#check('leftBracket') ||
+      this.#check('leftBrace')
+    );
+  }
+
+  #looksLikeDeclarationHeader(): boolean {
+    let depth = 0;
+    for (let index = this.#index + 1; index < this.#tokens.length; index += 1) {
+      const token = this.#tokens[index];
+      if (!token || token.kind === 'newline' || token.kind === 'endOfFile') {
+        return false;
+      }
+      if (token.kind === 'leftParen') {
+        depth += 1;
+      } else if (token.kind === 'rightParen') {
+        depth -= 1;
+        if (depth === 0) {
+          return this.#tokens[index + 1]?.kind === 'colon';
+        }
+      }
+    }
+    return false;
+  }
+
+  #looksLikeCollectionMutation(): boolean {
+    return (
+      this.#check('identifier') &&
+      this.#tokens[this.#index + 1]?.kind === 'dot' &&
+      this.#tokens[this.#index + 2]?.kind === 'identifier' &&
+      (this.#tokens[this.#index + 2]?.lexeme === 'add' ||
+        this.#tokens[this.#index + 2]?.lexeme === 'remove' ||
+        this.#tokens[this.#index + 2]?.lexeme === 'update') &&
+      this.#tokens[this.#index + 3]?.kind === 'leftParen'
+    );
+  }
+
+  #looksLikeMemberAssignment(): boolean {
+    if (!this.#check('identifier')) {
+      return false;
+    }
+    let index = this.#index + 1;
+    let fields = 0;
+    while (this.#tokens[index]?.kind === 'dot' && this.#tokens[index + 1]?.kind === 'identifier') {
+      fields += 1;
+      index += 2;
+    }
+    return fields > 0 && this.#tokens[index]?.kind === 'equal';
+  }
+
+  #lineContains(kind: TokenKind): boolean {
+    for (let index = this.#index; index < this.#tokens.length; index += 1) {
+      const token = this.#tokens[index];
+      if (
+        !token ||
+        token.kind === 'newline' ||
+        token.kind === 'dedent' ||
+        token.kind === 'endOfFile'
+      ) {
+        return false;
+      }
+      if (token.kind === kind) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  #lineContainsUiArrow(): boolean {
+    for (let index = this.#index; index < this.#tokens.length; index += 1) {
+      const token = this.#tokens[index];
+      if (
+        !token ||
+        token.kind === 'newline' ||
+        token.kind === 'dedent' ||
+        token.kind === 'endOfFile'
+      ) {
+        return false;
+      }
+      if (token.kind === 'arrow') {
+        return this.#tokens[index + 1]?.kind === 'lessThan';
+      }
+    }
+    return false;
+  }
+
+  #isRetiredIfSyntax(): boolean {
+    return (
+      this.#check('identifier') &&
+      this.#current().lexeme === 'if' &&
+      !this.#checkNext('equal') &&
+      !this.#checkNext('equalQuestion') &&
+      !this.#checkNext('leftParen') &&
+      !this.#checkNext('question')
+    );
+  }
+
+  #diagnoseRetiredIfSyntax(): void {
+    const blockForm = this.#checkNext('newline');
+    const retired = this.#advance();
+    this.#addDiagnostic(
+      'OXE1105',
+      'The if keyword was removed. Write a single condition directly, or replace a multi-branch if opener with ?.',
+      retired.span,
+    );
+    this.#synchronizeLine();
+    if (blockForm) {
+      this.#skipIndentedBlock();
+    }
+  }
+
+  #skipIndentedBlock(): void {
+    if (!this.#match('indent')) {
+      return;
+    }
+    let depth = 1;
+    while (depth > 0 && !this.#check('endOfFile')) {
+      if (this.#match('indent')) {
+        depth += 1;
+      } else if (this.#match('dedent')) {
+        depth -= 1;
+      } else {
+        this.#advance();
+      }
+    }
   }
 
   #identifierFromToken(token: Token): IdentifierNode {
@@ -1454,5 +2620,6 @@ export const parseSource = (source: string, fileName = '<source>'): ParseResult 
     ast,
     diagnostics: freezeNodes(diagnostics),
     tokens: freezeNodes(scanResult.tokens),
+    trivia: freezeNodes(scanResult.trivia),
   });
 };

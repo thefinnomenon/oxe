@@ -26,7 +26,43 @@ const collectExpressionTargets = (expression: ValueExpressionV1, targets: Set<No
       collectExpressionTargets(expression.left, targets);
       collectExpressionTargets(expression.right, targets);
       return;
+    case 'call':
+      collectExpressionTargets(expression.callee, targets);
+      for (const argument of expression.arguments) {
+        collectExpressionTargets(argument, targets);
+      }
+      return;
+    case 'capability-read':
+      targets.add(expression.targetId);
+      return;
+    case 'collection':
+      collectExpressionTargets(expression.source, targets);
+      collectExpressionTargets(expression.callback.result, targets);
+      if (expression.initial) {
+        collectExpressionTargets(expression.initial, targets);
+      }
+      if (expression.options) {
+        collectExpressionTargets(expression.options, targets);
+      }
+      return;
+    case 'conditional':
+      for (const branch of expression.branches) {
+        if (branch.condition) {
+          collectExpressionTargets(branch.condition, targets);
+        }
+        collectExpressionTargets(branch.result, targets);
+      }
+      return;
     case 'literal':
+    case 'local-read':
+      return;
+    case 'member':
+      collectExpressionTargets(expression.object, targets);
+      return;
+    case 'record':
+      for (const entry of expression.entries) {
+        collectExpressionTargets(entry.value, targets);
+      }
       return;
     case 'read':
       targets.add(expression.targetId);
@@ -49,8 +85,30 @@ const expressionLabel = (
       return `[${expression.elements.map((element) => expressionLabel(element, nodes)).join(', ')}]`;
     case 'binary':
       return `${expressionLabel(expression.left, nodes)} ${expression.operator} ${expressionLabel(expression.right, nodes)}`;
+    case 'call':
+      return `${expressionLabel(expression.callee, nodes)}(${expression.arguments.map((argument) => expressionLabel(argument, nodes)).join(', ')})`;
+    case 'capability-read': {
+      const target = nodes.get(expression.targetId);
+      return target ? graphNodeLabel(target, nodes) : expression.targetId;
+    }
+    case 'collection':
+      return `${expressionLabel(expression.source, nodes)}.${expression.operation}(${expression.callback.parameters.map((parameter) => parameter.name).join(', ')} => ${expressionLabel(expression.callback.result, nodes)}${expression.options ? `, ${expressionLabel(expression.options, nodes)}` : ''})`;
+    case 'conditional':
+      return expression.branches
+        .map((branch) =>
+          branch.condition
+            ? `${expressionLabel(branch.condition, nodes)} ? ${expressionLabel(branch.result, nodes)}`
+            : `: ${expressionLabel(branch.result, nodes)}`,
+        )
+        .join(' | ');
     case 'literal':
       return JSON.stringify(expression.value);
+    case 'local-read':
+      return expression.targetId.split('/').at(-1) ?? expression.targetId;
+    case 'member':
+      return `${expressionLabel(expression.object, nodes)}.${expression.property}`;
+    case 'record':
+      return `{ ${expression.entries.map((entry) => `${entry.name}: ${expressionLabel(entry.value, nodes)}`).join(', ')} }`;
     case 'read': {
       const target = nodes.get(expression.targetId);
       const label = target ? graphNodeLabel(target, nodes) : expression.targetId;
@@ -67,7 +125,12 @@ export const graphNodeLabel = (node: UiNodeV1, nodes: ReadonlyMap<NodeIdV1, UiNo
     case 'component-parameter':
     case 'computed':
     case 'constant':
+    case 'context':
+    case 'context-consumer':
+    case 'content-value':
     case 'procedure':
+    case 'resource':
+    case 'ref':
       return node.name;
     case 'component-instance': {
       const definition = nodes.get(node.componentId);
@@ -79,12 +142,24 @@ export const graphNodeLabel = (node: UiNodeV1, nodes: ReadonlyMap<NodeIdV1, UiNo
       const parameter = nodes.get(node.parameterId);
       return parameter?.kind === 'component-parameter' ? `${parameter.name} slot` : 'Children slot';
     }
+    case 'content-reference': {
+      const content = nodes.get(node.contentId);
+      return content?.kind === 'content-value' ? `${content.name} placement` : 'Content placement';
+    }
     case 'conditional-region':
-      return 'If region';
+      return 'Conditional region';
+    case 'context-provider': {
+      const context = nodes.get(node.contextId);
+      return context?.kind === 'context' ? `${context.name} provider` : 'Context provider';
+    }
+    case 'effect':
+      return 'Reactive call';
     case 'element':
       return `<${node.tag}>`;
     case 'keyed-collection':
       return 'Keyed map';
+    case 'platform-capability':
+      return node.path.join('.');
     case 'text':
       return 'Text';
   }
@@ -119,6 +194,18 @@ const uniqueReferences = (
     seen.add(key);
     return true;
   });
+};
+
+const accessDetail = (edge: Extract<UiEdgeV1, { readonly kind: 'read' | 'write' }>): string => {
+  const paths = [
+    ...new Set(
+      (edge.accesses ?? []).map((access) =>
+        access.path.length === 0 ? 'whole value' : access.path.join('.'),
+      ),
+    ),
+  ];
+  const prefix = edge.kind === 'read' ? `${edge.mode} dependency` : 'procedural write';
+  return paths.length === 0 ? prefix : `${prefix} · ${paths.join(', ')}`;
 };
 
 const edgeRelationship = (
@@ -163,9 +250,9 @@ const edgeRelationship = (
         `component props · position ${edge.index + 1}`,
       );
     case 'read':
-      return reference(nodes, outgoing ? 'Reads' : 'Read by', otherId, `${edge.mode} dependency`);
+      return reference(nodes, outgoing ? 'Reads' : 'Read by', otherId, accessDetail(edge));
     case 'write':
-      return reference(nodes, outgoing ? 'Writes' : 'Written by', otherId, 'procedural write');
+      return reference(nodes, outgoing ? 'Writes' : 'Written by', otherId, accessDetail(edge));
   }
 };
 
@@ -251,10 +338,10 @@ export const buildGraphInspectorModel = (
 
     if (edge.kind === 'read') {
       if (edge.from === node.id) {
-        inputs.push(reference(nodes, 'Reactive input', edge.to, edge.mode));
+        inputs.push(reference(nodes, 'Reactive input', edge.to, accessDetail(edge)));
       }
       if (edge.to === node.id) {
-        consumers.push(reference(nodes, 'Read by', edge.from, edge.mode));
+        consumers.push(reference(nodes, 'Read by', edge.from, accessDetail(edge)));
       }
       continue;
     }

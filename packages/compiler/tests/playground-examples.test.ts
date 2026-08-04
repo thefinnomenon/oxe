@@ -13,6 +13,7 @@ const examples: readonly ExampleExpectation[] = [
   { directory: 'component-composition' },
   { directory: 'composition-features' },
   { directory: 'conditional-region' },
+  { directory: 'conditional-values' },
   { directory: 'keyed-collection' },
   { directory: 'untrack-snapshot' },
   { directory: 'counter' },

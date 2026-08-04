@@ -77,6 +77,11 @@ class FakeNode {
   public get textContent(): string {
     return this.childNodes.map((child) => child.textContent).join('');
   }
+
+  public cloneNode(deep = false): FakeNode {
+    void deep;
+    throw new Error('cloneNode must be implemented by concrete fake nodes.');
+  }
 }
 
 class FakeText extends FakeNode {
@@ -100,6 +105,10 @@ class FakeText extends FakeNode {
 
   public override get textContent(): string {
     return this.#data;
+  }
+
+  public override cloneNode(): FakeText {
+    return new FakeText(this.ownerDocument, this.#data);
   }
 }
 
@@ -164,6 +173,19 @@ class FakeElement extends FakeNode {
     );
   }
 
+  public override cloneNode(deep = false): FakeElement {
+    const clone = new FakeElement(this.ownerDocument, this.tagName);
+    for (const [name, value] of this.#attributes) {
+      clone.setAttribute(name, value);
+    }
+    if (deep) {
+      for (const child of this.childNodes) {
+        clone.appendChild(child.cloneNode(true));
+      }
+    }
+    return clone;
+  }
+
   #listenerKey(
     type: string,
     options: AddEventListenerOptions | EventListenerOptions | boolean | undefined,
@@ -186,8 +208,16 @@ const childElement = (parent: FakeNode, index: number, tagName: string): FakeEle
   return child;
 };
 
+const childText = (parent: FakeNode, index: number): FakeText => {
+  const child = parent.childNodes[index];
+  if (!(child instanceof FakeText)) {
+    throw new Error(`Expected child ${index} to be text.`);
+  }
+  return child;
+};
+
 describe('generated counter with the OXE runtime', () => {
-  it('switches an if region incrementally and disposes the removed branch', () => {
+  it('switches a conditional region incrementally and disposes the removed branch', () => {
     const source = `export App():
   visible = true
   hide():
@@ -197,7 +227,7 @@ describe('generated counter with the OXE runtime', () => {
   <main>
     <button onClick={hide}>Hide
     <button onClick={show}>Show
-    if
+    ?
       visible ? <section>Visible
       : <p>Hidden
 `;
@@ -229,6 +259,300 @@ describe('generated counter with the OXE runtime', () => {
     show.emit('click');
     expect(main.textContent).toBe('HideShowVisible');
     expect(hidden.parentNode).toBeNull();
+    mounted.unmount();
+  });
+
+  it('updates inline and first-match =? conditional values through derived bindings', () => {
+    const source = `export App():
+  primary = true
+  secondary = true
+  showSecondary():
+    primary = false
+  showFallback():
+    primary = false
+    secondary = false
+  reset():
+    primary = true
+    secondary = true
+  label =?
+    primary ? "Primary"
+    secondary ? "Secondary"
+    : "Fallback"
+  compact = primary ? "Yes" : "No"
+  <main>
+    <button onClick={showSecondary}>Secondary
+    <button onClick={showFallback}>Fallback
+    <button onClick={reset}>Reset
+    <p>{label}
+    <p>{compact}
+`;
+    const analyzed = analyzeSource(source, 'conditional-value.oxe', 'conditional-value.oxe');
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => { mountApp(container: Node): dom.MountHandle };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node);
+    const main = childElement(container, 0, 'main');
+    const showSecondary = childElement(main, 0, 'button');
+    const showFallback = childElement(main, 1, 'button');
+    const reset = childElement(main, 2, 'button');
+
+    expect(main.textContent).toBe('SecondaryFallbackResetPrimaryYes');
+    showSecondary.emit('click');
+    expect(main.textContent).toBe('SecondaryFallbackResetSecondaryNo');
+    showFallback.emit('click');
+    expect(main.textContent).toBe('SecondaryFallbackResetFallbackNo');
+    reset.emit('click');
+    expect(main.textContent).toBe('SecondaryFallbackResetPrimaryYes');
+
+    mounted.unmount();
+  });
+
+  it('instantiates captured content per placement and disposes replaced branch ownership', () => {
+    const source = `export App():
+  visible = true
+  hide():
+    visible = false
+  show():
+    visible = true
+  view =?
+    visible ?
+      label = "Visible"
+      <button onClick={hide}>{label}
+    : <p>Hidden
+
+  <main>
+    <button onClick={show}>Show
+    {view}
+    {view}
+`;
+    const analyzed = analyzeSource(source, 'content-value.oxe', 'content-value.oxe');
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => { mountApp(container: Node): dom.MountHandle };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node);
+    const main = childElement(container, 0, 'main');
+    const show = childElement(main, 0, 'button');
+    const visibleButtons = collectNodes(main).filter(
+      (node): node is FakeElement => node instanceof FakeElement && node.tagName === 'button',
+    );
+
+    expect(main.textContent).toBe('ShowVisibleVisible');
+    expect(visibleButtons).toHaveLength(3);
+    visibleButtons[1]?.emit('click');
+    expect(main.textContent).toBe('ShowHiddenHidden');
+    expect(visibleButtons[1]?.parentNode).toBeNull();
+    expect(visibleButtons[2]?.parentNode).toBeNull();
+    expect(visibleButtons[1]?.listenerCount('click')).toBe(0);
+    expect(visibleButtons[2]?.listenerCount('click')).toBe(0);
+
+    show.emit('click');
+    expect(main.textContent).toBe('ShowVisibleVisible');
+    mounted.unmount();
+  });
+
+  it('passes arguments through ordinary procedure capability calls', () => {
+    const source = `export App():
+  count = 0
+  update(value):
+    count = value
+  <main>
+    <Child onUpdate={update}>
+    <p>{count}
+
+Child(onUpdate):
+  send():
+    onUpdate(2)
+  <button onClick={send}>Send
+`;
+    const analyzed = analyzeSource(source, 'calls.oxe', 'calls.oxe');
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => { mountApp(container: Node): dom.MountHandle };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node);
+    const main = childElement(container, 0, 'main');
+    const send = childElement(main, 0, 'button');
+
+    expect(main.textContent).toBe('Send0');
+    send.emit('click');
+    expect(main.textContent).toBe('Send2');
+    mounted.unmount();
+  });
+
+  it('executes records, member reads, and value collection operations', () => {
+    const source = `export App():
+  users = [{ name: "Ada", active: true }, { name: "Lin", active: false }]
+  active = users.filter(user => user.active)
+  names = active.map(user =>
+    name = user.name
+    name
+  )
+  repeated = [1, 2].flatMap(value => [value, value])
+  total = [1, 2, 3].reduce((sum, value) => sum + value, 0)
+  summary = { meta: { label: "Active" }, count: active.length }
+  <main>
+    <p>{summary.meta.label}: {summary.count}: {names.length}: {repeated.length}: {total}
+    {users.map(user => <p key={user.name}>{user.name})}
+`;
+    const analyzed = analyzeSource(source, 'expressions.oxe', 'expressions.oxe');
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => { mountApp(container: Node): dom.MountHandle };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node);
+
+    expect(container.textContent).toBe('Active: 1: 1: 4: 6AdaLin');
+    mounted.unmount();
+  });
+
+  it('executes add, limited update, remove, pure sort, and record writes incrementally', () => {
+    const source = `export App():
+  users = [{ id: 1, name: "Ada", active: false }, { id: 2, name: "Lin", active: true }]
+  profile = { status: "Ready" }
+  ordered = users.sort(user => user.name)
+  rename():
+    users.update(user => user.active == false, user => user.name = "Zoe", 1)
+    profile.status = "Renamed"
+  add():
+    users.add({ id: 3, name: "Bea", active: true })
+  remove():
+    users.remove(user => user.id == 2, 1)
+  <main>
+    <button onClick={rename}>Rename
+    <button onClick={add}>Add
+    <button onClick={remove}>Remove
+    <p>{profile.status}
+    <ul>
+      {ordered.map(user => <li key={user.id}>{user.name})}
+`;
+    const analyzed = analyzeSource(source, 'mutations.oxe', 'mutations.oxe');
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => { mountApp(container: Node): dom.MountHandle };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node);
+    const main = childElement(container, 0, 'main');
+    const rename = childElement(main, 0, 'button');
+    const add = childElement(main, 1, 'button');
+    const remove = childElement(main, 2, 'button');
+    const status = childElement(main, 3, 'p');
+    const list = childElement(main, 4, 'ul');
+    const ada = childElement(list, 1, 'li');
+    const lin = childElement(list, 2, 'li');
+    const adaText = childText(ada, 0);
+    const linText = childText(lin, 0);
+    const initialAdaWrites = adaText.writes;
+    const initialLinWrites = linText.writes;
+
+    expect(status.textContent).toBe('Ready');
+    expect(list.textContent).toBe('AdaLin');
+    rename.emit('click');
+
+    expect(status.textContent).toBe('Renamed');
+    expect(list.textContent).toBe('LinZoe');
+    expect(list.childNodes[1]).toBe(lin);
+    expect(list.childNodes[2]).toBe(ada);
+    expect(adaText.writes).toBe(initialAdaWrites + 1);
+    expect(linText.writes).toBe(initialLinWrites);
+
+    add.emit('click');
+    const bea = childElement(list, 1, 'li');
+    expect(list.textContent).toBe('BeaLinZoe');
+    expect(list.childNodes[2]).toBe(lin);
+    expect(list.childNodes[3]).toBe(ada);
+
+    remove.emit('click');
+    expect(list.textContent).toBe('BeaZoe');
+    expect(list.childNodes[1]).toBe(bea);
+    expect(list.childNodes[2]).toBe(ada);
+    expect(lin.parentNode).toBeNull();
+    mounted.unmount();
+  });
+
+  it('updates only DOM consumers of changed standalone record fields', () => {
+    const source = `export App():
+  profile = { name: "Ada", stats: { score: 1, ignored: 0 }, status: "Ready" }
+  score():
+    profile.stats.score = profile.stats.score + 1
+  ignore():
+    profile.stats.ignored = profile.stats.ignored + 1
+  rename():
+    profile.name = "Grace"
+  <main>
+    <button onClick={score}>Score
+    <button onClick={ignore}>Ignore
+    <button onClick={rename}>Rename
+    <p>{profile.name}
+    <p>{profile.stats.score}
+    <p>{profile.status}
+`;
+    const analyzed = analyzeSource(source, 'record-paths.oxe', 'record-paths.oxe');
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => { mountApp(container: Node): dom.MountHandle };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node);
+    const main = childElement(container, 0, 'main');
+    const score = childElement(main, 0, 'button');
+    const ignore = childElement(main, 1, 'button');
+    const rename = childElement(main, 2, 'button');
+    const nameText = childText(childElement(main, 3, 'p'), 0);
+    const scoreText = childText(childElement(main, 4, 'p'), 0);
+    const statusText = childText(childElement(main, 5, 'p'), 0);
+    const initialWrites = {
+      name: nameText.writes,
+      score: scoreText.writes,
+      status: statusText.writes,
+    };
+
+    score.emit('click');
+    expect(main.textContent).toBe('ScoreIgnoreRenameAda2Ready');
+    expect(nameText.writes).toBe(initialWrites.name);
+    expect(scoreText.writes).toBe(initialWrites.score + 1);
+    expect(statusText.writes).toBe(initialWrites.status);
+
+    ignore.emit('click');
+    expect(nameText.writes).toBe(initialWrites.name);
+    expect(scoreText.writes).toBe(initialWrites.score + 1);
+    expect(statusText.writes).toBe(initialWrites.status);
+
+    rename.emit('click');
+    expect(main.textContent).toBe('ScoreIgnoreRenameGrace2Ready');
+    expect(nameText.writes).toBe(initialWrites.name + 1);
+    expect(scoreText.writes).toBe(initialWrites.score + 1);
+    expect(statusText.writes).toBe(initialWrites.status);
     mounted.unmount();
   });
 
@@ -575,5 +899,38 @@ export App():
     mounted.unmount();
     expect(container.childNodes).toEqual([]);
     expect(button.listenerCount('click')).toBe(0);
+  });
+
+  it('preserves writable context identity across a generated provider boundary', () => {
+    const source = `Session = createContext()
+
+App():
+  session = { name: "Ada", role: "admin" }
+  <Session value={session}>
+    <Header>
+
+Header():
+  session = Session()
+  rename():
+    session.name = "Grace"
+  <button onClick={rename}>{session.name}
+`;
+    const analyzed = analyzeSource(source, 'context.oxe', 'context.oxe');
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => { mountApp(container: Node): dom.MountHandle };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node);
+    const button = childElement(container, 0, 'button');
+
+    expect(button.textContent).toBe('Ada');
+    button.emit('click');
+    expect(button.textContent).toBe('Grace');
+    mounted.unmount();
   });
 });

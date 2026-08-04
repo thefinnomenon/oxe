@@ -1,6 +1,6 @@
 import type { Diagnostic, DiagnosticCode } from './diagnostics.js';
 import type { SourcePosition, SourceSpan } from './source.js';
-import type { Token, TokenKind } from './tokens.js';
+import type { Token, TokenKind, Trivia } from './tokens.js';
 
 const INDENT_WIDTH = 2;
 
@@ -8,7 +8,6 @@ const keywordKinds: Readonly<Record<string, TokenKind>> = {
   and: 'and',
   export: 'export',
   from: 'from',
-  if: 'if',
   import: 'import',
   or: 'or',
 };
@@ -38,6 +37,7 @@ const punctuationKinds: Readonly<Record<string, TokenKind>> = {
 export interface ScanResult {
   readonly diagnostics: Diagnostic[];
   readonly tokens: Token[];
+  readonly trivia: Trivia[];
 }
 
 interface ScannerState {
@@ -45,6 +45,7 @@ interface ScannerState {
   readonly fileName: string;
   readonly tokens: Token[];
   readonly diagnostics: Diagnostic[];
+  readonly trivia: Trivia[];
   readonly indentStack: number[];
   offset: number;
   line: number;
@@ -117,6 +118,17 @@ const addDiagnostic = (
   });
 };
 
+const addTrivia = (state: ScannerState, kind: Trivia['kind'], start: SourcePosition): void => {
+  if (start.offset === state.offset) {
+    return;
+  }
+  state.trivia.push({
+    kind,
+    span: span(state, start),
+    text: state.source.slice(start.offset, state.offset),
+  });
+};
+
 const isIdentifierStart = (character: string): boolean => /[A-Za-z_]/u.test(character);
 
 const isIdentifierContinue = (character: string): boolean => /[A-Za-z0-9_]/u.test(character);
@@ -124,9 +136,11 @@ const isIdentifierContinue = (character: string): boolean => /[A-Za-z0-9_]/u.tes
 const isDigit = (character: string): boolean => character >= '0' && character <= '9';
 
 const skipComment = (state: ScannerState): void => {
+  const start = position(state);
   while (peek(state) !== '' && peek(state) !== '\n' && peek(state) !== '\r') {
     advance(state);
   }
+  addTrivia(state, 'comment', start);
 };
 
 const scanIndentation = (state: ScannerState): void => {
@@ -143,6 +157,7 @@ const scanIndentation = (state: ScannerState): void => {
       spaces += 1;
     }
   }
+  addTrivia(state, 'whitespace', start);
 
   if (
     peek(state) === '\n' ||
@@ -292,6 +307,7 @@ const scanPunctuation = (state: ScannerState): boolean => {
   const pairedKinds: Readonly<Record<string, TokenKind>> = {
     '!=': 'bangEqual',
     '=>': 'arrow',
+    '=?': 'equalQuestion',
     '==': 'equalEqual',
   };
   const pairedKind = pairedKinds[pair];
@@ -336,6 +352,7 @@ export const scanSource = (source: string, fileName = '<source>'): ScanResult =>
     source,
     fileName,
     tokens: [],
+    trivia: [],
     diagnostics: [],
     indentStack: [0],
     offset: 0,
@@ -355,7 +372,11 @@ export const scanSource = (source: string, fileName = '<source>'): ScanResult =>
     const character = peek(state);
 
     if (character === ' ' || character === '\t') {
-      advance(state);
+      const start = position(state);
+      while (peek(state) === ' ' || peek(state) === '\t') {
+        advance(state);
+      }
+      addTrivia(state, 'whitespace', start);
       continue;
     }
 
@@ -419,5 +440,6 @@ export const scanSource = (source: string, fileName = '<source>'): ScanResult =>
   return {
     tokens: state.tokens,
     diagnostics: state.diagnostics,
+    trivia: state.trivia,
   };
 };

@@ -424,6 +424,38 @@ describe('UiGraphV1', () => {
     ]);
   });
 
+  it('requires conditional value expressions to end in one final fallback', () => {
+    const input = graph();
+    const invalid: UiGraphV1 = {
+      ...input,
+      nodes: input.nodes.map((node) =>
+        node.kind === 'cell'
+          ? {
+              ...node,
+              initial: {
+                kind: 'conditional',
+                branches: [
+                  {
+                    condition: { kind: 'literal', value: true, span },
+                    result: { kind: 'literal', value: 1, span },
+                    span,
+                  },
+                ],
+                span,
+              },
+            }
+          : node,
+      ),
+    };
+
+    expect(validateUiGraph(invalid)).toContainEqual(
+      expect.objectContaining({
+        code: 'OXE3006',
+        message: 'A conditional value expression must end with a fallback branch.',
+      }),
+    );
+  });
+
   it('rejects non-finite or non-JSON values at the serialization boundary', () => {
     const input = graph();
     const unsafe = input as UiGraphV1 & { unsafe?: unknown };
@@ -531,7 +563,7 @@ describe('UiGraphV1', () => {
       expect.arrayContaining([
         expect.objectContaining({
           code: 'OXE3003',
-          message: expect.stringContaining('must reference a cell node'),
+          message: expect.stringContaining('must reference a writable value node'),
         }),
       ]),
     );

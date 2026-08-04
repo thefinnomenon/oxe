@@ -33,8 +33,8 @@ UserCard(userId):
 ```
 
 Components, functions, and handlers use a trailing colon and significant
-indentation. Conditional arms use `=>` and indentation. Curly braces never
-delimit blocks.
+indentation. Conditional choices use `?`, `=?`, and indentation. Curly braces
+never delimit blocks.
 
 Ordinary component code does not require `function`, `let`, `const`, `return`,
 `state`, `async`, or `await`.
@@ -61,6 +61,39 @@ reset():
 ```
 
 Procedural writes do not create persistent relationships.
+
+Record dependencies are tracked at the field path that is actually read. A
+consumer of `profile.name` does not rerun when `profile.status` changes, while a
+consumer of the whole `profile` record observes any unequal replacement. Nested
+reads such as `profile.account.name` track the complete leaf path. This is a
+compiler/runtime optimization and adds no alternate authored record API:
+
+```oxe
+rename():
+  profile.name = "Grace"
+
+incrementScore():
+  profile.stats.score = profile.stats.score + 1
+```
+
+Both writes remain immutable internally. The runtime preserves stable selected
+path sources and invalidates only selections whose resulting values changed.
+
+Record literals use `{ name: value }`, member access uses `.`, and calls use the
+ordinary `callee(arguments)` form:
+
+```oxe
+user = { name: "Chris", active: true }
+label = formatName(user.name)
+
+notify(message):
+  logger.info(message)
+```
+
+Curly braces remain syntax for record values and markup interpolation, never for
+blocks. Calls are graph expressions. The executable slice resolves procedure
+capabilities; value-returning helpers and external platform capabilities follow
+with their function declarations and metadata.
 
 ### Local component composition
 
@@ -231,7 +264,7 @@ Boolean composition uses the word operators `and` and `or`. Unary negation uses
 `!` rather than `not`:
 
 ```oxe
-if user and !user.disabled ? <Profile user={user}>
+user and !user.disabled ? <Profile user={user}>
 
 canPublish = isOwner or permissions.canPublish
 ```
@@ -253,25 +286,33 @@ comparisons between incompatible types.
 
 ## Control flow
 
-OXE has one conditional construct: `if`. A single condition can stay on one
-line:
+OXE has one punctuation-led conditional family and no `if` keyword. A single
+guard can stay on one line:
 
 ```oxe
-if sidebar.open ? <Sidebar>
+sidebar.open ? <Sidebar>
 ```
 
-Its inline binary form adds a `:` fallback:
+Its inline binary form adds a `:` fallback and can produce a value:
 
 ```oxe
-label = if user ? user.name : "Guest"
+label = user ? user.name : "Guest"
 ```
 
-When there are multiple conditional arms, `if` stands alone and all arms are
-indented. `?` separates every condition from its result. A bare `:` introduces
-the optional catchall and must be last:
+Adjacent guards are independent. Both results can therefore occur when both
+conditions are true:
 
 ```oxe
-view = if
+isAdmin ? <AdminBadge>
+isOnline ? <OnlineBadge>
+```
+
+A standalone `?` opens one uncaptured, first-match choice. All arms are
+indented, each condition and short result stay on one line, and a bare `:`
+introduces the optional catchall and must be last:
+
+```oxe
+?
   user ?
     greeting = formatGreeting(user)
     <Profile user={user} greeting={greeting}>
@@ -281,16 +322,42 @@ view = if
   : <Login>
 ```
 
+`=?` is the single token that opens the captured form of the same first-match
+choice:
+
+```oxe
+displayName =?
+  user ? user.name
+  error ? "Unavailable"
+  : "Guest"
+```
+
+Captured markup uses the same form and stores a content template rather than DOM
+nodes. Every `{view}` placement owns its own instantiated branch, listeners, and
+reactive work:
+
+```oxe
+view =?
+  user ? <Profile user={user}>
+  : <Login>
+
+<main>
+  {view}
+  {view}
+```
+
 Only results containing multiple statements open an additional indented block.
 A one-expression result stays on the same line as `?` or `:`, including the
-catchall. The first condition that evaluates to true wins. A value-producing
-conditional must be exhaustive; an action or UI region may omit its catchall.
+catchall. The first condition in a choice that evaluates to true wins. A
+value-producing inline conditional or `=?` choice must be exhaustive; an
+uncaptured guard or `?` choice may omit its catchall.
 
-This is the inline and multiline form of the same `if` construct, not a second
-conditionless ternary operator. OXE does not add `else`, `when`, `match`,
-`switch`, or `case`. The `=>` token is reserved for functions and callbacks.
+These are inline, guarded, and multi-arm forms of the same conditional family,
+not separate control-flow constructs. OXE does not add `if`, `else`, `when`,
+`match`, `switch`, or `case`. The `=>` token is reserved for functions and
+callbacks.
 
-Collections use functional operations:
+Collections use pure transformations when producing another value:
 
 ```oxe
 items.map(item => <Item item={item}>)
@@ -298,9 +365,55 @@ items.map(item => <Item item={item}>)
 
 OXE has no `for` loop and does not require framework wrappers such as `Show`,
 `For`, or `Map`. Collections use value-producing functional operations such as
-`map`, `filter`, `flatMap`, and `reduce`.
+`map`, `filter`, `flatMap`, `reduce`, and `sort`. `sort` never changes its source;
+it returns a stable ordering by the callback key:
 
-The compiler turns markup-producing `if` and `map` expressions into
+```oxe
+alphabetical = users.sort(user => user.name)
+newestFirst = users.sort(user => user.createdAt, { descending: true })
+```
+
+Writable collections have one small mutation surface:
+
+```oxe
+addUser():
+  users.add({ id: nextId, name: "Ada" })
+
+renameUser():
+  users.update(user => user.id == selectedId, user => user.name = newName, 1)
+
+removeInactive():
+  users.remove(user => user.active == false)
+```
+
+`add(value)` appends one value. `update(predicate, updater, limit?)` and
+`remove(predicate, limit?)` affect every match when the limit is omitted and the
+first N matches in current collection order when it is present. A limit must be
+a nonnegative integer. An update callback can make several related field writes
+in an indented body; those writes produce one replacement item:
+
+```oxe
+users.update(user => user.id == selectedId, user =>
+  user.name = newName
+  user.active = true
+)
+```
+
+Record fields use the same direct write style in procedures:
+
+```oxe
+rename():
+  profile.name = "Chris"
+  profile.address.city = "New York"
+```
+
+These operations do not expose in-place array or object mutation. The compiler
+lowers them to immutable replacements, suppresses no-op collection writes, and
+lets keyed UI rows preserve identity. The same operation contract can be lowered
+by a server data provider, but a provider must require a stable order or unique
+predicate before accepting a limited multi-record mutation.
+
+The compiler turns markup-producing conditionals and `map` expressions into
 incremental regions and infers identity where possible. An explicit `key` on the
 produced component remains an escape hatch:
 
@@ -326,14 +439,15 @@ cards = users.map(user =>
 
 ## Context
 
-A context declaration must use an identifier ending in `Context`:
+A context declaration is identified by `createContext()`, not by a naming suffix:
 
 ```oxe
-SessionContext = createContext()
+Session = createContext()
 ```
 
-The compiler rejects both a context created without that suffix and a non-context
-declaration that uses the reserved suffix.
+Names such as `Session`, `Theme`, and `EditorContext` are all valid. An ordinary
+component or value may also end in `Context`; spelling never determines context
+identity.
 
 The context object itself provides and retrieves its value:
 
@@ -341,11 +455,11 @@ The context object itself provides and retrieves its value:
 App():
   session = createSession()
 
-  <SessionContext value={session}>
+  <Session value={session}>
     <Router>
 
 Header():
-  session = SessionContext()
+  session = Session()
 
   <Avatar user={session.user}>
 ```
@@ -354,8 +468,8 @@ Context rules:
 
 - `createContext()` creates a unique identity; matching never uses a variable's
   textual name.
-- `<SessionContext value={session}>` provides a value to its descendant subtree.
-- `SessionContext()` retrieves the nearest matching value.
+- `<Session value={session}>` provides a value to its descendant subtree.
+- `Session()` retrieves the nearest matching value.
 - Nested providers override the value only for their descendants.
 - Context transports the original reactive value and preserves its writability.
 - Context does not create state or persistence. It scopes access to a value.
@@ -385,7 +499,7 @@ function calls, and control flow are automatically tracked:
 document.title = editor.draft.title
 analytics.identify(session.user.id)
 
-if session.user ? analytics.identify(session.user.id)
+session.user ? analytics.identify(session.user.id)
 ```
 
 The compiler still generates internal effect nodes. Removing the authored
@@ -459,8 +573,59 @@ The compiler must reject an effectful external resource whose cleanup behavior i
 unknown and direct the author to create or install a typed adapter. Cleanup must
 not be guessed from a function or method name.
 
-The exact `Disposable`/cleanup type syntax and external-package metadata format
-remain open.
+External resources use an explicit compiler capability contract with
+`kind: "resource"` and `dispose: "dispose"`. Generated ownership disposes the
+previous resource before dependency-driven replacement and disposes the current
+resource when its graph region is removed. A resource contract without disposal
+metadata is rejected; cleanup is never guessed from a method name.
+
+## Platform capability contracts
+
+External calls are unavailable until the host supplies a compiler contract. A
+contract declares the exact dot path, parameter types, optional return type,
+effect classification, target availability, and—when relevant—the persistent
+host target it writes:
+
+```ts
+{
+  name: "analytics.identify",
+  kind: "effect",
+  parameters: ["string"],
+  target: "client"
+}
+
+{
+  name: "messages.subscribe",
+  kind: "resource",
+  parameters: ["string"],
+  dispose: "dispose"
+}
+```
+
+`pure` capabilities must declare a return type when their result is captured.
+`effect` capabilities cannot be captured as values. `resource` capabilities are
+compiler-owned and cannot be assigned procedurally. Client/server mismatches,
+argument count/type mismatches, unknown cleanup, and competing persistent
+writers are compile errors.
+
+## Absence, optional values, and returns
+
+The synchronous language foundation uses these rules:
+
+- Authored application data has no implicit `undefined`. The compiler may use an
+  internal unbound state for a DOM ref, but ref-dependent work is installed only
+  after the element has been bound.
+- `null` will be the single authored absence value when nullable types are added;
+  `undefined`, missing record keys, and sentinel strings will not be alternate
+  spellings.
+- Record fields are required by default. Schema/type contracts will mark an
+  optional field explicitly; reading one therefore produces a nullable value.
+- Procedures and effects return no value. A pure external capability must declare
+  its return type before it can appear on the right side of an assignment. An
+  omitted capability return contract means that the call is non-value-producing.
+
+This locks the contracts without exposing partially implemented nullable syntax
+in authored `.oxe` files.
 
 ## Async dataflow
 
@@ -548,12 +713,13 @@ The exact client API and cache invalidation utilities remain open.
 
 The compiler should reject or clearly diagnose:
 
-- A context whose identifier does not end in `Context`
-- A `Context`-suffixed identifier that is not a context
 - A missing required context provider
 - Multiple persistent declarative writers for the same target
 - Direct and indirect reactive cycles
 - A self-dependent reactive assignment
+- A non-Boolean conditional condition
+- A value-producing conditional without a final fallback
+- Conditional value branches with incompatible result types
 - An external resource without a known disposal contract
 - A server-only or client-only capability used in an incompatible target
 
@@ -565,11 +731,15 @@ explicit and discrete.
 The executable slice now covers:
 
 - required/default/rest component contracts, spreads, children, and named modules,
-- component-local scalar and homogeneous scalar-array assignments,
+- component-local scalar, record, and homogeneous array assignments with member
+  access,
+- exhaustive inline and multi-arm scalar/content values, including multiline
+  branch-local assignments and ownership-safe repeated content placement,
 - arithmetic, strict equality, `and`, `or`, and authored `untrack(...)`,
-- incremental single- and multi-branch UI `if` regions,
-- concise `items.map(item => <Row ...>)` regions keyed by a scalar item or explicit
-  `key`,
+- incremental single- and multi-branch UI conditional regions,
+- concise and multiline collection callbacks; value-producing `map`, `filter`,
+  `flatMap`, `reduce`, and stable pure `sort`; `add`/`update`/`remove` writes; direct
+  record-field writes; and markup maps keyed by a scalar item or explicit `key`,
 - static and reactive DOM attributes/properties, text interpolation, and
   `onClick`, and
 - direct-DOM ownership, branch cleanup, and keyed insertion/movement/removal
@@ -578,23 +748,19 @@ The executable slice now covers:
 The compiler classifies assignments as constants, writable cells, or derived
 computations and emits explicit reactive/procedural edges. Keyed collection item
 bindings and region ownership are also explicit graph nodes. This is
-implementation status, not a reduction of the settled language. General calls,
-member access, records, multiline collection callbacks, contexts, async dataflow,
-refs, source maps, SSR, and hydration remain subsequent slices.
+implementation status, not a reduction of the settled language. Ordinary calls
+through compiler-visible procedure capabilities are implemented. Contexts,
+typed platform capabilities, compiler-owned resources, platform refs, and static
+DOM template cloning are also implemented. Top-level helper declarations,
+authored nullable types, async dataflow, SSR, and hydration remain subsequent
+slices.
 
 ## Open language questions
 
-- The expression syntax used inside markup and the record/object literal syntax;
-  indentation is locked for blocks, but these non-block uses of curly braces have
-  not been decided
-- Whether `createContext` should support a default value or always require a
-  provider
-- The exact nominal disposal types and external-library adapter metadata
+- Contexts always require a provider; `createContext()` has no default-value form
 - Focused primitives, if any, for previous values, change-only observation, and
   special lifecycle timing
 - The exact database client, cache, and external invalidation APIs
-- The final syntax for platform-specific capabilities across web, mobile, and
-  desktop targets
 - Whether the canonical indentation width is two spaces. The initial scanner uses
   two spaces to exercise strict indentation diagnostics, but this is not yet a
   settled language decision.

@@ -5,6 +5,7 @@ export {
   createConditionalRegion,
   createElement,
   createKeyedRegion,
+  createStaticTemplate,
   createText,
   listen,
   mount,
@@ -15,5 +16,8 @@ export {
   type KeyedRegionOptions,
   type MountContent,
   type MountHandle,
+  type StaticTemplateAttribute,
+  type StaticTemplateElement,
+  type StaticTemplateFactory,
   type TextValue,
 } from './runtime-dom.js';

@@ -97,5 +97,33 @@ describe('playground message protocol', () => {
         counts: { addedNodes: -1 },
       }),
     ).toBe(false);
+
+    expect(
+      isPreviewEvent({
+        type: 'preview:reactivity',
+        version: OXE_PLAYGROUND_PROTOCOL_VERSION,
+        runId: 7,
+        event: {
+          kind: 'invalidate',
+          reason: 'profile.name changed',
+          source: { id: 'cell:profile', name: 'profile', path: ['name'] },
+          computation: { id: 'text:name', kind: 'derived', name: 'profile.name text' },
+          timestamp: 12.5,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isPreviewEvent({
+        type: 'preview:reactivity',
+        version: OXE_PLAYGROUND_PROTOCOL_VERSION,
+        runId: 7,
+        event: {
+          kind: 'invalidate',
+          reason: 'invalid path',
+          source: { name: 'profile', path: [1] },
+          timestamp: 12.5,
+        },
+      }),
+    ).toBe(false);
   });
 });

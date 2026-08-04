@@ -1,13 +1,16 @@
 export { scanSource, type ScanResult } from './scanner.js';
 export { parseSource, type ParseResult } from './parser.js';
+export { formatSource, type FormatResult } from './formatter.js';
 export {
   analyzeProject,
   analyzeSource,
+  type AnalyzeOptions,
   type AnalyzedProjectModule,
   type AnalyzeProjectOptions,
   type AnalyzeProjectResult,
   type AnalyzeResult,
   type LoadOxeModule,
+  type PlatformCapabilityContract,
 } from './semantic.js';
 export {
   normalizeProjectModuleId,
@@ -22,6 +25,7 @@ export {
   OxeCodegenError,
   type CodegenErrorCode,
   type DomCodeArtifact,
+  type DomSourceMapV3,
 } from './codegen.js';
 export type {
   ArithmeticOperator,
@@ -29,28 +33,45 @@ export type {
   AttributeNode,
   BinaryExpressionNode,
   BooleanLiteralNode,
+  CallExpressionNode,
+  CallbackBlockNode,
+  CollectionExpressionNode,
   ComponentDeclarationNode,
   ComponentParameterNode,
   ComponentStatementNode,
+  ContextDeclarationNode,
+  ConditionalBranchNode,
+  ConditionalRegionNode,
+  ConditionalResultBlockNode,
+  ConditionalResultNode,
+  ConditionalValueBranchNode,
+  ConditionalValueExpressionNode,
   DefaultComponentParameterNode,
   ElementNode,
   ElementAttributeNode,
   ExpressionNode,
+  ExpressionStatementNode,
   HandlerDeclarationNode,
   IdentifierNode,
   ImportDeclarationNode,
   ImportSpecifierNode,
   InterpolationNode,
   MarkupChildNode,
+  MapExpressionNode,
+  MemberExpressionNode,
   ModuleNode,
   NumberLiteralNode,
   ParenthesizedExpressionNode,
+  ProceduralStatementNode,
+  RecordEntryNode,
+  RecordLiteralNode,
   RequiredComponentParameterNode,
   RestComponentParameterNode,
   SpreadAttributeNode,
   StringLiteralNode,
   TextNode,
+  UntrackExpressionNode,
 } from './ast.js';
 export type { Diagnostic, DiagnosticCode, RelatedDiagnostic } from './diagnostics.js';
 export type { SourcePosition, SourceSpan } from './source.js';
-export type { Token, TokenKind } from './tokens.js';
+export type { Token, TokenKind, Trivia } from './tokens.js';

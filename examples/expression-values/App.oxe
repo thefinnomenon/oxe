@@ -1,0 +1,32 @@
+export App():
+  users = [{ id: 1, name: "Ada", active: true }, { id: 2, name: "Lin", active: false }, { id: 3, name: "Grace", active: true }]
+  nextId = 4
+  descending = false
+  profile = { status: "Ready" }
+  activeUsers = users.filter(user => user.active)
+  orderedUsers = users.sort(user => user.name, { descending: descending })
+
+  addUser():
+    users.add({ id: nextId, name: "New user", active: true })
+    nextId = nextId + 1
+
+  activateFirst():
+    users.update(user => user.active == false, user => user.name = "Chris", 1)
+    profile.status = "Updated the first inactive user"
+
+  removeFirstInactive():
+    users.remove(user => user.active == false, 1)
+    profile.status = "Removed the first inactive user"
+
+  toggleSort():
+    descending = descending ? false : true
+
+  <main>
+    <h1>Records and collections
+    <button onClick={addUser}>Add user
+    <button onClick={activateFirst}>Update first inactive
+    <button onClick={removeFirstInactive}>Remove first inactive
+    <button onClick={toggleSort}>Reverse sort
+    <p>{profile.status}
+    <p>Active: {activeUsers.length} / {users.length}
+    {orderedUsers.map(user => <p key={user.id}>{user.name})}

@@ -1,6 +1,7 @@
-import type { Diagnostic } from '@oxe/compiler';
+import type { Diagnostic, DomSourceMapV3 } from '@oxe/compiler';
+import type { ReactiveTraceEvent, ReactiveTraceSource } from '@oxe/runtime';
 
-export const OXE_PLAYGROUND_PROTOCOL_VERSION = 2 as const;
+export const OXE_PLAYGROUND_PROTOCOL_VERSION = 3 as const;
 
 export type CompileStage = 'analyze' | 'codegen' | 'complete' | 'internal' | 'parse' | 'scan';
 
@@ -43,6 +44,7 @@ export interface CompileResult {
   readonly diagnostics: readonly Diagnostic[];
   readonly error?: SerializedError;
   readonly factorySource?: string;
+  readonly factorySourceMap?: DomSourceMapV3;
   readonly graphJson?: string;
   readonly graphStats?: GraphStats;
   readonly moduleSource?: string;
@@ -56,6 +58,7 @@ export interface CompileResult {
 
 export interface PreviewMountCommand {
   readonly factorySource: string;
+  readonly factorySourceMap?: DomSourceMapV3;
   readonly mountExport: string;
   readonly runId: number;
   readonly type: 'preview:mount';
@@ -118,11 +121,19 @@ export interface PreviewMutationsEvent {
   readonly version: typeof OXE_PLAYGROUND_PROTOCOL_VERSION;
 }
 
+export interface PreviewReactivityEvent {
+  readonly event: ReactiveTraceEvent;
+  readonly runId: number;
+  readonly type: 'preview:reactivity';
+  readonly version: typeof OXE_PLAYGROUND_PROTOCOL_VERSION;
+}
+
 export type PreviewEvent =
   | PreviewConsoleEvent
   | PreviewErrorEvent
   | PreviewMountedEvent
   | PreviewMutationsEvent
+  | PreviewReactivityEvent
   | PreviewReadyEvent;
 
 const compileStages = new Set<CompileStage>([
@@ -157,6 +168,16 @@ const isRunId = (value: unknown): value is number =>
 const isOptionalString = (value: unknown): value is string | undefined =>
   value === undefined || typeof value === 'string';
 
+const isSourceMap = (value: unknown): value is DomSourceMapV3 =>
+  isRecord(value) &&
+  value.version === 3 &&
+  typeof value.file === 'string' &&
+  typeof value.mappings === 'string' &&
+  Array.isArray(value.names) &&
+  value.names.every((item) => typeof item === 'string') &&
+  Array.isArray(value.sources) &&
+  value.sources.every((item) => typeof item === 'string');
+
 const isSerializedError = (value: unknown): value is SerializedError =>
   isRecord(value) &&
   typeof value.name === 'string' &&
@@ -175,6 +196,25 @@ const isGraphStats = (value: unknown): value is GraphStats =>
   ['edges', 'entries', 'nodes'].every(
     (key) => typeof value[key] === 'number' && Number.isSafeInteger(value[key]) && value[key] >= 0,
   );
+
+const isReactiveTraceSource = (value: unknown): value is ReactiveTraceSource =>
+  isRecord(value) &&
+  typeof value.name === 'string' &&
+  isOptionalString(value.id) &&
+  (value.path === undefined ||
+    (Array.isArray(value.path) && value.path.every((item) => typeof item === 'string')));
+
+const isReactiveTraceEvent = (value: unknown): value is ReactiveTraceEvent =>
+  isRecord(value) &&
+  ['execute', 'invalidate', 'suppress', 'write'].includes(String(value.kind)) &&
+  typeof value.reason === 'string' &&
+  typeof value.timestamp === 'number' &&
+  Number.isFinite(value.timestamp) &&
+  isReactiveTraceSource(value.source) &&
+  (value.computation === undefined ||
+    (isRecord(value.computation) &&
+      isReactiveTraceSource(value.computation) &&
+      (value.computation.kind === 'derived' || value.computation.kind === 'reaction')));
 
 export const isCompileRequest = (value: unknown): value is CompileRequest =>
   isRecord(value) &&
@@ -219,6 +259,7 @@ export const isCompileResult = (value: unknown): value is CompileResult =>
   value.compileMilliseconds >= 0 &&
   isOptionalString(value.componentExport) &&
   isOptionalString(value.factorySource) &&
+  (value.factorySourceMap === undefined || isSourceMap(value.factorySourceMap)) &&
   isOptionalString(value.graphJson) &&
   isOptionalString(value.moduleSource) &&
   isOptionalString(value.mountExport) &&
@@ -235,6 +276,7 @@ export const isPreviewCommand = (value: unknown): value is PreviewCommand => {
   return (
     value.type === 'preview:mount' &&
     typeof value.factorySource === 'string' &&
+    (value.factorySourceMap === undefined || isSourceMap(value.factorySourceMap)) &&
     typeof value.mountExport === 'string'
   );
 };
@@ -271,6 +313,8 @@ export const isPreviewEvent = (value: unknown): value is PreviewEvent => {
       );
     case 'preview:mutations':
       return isRunId(value.runId) && isMutationCounts(value.counts);
+    case 'preview:reactivity':
+      return isRunId(value.runId) && isReactiveTraceEvent(value.event);
     default:
       return false;
   }

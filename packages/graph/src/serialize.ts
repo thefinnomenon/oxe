@@ -18,6 +18,11 @@ const spanKey = (span: GraphSpanV1): string =>
   `${span.fileName}\0${span.start.offset}\0${span.start.line}\0${span.start.column}\0` +
   `${span.end.offset}\0${span.end.line}\0${span.end.column}`;
 
+const accessKey = (access: {
+  readonly path: readonly string[];
+  readonly span: GraphSpanV1;
+}): string => `${access.path.join('\0')}\0${spanKey(access.span)}`;
+
 const expressionKey = (expression: ValueExpressionV1): string => {
   switch (expression.kind) {
     case 'array':
@@ -27,8 +32,27 @@ const expressionKey = (expression: ValueExpressionV1): string => {
         `binary\0${expression.operator}\0${expressionKey(expression.left)}\0` +
         `${expressionKey(expression.right)}\0${spanKey(expression.span)}`
       );
+    case 'call':
+      return `call\0${expression.returnType ?? ''}\0${expressionKey(expression.callee)}\0${expression.arguments.map(expressionKey).join('\0')}\0${spanKey(expression.span)}`;
+    case 'capability-read':
+      return `capability-read\0${expression.targetId}\0${spanKey(expression.span)}`;
+    case 'collection':
+      return `collection\0${expression.operation}\0${expressionKey(expression.source)}\0${expression.callback.parameters.map((parameter) => parameter.name).join('\0')}\0${expressionKey(expression.callback.result)}\0${expression.initial ? expressionKey(expression.initial) : ''}\0${expression.options ? expressionKey(expression.options) : ''}\0${spanKey(expression.span)}`;
+    case 'conditional':
+      return `conditional\0${expression.branches
+        .map(
+          (branch) =>
+            `${branch.condition ? expressionKey(branch.condition) : 'fallback'}\0${expressionKey(branch.result)}\0${spanKey(branch.span)}`,
+        )
+        .join('\0')}\0${spanKey(expression.span)}`;
     case 'literal':
       return `literal\0${typeof expression.value}\0${JSON.stringify(expression.value)}\0${spanKey(expression.span)}`;
+    case 'local-read':
+      return `local-read\0${expression.targetId}\0${expression.type}\0${expression.record ? expressionKey(expression.record) : ''}\0${spanKey(expression.span)}`;
+    case 'member':
+      return `member\0${expressionKey(expression.object)}\0${expression.property}\0${spanKey(expression.span)}`;
+    case 'record':
+      return `record\0${expression.entries.map((entry) => `${entry.name}\0${expressionKey(entry.value)}`).join('\0')}\0${spanKey(expression.span)}`;
     case 'read':
       return `read\0${expression.tracked === false ? 'untracked' : 'tracked'}\0${expression.targetId}\0${spanKey(expression.span)}`;
   }
@@ -56,11 +80,13 @@ const edgeKey = (edge: UiEdgeV1): string => {
     case 'read':
       return (
         `${edge.kind}\0${edge.from}\0${edge.to}\0${edge.mode}\0` +
+        `${(edge.accesses ?? []).map(accessKey).join('\0')}\0` +
         edge.sites.map(spanKey).join('\0')
       );
     case 'write':
       return (
         `${edge.kind}\0${edge.from}\0${edge.to}\0${edge.mode}\0` +
+        `${(edge.accesses ?? []).map(accessKey).join('\0')}\0` +
         edge.sites.map(spanKey).join('\0')
       );
   }
@@ -68,7 +94,19 @@ const edgeKey = (edge: UiEdgeV1): string => {
 
 const normalizeEdge = (edge: UiEdgeV1): UiEdgeV1 => {
   if (edge.kind === 'read' || edge.kind === 'write') {
-    return { ...edge, sites: [...edge.sites].sort(compareSpans) };
+    return {
+      ...edge,
+      ...(edge.accesses
+        ? {
+            accesses: [...edge.accesses].sort(
+              (left, right) =>
+                compareText(left.path.join('\0'), right.path.join('\0')) ||
+                compareSpans(left.span, right.span),
+            ),
+          }
+        : {}),
+      sites: [...edge.sites].sort(compareSpans),
+    };
   }
   return edge;
 };
