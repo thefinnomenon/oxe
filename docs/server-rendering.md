@@ -141,8 +141,8 @@ still need dedicated profiles.
 
 The next server steps should happen in this order:
 
-1. Add routing/navigation and host response integration around the completed
-   readiness and status contracts.
+1. Add host response integration around the completed routing composition,
+   readiness, and status contracts.
 2. Add an authored nearest error boundary only if application examples need more
    than the global policy.
 3. Expand benchmarks to browser transfer, hydration, navigation, retained memory,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   analyzeProject,
+  generateDomArtifact,
   generateDomFactorySource,
   type AnalyzeProjectResult,
 } from '../src/index.js';
@@ -253,5 +254,121 @@ export App():
         message: 'Entry component "App" must not declare or consume props.',
       }),
     ]);
+  });
+
+  it('compiles route layouts with only a persistent children outlet', async () => {
+    const files = {
+      'src/routes/layout.oxe': `export Layout():
+  <main>
+    {children}
+`,
+    };
+    const result = await analyzeProject({
+      entryExport: 'Layout',
+      entryModuleId: 'src/routes/layout.oxe',
+      loadModule: async (moduleId) => files[moduleId as keyof typeof files],
+      routeSegment: 'layout',
+    });
+    const graph = requireGraph(result);
+    const artifact = generateDomArtifact(graph, { routeSegment: 'layout' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(artifact.routeSegmentExport).toBe('buildLayoutRouteSegment');
+    expect(artifact.moduleSource).toContain(
+      'const buildLayoutRouteSegment = ({ children, document }) => {',
+    );
+    expect(artifact.moduleSource).toContain('return Layout(document, { children });');
+    expect(artifact.moduleSource).toContain(
+      'export { Layout, mountLayout, buildLayoutRouteSegment }',
+    );
+  });
+
+  it('keeps route pages prop-free and rejects non-children layout props', async () => {
+    const files = {
+      'src/routes/layout.oxe': `export Layout(title):
+  <main>{title}
+`,
+      'src/routes/page.oxe': `export Page(id):
+  <main>{id}
+`,
+    };
+    const analyze = (entryModuleId: keyof typeof files, routeSegment: 'layout' | 'page') =>
+      analyzeProject({
+        entryExport: routeSegment === 'layout' ? 'Layout' : 'Page',
+        entryModuleId,
+        loadModule: async (moduleId) => files[moduleId as keyof typeof files],
+        routeSegment,
+      });
+
+    await expect(analyze('src/routes/layout.oxe', 'layout')).resolves.toMatchObject({
+      diagnostics: [
+        expect.objectContaining({
+          code: 'OXE2017',
+          message: 'Route layout "Layout" may consume only children.',
+        }),
+      ],
+    });
+    await expect(analyze('src/routes/page.oxe', 'page')).resolves.toMatchObject({
+      diagnostics: [
+        expect.objectContaining({
+          code: 'OXE2017',
+          message: 'Entry component "Page" must not declare or consume props.',
+        }),
+      ],
+    });
+  });
+
+  it('lowers route state and navigation as compiler-owned graph inputs', async () => {
+    const source = `export Page():
+  location = useLocation()
+  params = useParams()
+  search = useSearchParams()
+
+  openProject():
+    navigate("/projects/next", { replace: true, scroll: "preserve" })
+
+  showDetails():
+    setSearchParams({ tab: "details" })
+
+  <main>
+    <p>{location.pathname}
+    <p>{params.projectId}
+    <p>{search.tab}
+    <button onClick={openProject}>Open project
+    <button onClick={showDetails}>Show details
+`;
+    const result = await analyzeProject({
+      entryExport: 'Page',
+      entryModuleId: 'src/routes/projects/[projectId]/page.oxe',
+      loadModule: async () => source,
+      routeSegment: 'page',
+    });
+    const graph = requireGraph(result);
+    const artifact = generateDomArtifact(graph, { routeSegment: 'page' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(graph.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'platform-capability', routeIntrinsic: 'location' }),
+        expect.objectContaining({ kind: 'platform-capability', routeIntrinsic: 'params' }),
+        expect.objectContaining({ kind: 'platform-capability', routeIntrinsic: 'search-params' }),
+        expect.objectContaining({ kind: 'platform-capability', routeIntrinsic: 'navigate' }),
+        expect.objectContaining({
+          kind: 'platform-capability',
+          routeIntrinsic: 'set-search-params',
+        }),
+      ]),
+    );
+    expect(artifact.factorySource).toContain('const Page = (document, route) => {');
+    expect(artifact.factorySource).toContain('const locationDerived = route.location;');
+    expect(artifact.factorySource).toContain('const paramsDerived = route.params;');
+    expect(artifact.factorySource).toContain('const searchDerived = route.search;');
+    expect(artifact.factorySource).toContain(
+      'route.navigate("/projects/next", ({ "replace": true, "scroll": "preserve" }));',
+    );
+    expect(artifact.factorySource).toContain('route.setSearchParams(({ "tab": "details" }));');
+    expect(artifact.factorySource).toContain(
+      'const buildPageRouteSegment = ({ document, route }) => {',
+    );
   });
 });

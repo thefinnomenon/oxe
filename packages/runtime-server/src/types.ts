@@ -234,6 +234,8 @@ export interface ServerCapabilityPlanV1 {
   readonly id: string;
   readonly parameters: readonly PrimitiveTypeV1[];
   readonly path: readonly string[];
+  readonly routeIntrinsic?:
+    'location' | 'navigate' | 'params' | 'search-params' | 'set-search-params';
   readonly returns?: PrimitiveTypeV1;
   readonly target: 'client' | 'server' | 'universal';
 }

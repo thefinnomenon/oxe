@@ -1,9 +1,10 @@
 import type { Diagnostic, DomSourceMapV3 } from '@oxe/compiler';
+import type { RouteManifestV1 } from '@oxe/router';
 import type { OwnershipSnapshot, ReactiveTraceEvent, ReactiveTraceSource } from '@oxe/runtime';
 
 import { isPlaygroundCapabilitySet, type PlaygroundCapabilitySet } from './demo-capabilities.js';
 
-export const OXE_PLAYGROUND_PROTOCOL_VERSION = 5 as const;
+export const OXE_PLAYGROUND_PROTOCOL_VERSION = 6 as const;
 
 export type CompileStage = 'analyze' | 'codegen' | 'complete' | 'internal' | 'parse' | 'scan';
 
@@ -37,8 +38,21 @@ export interface CompileRequest {
   readonly entryModuleId: string;
   readonly files: readonly CompileFile[];
   readonly runId: number;
+  readonly routeInitialHref?: string;
   readonly type: 'compile';
   readonly version: typeof OXE_PLAYGROUND_PROTOCOL_VERSION;
+}
+
+export interface CompiledRouteSegment {
+  readonly factorySource: string;
+  readonly id: string;
+  readonly routeSegmentExport: string;
+}
+
+export interface CompiledRouteBundle {
+  readonly initialHref: string;
+  readonly manifest: RouteManifestV1;
+  readonly segments: readonly CompiledRouteSegment[];
 }
 
 export interface CompileResult {
@@ -53,6 +67,7 @@ export interface CompileResult {
   readonly moduleSource?: string;
   readonly mountExport?: string;
   readonly modules: readonly CompileModuleOutput[];
+  readonly routeBundle?: CompiledRouteBundle;
   readonly runId: number;
   readonly stage: CompileStage;
   readonly type: 'compile-result';
@@ -61,9 +76,10 @@ export interface CompileResult {
 
 export interface PreviewMountCommand {
   readonly capabilitySet?: PlaygroundCapabilitySet;
-  readonly factorySource: string;
+  readonly factorySource?: string;
   readonly factorySourceMap?: DomSourceMapV3;
-  readonly mountExport: string;
+  readonly mountExport?: string;
+  readonly routeBundle?: CompiledRouteBundle;
   readonly runId: number;
   readonly type: 'preview:mount';
   readonly version: typeof OXE_PLAYGROUND_PROTOCOL_VERSION;
@@ -209,6 +225,79 @@ const isGraphStats = (value: unknown): value is GraphStats =>
     (key) => typeof value[key] === 'number' && Number.isSafeInteger(value[key]) && value[key] >= 0,
   );
 
+const isRoutePathSegment = (value: unknown): boolean =>
+  isRecord(value) &&
+  ((value.kind === 'static' && typeof value.value === 'string') ||
+    ((value.kind === 'dynamic' || value.kind === 'catch-all') &&
+      typeof value.name === 'string' &&
+      value.name.length > 0));
+
+const isRouteSegmentDefinition = (value: unknown): boolean =>
+  isRecord(value) &&
+  (value.exportName === 'Layout' || value.exportName === 'Page') &&
+  typeof value.id === 'string' &&
+  value.id.length > 0 &&
+  (value.kind === 'layout' || value.kind === 'page') &&
+  typeof value.moduleId === 'string' &&
+  value.moduleId.length > 0;
+
+const isRouteDefinition = (value: unknown): boolean =>
+  isRecord(value) &&
+  typeof value.id === 'string' &&
+  value.id.length > 0 &&
+  typeof value.pattern === 'string' &&
+  Array.isArray(value.parameterNames) &&
+  value.parameterNames.every((name) => typeof name === 'string') &&
+  Array.isArray(value.path) &&
+  value.path.every(isRoutePathSegment) &&
+  Array.isArray(value.segments) &&
+  value.segments.length > 0 &&
+  value.segments.every(isRouteSegmentDefinition);
+
+const isCompiledRouteBundle = (value: unknown): value is CompiledRouteBundle => {
+  if (
+    !isRecord(value) ||
+    typeof value.initialHref !== 'string' ||
+    !value.initialHref.startsWith('/') ||
+    !isRecord(value.manifest) ||
+    value.manifest.schemaVersion !== 'oxe.route-manifest.v1' ||
+    typeof value.manifest.basePath !== 'string' ||
+    value.manifest.trailingSlash !== 'never' ||
+    !Array.isArray(value.manifest.routes) ||
+    value.manifest.routes.length === 0 ||
+    !value.manifest.routes.every(isRouteDefinition) ||
+    !Array.isArray(value.segments) ||
+    value.segments.length === 0 ||
+    !value.segments.every(
+      (segment) =>
+        isRecord(segment) &&
+        typeof segment.id === 'string' &&
+        segment.id.length > 0 &&
+        typeof segment.factorySource === 'string' &&
+        segment.factorySource.length > 0 &&
+        typeof segment.routeSegmentExport === 'string' &&
+        segment.routeSegmentExport.length > 0,
+    )
+  ) {
+    return false;
+  }
+  const manifestSegmentIds = new Set(
+    value.manifest.routes.flatMap((route) =>
+      isRecord(route) && Array.isArray(route.segments)
+        ? route.segments.flatMap((segment) =>
+            isRecord(segment) && typeof segment.id === 'string' ? [segment.id] : [],
+          )
+        : [],
+    ),
+  );
+  const artifactIds = value.segments.map((segment) => segment.id);
+  return (
+    new Set(artifactIds).size === artifactIds.length &&
+    manifestSegmentIds.size === artifactIds.length &&
+    artifactIds.every((id) => manifestSegmentIds.has(id))
+  );
+};
+
 const isReactiveTraceSource = (value: unknown): value is ReactiveTraceSource =>
   isRecord(value) &&
   typeof value.name === 'string' &&
@@ -277,6 +366,7 @@ export const isCompileRequest = (value: unknown): value is CompileRequest =>
   value.entryModuleId.length > 0 &&
   typeof value.entryExport === 'string' &&
   value.entryExport.length > 0 &&
+  isOptionalString(value.routeInitialHref) &&
   (value.capabilitySet === undefined || isPlaygroundCapabilitySet(value.capabilitySet)) &&
   Array.isArray(value.files) &&
   value.files.length > 0 &&
@@ -316,6 +406,7 @@ export const isCompileResult = (value: unknown): value is CompileResult =>
   isOptionalString(value.graphJson) &&
   isOptionalString(value.moduleSource) &&
   isOptionalString(value.mountExport) &&
+  (value.routeBundle === undefined || isCompiledRouteBundle(value.routeBundle)) &&
   (value.graphStats === undefined || isGraphStats(value.graphStats)) &&
   (value.error === undefined || isSerializedError(value.error));
 
@@ -329,9 +420,9 @@ export const isPreviewCommand = (value: unknown): value is PreviewCommand => {
   return (
     value.type === 'preview:mount' &&
     (value.capabilitySet === undefined || isPlaygroundCapabilitySet(value.capabilitySet)) &&
-    typeof value.factorySource === 'string' &&
     (value.factorySourceMap === undefined || isSourceMap(value.factorySourceMap)) &&
-    typeof value.mountExport === 'string'
+    ((typeof value.factorySource === 'string' && typeof value.mountExport === 'string') ||
+      isCompiledRouteBundle(value.routeBundle))
   );
 };
 

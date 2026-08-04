@@ -41,6 +41,7 @@ export type {
   PropSpreadSourceV1,
   ProcedureNodeV1,
   ResourceNodeV1,
+  RouteIntrinsicV1,
   RefreshStepV1,
   RefNodeV1,
   StaticAttributeV1,

@@ -1,0 +1,26 @@
+export Layout():
+  location = useLocation()
+  visits = 0
+
+  visit():
+    visits = visits + 1
+
+  home():
+    navigate("/")
+
+  project():
+    navigate("/projects/alpha")
+
+  about():
+    navigate("/about")
+
+  <main>
+    <header>
+      <h1>OXE persistent routing
+      <p>Current path: {location.pathname}
+      <nav>
+        <button onClick={home}>Home
+        <button onClick={project}>Project
+        <button onClick={about}>About
+        <button onClick={visit}>Layout state: {visits}
+    {children}

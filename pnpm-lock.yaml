@@ -44,6 +44,9 @@ importers:
       '@oxe/graph':
         specifier: workspace:*
         version: link:../../packages/graph
+      '@oxe/router':
+        specifier: workspace:*
+        version: link:../../packages/router
       '@oxe/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -81,6 +84,19 @@ importers:
         version: link:../runtime-dom
 
   packages/graph: {}
+
+  packages/router:
+    dependencies:
+      '@oxe/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@oxe/runtime-server':
+        specifier: workspace:*
+        version: link:../runtime-server
+    devDependencies:
+      '@oxe/compiler':
+        specifier: workspace:*
+        version: link:../compiler
 
   packages/runtime: {}
 
