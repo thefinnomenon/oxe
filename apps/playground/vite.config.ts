@@ -22,6 +22,7 @@ export default defineConfig({
     alias: {
       '@oxe/compiler': fromRepositoryRoot('packages/compiler/src/index.ts'),
       '@oxe/graph': fromRepositoryRoot('packages/graph/src/index.ts'),
+      '@oxe/router': fromRepositoryRoot('packages/router/src/index.ts'),
       '@oxe/runtime': fromRepositoryRoot('packages/runtime/src/index.ts'),
       '@oxe/runtime-dom': fromRepositoryRoot('packages/runtime-dom/src/index.ts'),
     },
