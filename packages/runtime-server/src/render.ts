@@ -4,9 +4,14 @@ import type {
   ServerComponentPlanV1,
   ServerComponentPropV1,
   ServerExpressionV1,
+  ServerFormattedValueV1,
+  ServerFormatValueOptions,
   ServerParameterV1,
   ServerRenderMetrics,
   ServerRenderLocation,
+  ServerLocalizedContentPart,
+  ServerLocalizedMessageV1,
+  ServerLocalizedMarkupV1,
   ServerRenderOptions,
   ServerRenderPlanV1,
   ServerRenderResult,
@@ -481,6 +486,112 @@ const renderAttribute = (name: string, mode: 'attribute' | 'property', value: un
     : ` ${normalized}="${escapeAttribute(String(value))}"`;
 };
 
+const localizedOptions = (
+  localization: ServerLocalizedMessageV1,
+  environment: RenderEnvironment,
+  contexts: ReadonlyMap<string, unknown>,
+  locals: ReadonlyMap<string, unknown>,
+  state: RenderState,
+): {
+  readonly count?: number;
+  readonly markup?: readonly string[];
+  readonly ordinal?: number;
+  readonly values?: Readonly<Record<string, boolean | number | string>>;
+} => {
+  const values: Record<string, boolean | number | string> = {};
+  for (const entry of localization.values) {
+    const value = evaluate(entry.value, environment, contexts, locals, state);
+    if (typeof value !== 'boolean' && typeof value !== 'number' && typeof value !== 'string') {
+      return invalidValue(
+        `Localized value "${entry.name}" for "${localization.key}" must be a primitive.`,
+      );
+    }
+    values[entry.name] = value;
+  }
+  let selection: number | undefined;
+  if (localization.selection) {
+    const value = evaluate(localization.selection.value, environment, contexts, locals, state);
+    if (typeof value !== 'number') {
+      return invalidValue(
+        `Localized ${localization.selection.kind} selection for "${localization.key}" must be a number.`,
+      );
+    }
+    selection = value;
+  }
+  return {
+    ...(localization.selection?.kind === 'cardinal' && selection !== undefined
+      ? { count: selection }
+      : {}),
+    ...(localization.selection?.kind === 'ordinal' && selection !== undefined
+      ? { ordinal: selection }
+      : {}),
+    ...(localization.markup.length > 0
+      ? { markup: localization.markup.map((markup) => markup.name) }
+      : {}),
+    ...(Object.keys(values).length > 0 ? { values } : {}),
+  };
+};
+
+const formattedOptions = (
+  format: ServerFormattedValueV1,
+  environment: RenderEnvironment,
+  contexts: ReadonlyMap<string, unknown>,
+  locals: ReadonlyMap<string, unknown>,
+  state: RenderState,
+): ServerFormatValueOptions => {
+  const options: { [name: string]: unknown } = { type: format.type };
+  for (const option of format.options) {
+    options[option.name] = evaluate(option.value, environment, contexts, locals, state);
+  }
+  if (format.type === 'currency' && typeof options.currency !== 'string') {
+    return invalidValue('Currency formatting requires a string currency code.');
+  }
+  // Intl performs the authoritative validation for the remaining platform option names.
+  return options as ServerFormatValueOptions;
+};
+
+const renderLocalizedParts = (
+  parts: readonly ServerLocalizedContentPart[],
+  markup: ReadonlyMap<string, ServerLocalizedMarkupV1>,
+  environment: RenderEnvironment,
+  contexts: ReadonlyMap<string, unknown>,
+  locals: ReadonlyMap<string, unknown>,
+  state: RenderState,
+): void => {
+  for (const part of parts) {
+    if (typeof part === 'string') {
+      state.metrics.textNodes += 1;
+      write(state, escapeText(part));
+      continue;
+    }
+    const descriptor = markup.get(part.name);
+    if (!descriptor) {
+      return invalidPlan(`Localized markup "${part.name}" has no compiler descriptor.`);
+    }
+    if (!/^[a-z][a-z0-9]*$/u.test(descriptor.tag)) {
+      return invalidPlan(`Invalid localized HTML tag <${descriptor.tag}>.`);
+    }
+    state.metrics.elements += 1;
+    write(state, `<${descriptor.tag}`);
+    for (const attribute of descriptor.staticAttributes) {
+      write(state, renderAttribute(attribute.name, 'attribute', attribute.value));
+    }
+    for (const attribute of descriptor.dynamicAttributes) {
+      write(
+        state,
+        renderAttribute(
+          attribute.name,
+          attribute.mode,
+          evaluate(attribute.value, environment, contexts, locals, state),
+        ),
+      );
+    }
+    write(state, '>');
+    renderLocalizedParts(part.children, markup, environment, contexts, locals, state);
+    write(state, `</${descriptor.tag}>`);
+  }
+};
+
 const renderView = (
   view: ServerViewV1,
   environment: RenderEnvironment,
@@ -520,13 +631,48 @@ const renderView = (
                 attribute.value,
                 renderLocation(environment, instancePath),
               ) ?? attribute.value)
-            : evaluate(attribute.value, environment, contexts, locals, state);
+            : attribute.localization
+              ? (state.options.i18n?.format(
+                  attribute.localization.key,
+                  localizedOptions(attribute.localization, environment, contexts, locals, state),
+                ) ??
+                invalidPlan(
+                  `Localized attribute "${attribute.localization.key}" requires options.i18n.`,
+                ))
+              : evaluate(attribute.value, environment, contexts, locals, state);
         write(
           state,
           renderAttribute(
             attribute.name,
             attribute.kind === 'static' ? 'attribute' : attribute.mode,
             value,
+          ),
+        );
+      }
+      const machineName =
+        view.tag === 'data' ? 'value' : view.tag === 'time' ? 'datetime' : undefined;
+      const formattedChild =
+        view.children.length === 1 && view.children[0]?.kind === 'text'
+          ? view.children[0].format
+          : undefined;
+      if (
+        machineName &&
+        formattedChild &&
+        !view.attributes.some((attribute) => attribute.name === machineName)
+      ) {
+        const i18n = state.options.i18n;
+        if (!i18n) {
+          return invalidPlan(`Formatted <${view.tag}> requires options.i18n.`);
+        }
+        write(
+          state,
+          renderAttribute(
+            machineName,
+            'attribute',
+            i18n.machineValue(
+              evaluate(formattedChild.value, environment, contexts, locals, state),
+              formattedChild.type,
+            ),
           ),
         );
       }
@@ -544,6 +690,47 @@ const renderView = (
       return;
     }
     case 'text': {
+      if (view.format) {
+        const i18n = state.options.i18n;
+        if (!i18n) {
+          return invalidPlan(`Formatted value "${view.id}" requires options.i18n.`);
+        }
+        state.metrics.textNodes += 1;
+        write(
+          state,
+          escapeText(
+            i18n.formatValue(
+              evaluate(view.format.value, environment, contexts, locals, state),
+              formattedOptions(view.format, environment, contexts, locals, state),
+            ),
+          ),
+        );
+        return;
+      }
+      if (view.localization) {
+        const i18n = state.options.i18n;
+        if (!i18n) {
+          return invalidPlan(`Localized message "${view.localization.key}" requires options.i18n.`);
+        }
+        const options = localizedOptions(view.localization, environment, contexts, locals, state);
+        if (view.localization.markup.length === 0) {
+          state.metrics.textNodes += 1;
+          write(state, escapeText(i18n.format(view.localization.key, options)));
+          return;
+        }
+        const marker = hydrationMarkerId(view.id);
+        write(state, `<!--oxe:${marker}:start-->`);
+        renderLocalizedParts(
+          i18n.formatToParts(view.localization.key, options),
+          new Map(view.localization.markup.map((markup) => [markup.name, markup])),
+          environment,
+          contexts,
+          locals,
+          state,
+        );
+        write(state, `<!--oxe:${marker}:end-->`);
+        return;
+      }
       state.metrics.textNodes += 1;
       const text = view.parts
         .map((part) =>

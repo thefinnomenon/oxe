@@ -21,6 +21,7 @@ import {
   type GraphSpanV1,
   type KeyedCollectionNodeV1,
   type LiteralValueV1,
+  type LocalizedMessageV1,
   type ProcedureNodeV1,
   type ResourceNodeV1,
   type RefNodeV1,
@@ -715,6 +716,12 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
     }
   }
   const usesAsyncResources = asyncValueIds.size > 0;
+  const usesLocalization = [...plan.nodesById.values()].some(
+    (node) =>
+      (node.kind === 'text' && (node.localization !== undefined || node.format !== undefined)) ||
+      (node.kind === 'element' &&
+        node.dynamicAttributes?.some((attribute) => attribute.localization !== undefined)),
+  );
   const componentNames = new Map<string, string>();
   const contextNames = new Map<string, string>();
   const bindingNames = new Map<string, string>();
@@ -730,9 +737,10 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
     }
   }
   const mountName = names.allocate(`mount${plan.entry.component.name}`);
-  const hydrateName = usesAsyncResources
-    ? names.allocate(`hydrate${plan.entry.component.name}`)
-    : undefined;
+  const hydrateName =
+    usesAsyncResources || usesLocalization
+      ? names.allocate(`hydrate${plan.entry.component.name}`)
+      : undefined;
 
   for (const context of plan.contexts) {
     contextNames.set(context.id, names.allocate(context.name));
@@ -756,7 +764,10 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
       (plan.childrenByParent.get(element.id) ?? []).every((edge) => {
         const child = plan.nodesById.get(edge.to);
         return (
-          (child?.kind === 'text' && child.parts.every((part) => part.kind === 'static')) ||
+          (child?.kind === 'text' &&
+            child.localization === undefined &&
+            child.format === undefined &&
+            child.parts.every((part) => part.kind === 'static')) ||
           (child?.kind === 'element' && isStaticElement(child))
         );
       });
@@ -1067,6 +1078,44 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
     return dependencySource(dependency);
   };
 
+  const localizationExpressions = (
+    localization: LocalizedMessageV1,
+  ): readonly ValueExpressionV1[] => [
+    ...localization.values.map((value) => value.value),
+    ...(localization.selection ? [localization.selection.value] : []),
+    ...localization.markup.flatMap((markup) =>
+      markup.dynamicAttributes.map((attribute) => attribute.value),
+    ),
+  ];
+
+  const localizationDependencies = (localization: LocalizedMessageV1): readonly string[] => [
+    'i18n.revision',
+    ...new Set(localizationExpressions(localization).flatMap(reactiveDependencies)),
+  ];
+
+  const localizationOptionsSource = (
+    localization: LocalizedMessageV1,
+    includeMarkup: boolean,
+  ): string => {
+    const entries: string[] = [];
+    if (localization.selection) {
+      entries.push(
+        `${localization.selection.kind === 'cardinal' ? 'count' : 'ordinal'}: ${expressionSource(localization.selection.value)}`,
+      );
+    }
+    if (localization.values.length > 0) {
+      entries.push(
+        `values: { ${localization.values
+          .map((value) => `${JSON.stringify(value.name)}: ${expressionSource(value.value)}`)
+          .join(', ')} }`,
+      );
+    }
+    if (includeMarkup && localization.markup.length > 0) {
+      entries.push(`markup: ${JSON.stringify(localization.markup.map((markup) => markup.name))}`);
+    }
+    return `{ ${entries.join(', ')} }`;
+  };
+
   const emitComponent = (component: ComponentPlan): void => {
     const generatedComponentName =
       componentNames.get(component.component.id) ??
@@ -1076,7 +1125,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
       '/** Builds this component inside an active OXE owner. Prefer the mount helper at an application boundary. */',
     );
     writer.line(
-      `const ${generatedComponentName} = (document${usesAsyncResources ? ', asyncCoordinator' : ''}${component.parameters.length > 0 ? ', props' : ''}) => {`,
+      `const ${generatedComponentName} = (document${usesLocalization ? ', i18n' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}${component.parameters.length > 0 ? ', props' : ''}) => {`,
     );
     writer.indented(() => {
       for (const parameter of component.parameters) {
@@ -1254,6 +1303,90 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
 
       const emitText = (text: TextNodeV1): readonly string[] => {
         writer.source(text.span);
+        if (text.format) {
+          const format = text.format;
+          const expressions = [format.value, ...format.options.map((option) => option.value)];
+          const isAsync = expressions.some(expressionIsAsync);
+          const readableName = names.allocate('formattedValue');
+          const textName = names.allocate('textNode');
+          const factory = isAsync ? 'createAsyncDerived' : 'createDerived';
+          const dependencies = [
+            'i18n.revision',
+            ...new Set(expressions.flatMap(reactiveDependencies)),
+          ];
+          writer.line(
+            `const ${readableName} = ${factory}([${dependencies.join(', ')}], () => i18n.formatValue(${expressionSource(format.value)}, { type: ${JSON.stringify(format.type)}${format.options.map((option) => `, ${JSON.stringify(option.name)}: ${expressionSource(option.value)}`).join('')} }), { name: ${JSON.stringify(`${component.component.name}.formatted value`)}, traceId: ${JSON.stringify(text.id)} });`,
+          );
+          writer.line(`const ${textName} = createText(document);`);
+          writer.line(`${isAsync ? 'bindAsyncText' : 'bindText'}(${textName}, ${readableName});`);
+          return [textName];
+        }
+        if (text.localization) {
+          const localized = text.localization;
+          const dependencies = localizationDependencies(localized);
+          const isAsync = localizationExpressions(localized).some(expressionIsAsync);
+          const readableName = names.allocate('localizedMessage');
+          const factory = isAsync ? 'createAsyncDerived' : 'createDerived';
+          const method = localized.markup.length > 0 ? 'formatToParts' : 'format';
+          writer.line(
+            `const ${readableName} = ${factory}([${dependencies.join(', ')}], () => i18n.${method}(${JSON.stringify(localized.key)}, ${localizationOptionsSource(localized, localized.markup.length > 0)}), { name: ${JSON.stringify(`${component.component.name}.localized message`)}, traceId: ${JSON.stringify(text.id)} });`,
+          );
+          if (localized.markup.length === 0) {
+            const textName = names.allocate('textNode');
+            writer.line(`const ${textName} = createText(document);`);
+            writer.line(`${isAsync ? 'bindAsyncText' : 'bindText'}(${textName}, ${readableName});`);
+            return [textName];
+          }
+
+          const markupFactories: string[] = [];
+          for (const markup of localized.markup) {
+            const markupFactory = names.allocate(`${markup.name}LocalizedMarkup`);
+            const childrenName = names.allocate('localizedChildren');
+            const elementName = names.allocate(`${markup.tag}Element`);
+            markupFactories.push(`${JSON.stringify(markup.name)}: ${markupFactory}`);
+            writer.line(`const ${markupFactory} = (${childrenName}) => {`);
+            writer.indented(() => {
+              writer.line(
+                `const ${elementName} = createElement(document, ${JSON.stringify(markup.tag)});`,
+              );
+              for (const attribute of markup.staticAttributes) {
+                writer.line(
+                  `setDomValue(${elementName}, ${JSON.stringify(attribute.name)}, ${JSON.stringify(['checked', 'disabled', 'selected', 'value'].includes(attribute.name) ? 'property' : 'attribute')}, ${valueSource(attribute.value)});`,
+                );
+              }
+              for (const attribute of markup.dynamicAttributes) {
+                const direct = directReadableSource(attribute.value);
+                const readable = direct ?? names.allocate(`${attribute.name}Attribute`);
+                if (!direct) {
+                  const attributeDependencies = reactiveDependencies(attribute.value);
+                  const attributeFactory = expressionIsAsync(attribute.value)
+                    ? 'createAsyncDerived'
+                    : 'createDerived';
+                  writer.line(
+                    `const ${readable} = ${attributeFactory}([${attributeDependencies.join(', ')}], () => ${expressionSource(attribute.value)}, { name: ${JSON.stringify(`${component.component.name}.${attribute.name} localized markup attribute`)}, traceId: ${JSON.stringify(text.id)} });`,
+                  );
+                }
+                writer.line(
+                  `${expressionIsAsync(attribute.value) ? 'bindAsyncDomValue' : 'bindDomValue'}(${elementName}, ${JSON.stringify(attribute.name)}, ${JSON.stringify(attribute.mode)}, ${readable});`,
+                );
+              }
+              const childName = names.allocate('localizedChild');
+              writer.line(`for (const ${childName} of ${childrenName}) {`);
+              writer.indented(() => {
+                writer.line(`appendChild(${elementName}, ${childName});`);
+              });
+              writer.line('}');
+              writer.line(`return ${elementName};`);
+            });
+            writer.line('};');
+          }
+          const regionName = names.allocate('localizedRegion');
+          const partsName = names.allocate('localizedParts');
+          writer.line(
+            `const ${regionName} = createConditionalRegion(document, ${readableName}, (${partsName}) => createStructuredContent(document, ${partsName}, { ${markupFactories.join(', ')} }), { hydrationId: ${JSON.stringify(hydrationMarkerId(text.id))}, name: ${JSON.stringify(`${component.component.name}.localized message`)}, source: ${JSON.stringify(`${text.span.fileName}:${text.span.start.line}:${text.span.start.column}`)} });`,
+          );
+          return [`...${regionName}`];
+        }
         if (text.parts.length === 0) {
           return unsupported(`Text node "${text.id}" has no parts.`);
         }
@@ -1416,7 +1549,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         }
         const rootName = names.allocate(`${target.component.name}Root`);
         writer.line(
-          `const ${rootName} = createRoot(() => ${targetName}(document${usesAsyncResources ? ', asyncCoordinator' : ''}, { ${entries.join(', ')} }), { name: ${JSON.stringify(`${target.component.name} component`)} });`,
+          `const ${rootName} = createRoot(() => ${targetName}(document${usesLocalization ? ', i18n' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}, { ${entries.join(', ')} }), { name: ${JSON.stringify(`${target.component.name} component`)} });`,
         );
         return `${rootName}.value`;
       };
@@ -1453,6 +1586,20 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           );
         }
         for (const attribute of element.dynamicAttributes ?? []) {
+          if (attribute.localization) {
+            const localized = attribute.localization;
+            const dependencies = localizationDependencies(localized);
+            const isAsync = localizationExpressions(localized).some(expressionIsAsync);
+            const readable = names.allocate(`${attribute.name}LocalizedAttribute`);
+            const factory = isAsync ? 'createAsyncDerived' : 'createDerived';
+            writer.line(
+              `const ${readable} = ${factory}([${dependencies.join(', ')}], () => i18n.format(${JSON.stringify(localized.key)}, ${localizationOptionsSource(localized, false)}), { name: ${JSON.stringify(`${component.component.name}.${attribute.name} localized attribute`)}, traceId: ${JSON.stringify(element.id)} });`,
+            );
+            writer.line(
+              `${isAsync ? 'bindAsyncDomValue' : 'bindDomValue'}(${elementName}, ${JSON.stringify(attribute.name)}, ${JSON.stringify(attribute.mode)}, ${readable});`,
+            );
+            continue;
+          }
           const direct = directReadableSource(attribute.value);
           const readable = direct ?? names.allocate(`${attribute.name}Attribute`);
           if (!direct) {
@@ -1467,6 +1614,29 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           writer.line(
             `${expressionIsAsync(attribute.value) ? 'bindAsyncDomValue' : 'bindDomValue'}(${elementName}, ${JSON.stringify(attribute.name)}, ${JSON.stringify(attribute.mode)}, ${readable});`,
           );
+        }
+
+        const formattedChildren = (plan.childrenByParent.get(element.id) ?? []).flatMap((edge) => {
+          const child = plan.nodesById.get(edge.to);
+          return child?.kind === 'text' && child.format ? [child.format] : [];
+        });
+        if (
+          formattedChildren.length === 1 &&
+          (plan.childrenByParent.get(element.id)?.length ?? 0) === 1 &&
+          (element.tag === 'data' || element.tag === 'time')
+        ) {
+          const format = formattedChildren[0];
+          if (format) {
+            const readable = names.allocate('formattedMachineValue');
+            const isAsync = expressionIsAsync(format.value);
+            const dependencies = reactiveDependencies(format.value);
+            writer.line(
+              `const ${readable} = ${isAsync ? 'createAsyncDerived' : 'createDerived'}([${dependencies.join(', ')}], () => i18n.machineValue(${expressionSource(format.value)}, ${JSON.stringify(format.type)}), { name: ${JSON.stringify(`${component.component.name}.${element.tag} machine value`)}, traceId: ${JSON.stringify(element.id)} });`,
+            );
+            writer.line(
+              `${isAsync ? 'bindAsyncDomValue' : 'bindDomValue'}(${elementName}, ${JSON.stringify(element.tag === 'data' ? 'value' : 'datetime')}, "attribute", ${readable});`,
+            );
+          }
         }
 
         for (const event of plan.eventsByElement.get(element.id) ?? []) {
@@ -1547,7 +1717,17 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
                   ? emitText(child)
                   : unsupported(`Element children cannot contain a ${child.kind} node.`);
           for (const childName of childNames) {
-            writer.line(`appendChild(${elementName}, ${childName});`);
+            if (childName.startsWith('...')) {
+              const regionName = childName.slice(3);
+              const regionNode = names.allocate('localizedRegionNode');
+              writer.line(`for (const ${regionNode} of ${regionName}) {`);
+              writer.indented(() => {
+                writer.line(`appendChild(${elementName}, ${regionNode});`);
+              });
+              writer.line('}');
+            } else {
+              writer.line(`appendChild(${elementName}, ${childName});`);
+            }
           }
         }
         return elementName;
@@ -1911,6 +2091,16 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
       );
     });
     writer.line('}');
+    if (usesLocalization) {
+      writer.line('const i18n = options.i18n;');
+      writer.line('if (!i18n) {');
+      writer.indented(() => {
+        writer.line(
+          `throw new Error(${JSON.stringify(`Cannot mount ${plan.entry.component.name}: options.i18n is required by localized messages.`)});`,
+        );
+      });
+      writer.line('}');
+    }
     if (usesAsyncResources) {
       writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
       writer.line('return mount(container, () => {');
@@ -1918,12 +2108,14 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         writer.line(
           `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
         );
-        writer.line(`return ${componentName}(document, asyncCoordinator);`);
+        writer.line(
+          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}, asyncCoordinator);`,
+        );
       });
       writer.line('}, { onError: options.onError });');
     } else {
       writer.line(
-        `return mount(container, () => ${componentName}(document), { onError: options.onError });`,
+        `return mount(container, () => ${componentName}(document${usesLocalization ? ', i18n' : ''}), { onError: options.onError });`,
       );
     }
   });
@@ -1942,6 +2134,16 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         );
       });
       writer.line('}');
+      if (usesLocalization) {
+        writer.line('const i18n = options.i18n;');
+        writer.line('if (!i18n) {');
+        writer.indented(() => {
+          writer.line(
+            `throw new Error(${JSON.stringify(`Cannot hydrate ${plan.entry.component.name}: options.i18n is required by localized messages.`)});`,
+          );
+        });
+        writer.line('}');
+      }
       writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
       writer.line('asyncCoordinator.hydrate(readSerializedAsyncCheckpoints(document));');
       writer.line('const actualBuildFingerprint = readSerializedBuildFingerprint(document);');
@@ -1950,7 +2152,9 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         writer.line(
           `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
         );
-        writer.line(`return ${componentName}(document, asyncCoordinator);`);
+        writer.line(
+          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}, asyncCoordinator);`,
+        );
       });
       writer.line(
         `}, { actualBuildFingerprint, buildMismatch: options.buildMismatch ?? 'reload', expectedBuildFingerprint: ${JSON.stringify(plan.buildFingerprint)}, mismatch: options.mismatch ?? 'recover', name: ${JSON.stringify(`${plan.entry.component.name} hydration`)}, onBuildMismatch: options.onBuildMismatch, onError: options.onError, onMismatch: options.onMismatch });`,
@@ -2076,6 +2280,7 @@ const emitFactorySource = (program: EmittedProgram): string => {
     'createConditionalRegion',
     'createElement',
     'createKeyedRegion',
+    ...(program.source.includes('createStructuredContent(') ? ['createStructuredContent'] : []),
     ...(program.source.includes('createSkeleton(') ? ['createSkeleton'] : []),
     ...(program.source.includes('createStaticTemplate(') ? ['createStaticTemplate'] : []),
     'createText',
@@ -2144,6 +2349,7 @@ const emitModuleSource = (program: EmittedProgram): string => {
     'createConditionalRegion',
     'createElement',
     'createKeyedRegion',
+    ...(program.source.includes('createStructuredContent(') ? ['createStructuredContent'] : []),
     ...(program.source.includes('createSkeleton(') ? ['createSkeleton'] : []),
     ...(program.source.includes('createStaticTemplate(') ? ['createStaticTemplate'] : []),
     'createText',

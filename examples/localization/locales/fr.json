@@ -1,0 +1,26 @@
+{
+  "locale": "fr",
+  "messages": {
+    "home.greeting": "Bon retour, {name}",
+    "home.inline": "Créé avec :<strong> OXE</strong>",
+    "home.powered-by": "Propulsé par OXE",
+    "home.rank": {
+      "cases": {
+        "one": "Vous avez terminé à la {rank}re place cette semaine",
+        "other": "Vous avez terminé à la {rank}e place cette semaine"
+      },
+      "kind": "ordinal"
+    },
+    "home.ready": "Votre liste de lecture est prête.",
+    "home.story-count": {
+      "cases": {
+        "many": "{stories} histoires enregistrées dans votre liste de lecture",
+        "one": "{stories} histoire enregistrée dans votre liste de lecture",
+        "other": "{stories} histoires enregistrées dans votre liste de lecture"
+      },
+      "kind": "cardinal"
+    },
+    "m_43b4415e3dfc1b4a": "Rechercher dans votre liste de lecture"
+  },
+  "schemaVersion": "oxe.i18n.catalog.v2"
+}

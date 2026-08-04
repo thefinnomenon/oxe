@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "composite": true,
+    "lib": ["ES2022"],
+    "outDir": "./dist-typecheck",
+    "paths": {
+      "@oxe/compiler": ["../compiler/src/index.ts"],
+      "@oxe/runtime": ["../runtime/src/index.ts"]
+    },
+    "rootDir": ".",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "references": [{ "path": "../compiler" }, { "path": "../runtime" }]
+}

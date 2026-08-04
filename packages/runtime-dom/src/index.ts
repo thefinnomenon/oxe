@@ -9,6 +9,7 @@ export {
   createKeyedRegion,
   createSkeleton,
   createStaticTemplate,
+  createStructuredContent,
   createText,
   listen,
   hydrate,
@@ -31,5 +32,7 @@ export {
   type StaticTemplateAttribute,
   type StaticTemplateElement,
   type StaticTemplateFactory,
+  type StructuredContentFactory,
+  type StructuredContentPart,
   type TextValue,
 } from './runtime-dom.js';

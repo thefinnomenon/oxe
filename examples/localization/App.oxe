@@ -1,0 +1,18 @@
+export App():
+  user = { name: "Ada" }
+  stories = 3
+  rank = 2
+  total = 10
+  publishedAt = "2026-08-04T15:30:00.000Z"
+  <main>
+    <h1 i18n={{ key: "home.greeting", purpose: "dashboard welcome heading" }}>Welcome back, {user.name}
+    <p i18n={{ key: "home.ready", purpose: "confirmation that saved reading content is available" }}>Your reading list is ready.
+    <p i18n={{ key: "home.story-count", count: stories, purpose: "number of stories in the user's reading list" }}>{stories} stories saved to your reading list
+    <p i18n={{ key: "home.rank", ordinal: rank, purpose: "weekly reading challenge placement" }}>You finished in {rank} place this week
+    <input placeholder={"Search your stories"}>
+    <p i18n={{ key: "home.inline", purpose: "inline-markup localization example" }}>Built with:
+      <strong> OXE
+    <data i18n={{ format: { type: "currency", currency: "USD" } }}>{total}
+    <time i18n={{ format: { type: "date", dateStyle: "long", timeZone: "UTC" } }}>{publishedAt}
+    <p i18n={{ key: "home.powered-by", purpose: "small product attribution" }}>Powered by OXE
+    <code i18n={false}>pnpm oxe i18n sync

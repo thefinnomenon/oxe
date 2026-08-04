@@ -298,6 +298,7 @@ const validateRequest = (value: unknown): OxeSizeRequest => {
     entryExport?: unknown;
     entryModuleId?: unknown;
     files?: unknown;
+    localization?: unknown;
   };
   if (
     typeof request.entryExport !== 'string' ||
@@ -312,6 +313,9 @@ const validateRequest = (value: unknown): OxeSizeRequest => {
   }
   if (request.capabilitySet !== undefined && !isPlaygroundCapabilitySet(request.capabilitySet)) {
     throw new OxeSizeRequestError(400, 'INVALID_REQUEST', 'Unknown Playground capability set.');
+  }
+  if (request.localization !== undefined && typeof request.localization !== 'boolean') {
+    throw new OxeSizeRequestError(400, 'INVALID_REQUEST', 'localization must be Boolean.');
   }
   if (request.entryModuleId.length === 0 || request.entryModuleId.length > 512) {
     throw new OxeSizeRequestError(
@@ -369,6 +373,7 @@ const validateRequest = (value: unknown): OxeSizeRequest => {
   }
   return {
     ...(request.capabilitySet ? { capabilitySet: request.capabilitySet } : {}),
+    ...(request.localization ? { localization: true } : {}),
     entryModuleId: request.entryModuleId,
     entryExport: request.entryExport,
     files,
@@ -385,6 +390,7 @@ const requestKey = (request: OxeSizeRequest): string => {
     .update('\0')
     .update(request.entryExport);
   hash.update('\0').update(request.capabilitySet ?? 'none');
+  hash.update('\0').update(request.localization ? 'localization' : 'literal');
   for (const file of [...request.files].sort((left, right) =>
     left.moduleId.localeCompare(right.moduleId),
   )) {
@@ -420,6 +426,7 @@ export const createOxeSizeMeasurementService = (
         capabilities: capabilitiesForPlayground(request.capabilitySet),
         entryModuleId: request.entryModuleId,
         entryExport: request.entryExport,
+        ...(request.localization === undefined ? {} : { localization: request.localization }),
         loadModule: async (moduleId) => sources.get(moduleId),
       });
       if (!analyzed.graph) {

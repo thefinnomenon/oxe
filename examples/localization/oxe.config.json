@@ -1,0 +1,28 @@
+{
+  "i18n": {
+    "source": "en-US",
+    "locales": ["es", "pt", "fr", "it"],
+    "glossary": {
+      "OXE": {
+        "description": "The framework name.",
+        "preserve": true
+      },
+      "reading list": {
+        "description": "A personal collection of stories the user saved to read later.",
+        "translations": {
+          "es": "lista de lectura",
+          "fr": "liste de lecture",
+          "it": "lista di lettura",
+          "pt": "lista de leitura"
+        }
+      }
+    },
+    "translation": {
+      "provider": "openai",
+      "model": "gpt-5.6-luna",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "concurrency": 4
+    },
+    "onMissing": "error"
+  }
+}

@@ -42,6 +42,7 @@ const compile = async (request: {
   readonly entryExport: string;
   readonly entryModuleId: string;
   readonly files: readonly CompileFile[];
+  readonly localization?: boolean;
   readonly runId: number;
 }): Promise<CompileResult> => {
   const startedAt = performance.now();
@@ -55,6 +56,7 @@ const compile = async (request: {
     capabilities: capabilitiesForPlayground(request.capabilitySet),
     entryModuleId: request.entryModuleId,
     entryExport: request.entryExport,
+    ...(request.localization === undefined ? {} : { localization: request.localization }),
     loadModule: async (moduleId) => sources.get(moduleId),
   });
   const common = {

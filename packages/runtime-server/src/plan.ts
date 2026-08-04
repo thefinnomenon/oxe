@@ -17,6 +17,7 @@ import type {
   ServerComponentPlanV1,
   ServerComponentPropV1,
   ServerExpressionV1,
+  ServerLocalizedMessageV1,
   ServerParameterV1,
   ServerRenderPlanV1,
   ServerRenderPlanV2,
@@ -248,6 +249,39 @@ export const createServerRenderPlan = (graph: UiGraphV1): ServerRenderPlanV1 => 
     );
 
   const activeViews = new Set<string>();
+  const lowerLocalization = (
+    localization: NonNullable<Extract<UiNodeV1, { readonly kind: 'text' }>['localization']>,
+  ): ServerLocalizedMessageV1 => ({
+    key: localization.key,
+    source: localization.source,
+    values: localization.values.map((value) => ({
+      name: value.name,
+      value: lowerExpression(value.value),
+    })),
+    ...(localization.selection
+      ? {
+          selection: {
+            kind: localization.selection.kind,
+            value: lowerExpression(localization.selection.value),
+          },
+        }
+      : {}),
+    markup: localization.markup.map((markup) => ({
+      name: markup.name,
+      tag: markup.tag,
+      staticAttributes: markup.staticAttributes.map((attribute) => ({
+        kind: 'static',
+        name: attribute.name,
+        value: attribute.value,
+      })),
+      dynamicAttributes: markup.dynamicAttributes.map((attribute) => ({
+        kind: 'dynamic',
+        mode: attribute.mode,
+        name: attribute.name,
+        value: lowerExpression(attribute.value),
+      })),
+    })),
+  });
   const lowerView = (id: string): ServerViewV1 => {
     if (activeViews.has(id)) {
       return invalid(`Server view hierarchy cycles through "${id}".`);
@@ -276,6 +310,9 @@ export const createServerRenderPlan = (graph: UiGraphV1): ServerRenderPlanV1 => 
                 mode: attribute.mode,
                 name: attribute.name,
                 value: lowerExpression(attribute.value),
+                ...(attribute.localization
+                  ? { localization: lowerLocalization(attribute.localization) }
+                  : {}),
               })),
             ],
             children: (childrenByParent.get(node.id) ?? []).map((edge) => lowerView(edge.to)),
@@ -284,6 +321,19 @@ export const createServerRenderPlan = (graph: UiGraphV1): ServerRenderPlanV1 => 
           return {
             kind: 'text',
             id: node.id,
+            ...(node.format
+              ? {
+                  format: {
+                    options: node.format.options.map((option) => ({
+                      name: option.name,
+                      value: lowerExpression(option.value),
+                    })),
+                    type: node.format.type,
+                    value: lowerExpression(node.format.value),
+                  },
+                }
+              : {}),
+            ...(node.localization ? { localization: lowerLocalization(node.localization) } : {}),
             parts: node.parts.map((part) =>
               part.kind === 'static'
                 ? { kind: 'static', value: part.value }

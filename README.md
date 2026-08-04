@@ -116,15 +116,24 @@ or dynamically register their additional resource and patch work when they do no
 
 ## Packages
 
+- `@oxe/cli`: the `oxe` executable and explicit localization sync/check workflow.
 - `@oxe/compiler`: scanner, parser, semantic analysis, and deterministic DOM code
   generation.
 - `@oxe/graph`: versioned UI graph types, structural validation, dependency-edge
   reconciliation, topology checks, and canonical JSON.
-- `@oxe/runtime`: platform-neutral cells, derived values, batching, ownership,
-  cleanup, context, and `untrack` primitives for generated code.
-- `@oxe/runtime-dom`: direct DOM creation, owned text/attribute bindings,
-  conditional and keyed regions, batched event listeners, mounting, and
-  unmounting.
+- `@oxe/i18n`: automatic message extraction, content-addressed catalogs,
+  incremental sync, reviewed-translation protection, deterministic validation,
+  and OpenAI translation isolated from application packages.
+- `@oxe/runtime`: platform-neutral cells, derived and async values, identity
+  deduplication, cancellation, refresh, batching, ownership, cleanup, context,
+  and `untrack` primitives for generated code.
+- `@oxe/runtime-dom`: direct DOM creation, owned sync/async text and attribute
+  bindings, conditional and keyed regions, batched event listeners, mounting,
+  eager hydration adoption, and unmounting.
+- `@oxe/runtime-server`: language-neutral blocking/deferred render-plan lowering,
+  the deterministic synchronous JavaScript reference renderer, a portable
+  readiness scheduler, inert stream transport/checkpoints, and structural
+  performance metrics.
 - `@oxe/playground`: browser compiler lab with native examples, an isolated DOM
   preview, diagnostics, generated output, graph inspection, and payload sizing.
 - `docs/language-decisions.md`: settled authored-language decisions and open
@@ -151,6 +160,71 @@ pnpm test
 pnpm build
 pnpm --filter @oxe/runtime-server bench
 ```
+
+The translation example uses `examples/localization/oxe.config.json`:
+
+```json
+{
+  "i18n": {
+    "source": "en-US",
+    "locales": ["es", "pt", "fr", "it"],
+    "glossary": {
+      "OXE": { "preserve": true },
+      "reading list": {
+        "description": "Stories saved to read later.",
+        "translations": {
+          "es": "lista de lectura",
+          "pt": "lista de leitura",
+          "fr": "liste de lecture",
+          "it": "lista di lettura"
+        }
+      }
+    },
+    "translation": {
+      "provider": "openai",
+      "model": "gpt-5.6-luna",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "concurrency": 4
+    },
+    "onMissing": "error"
+  }
+}
+```
+
+After building the compiler, i18n, and CLI packages, translation is always an
+explicit operation:
+
+```dotenv
+# .env
+OPENAI_API_KEY="your-key"
+```
+
+```sh
+node packages/cli/dist/cli.js i18n sync --project examples/localization
+node packages/cli/dist/cli.js i18n check --project examples/localization
+```
+
+The CLI loads `.env` from the project and current working directory without
+overriding variables already present in the shell. The API key is read only from
+the configured environment variable and is never written to catalogs or
+manifests. Sync sends only new and changed authored messages—with dynamic values
+represented by placeholders—to OpenAI; it never sends runtime user data.
+Successful batches are checkpointed, and an unchanged sync makes no API request.
+Plural and ordinal messages generate every category reported by the platform
+`Intl.PluralRules` implementation for each locale. Generation also receives the
+authored purpose, component/element context, named context selectors, and project
+glossary. Glossary changes invalidate generated drafts while preserving reviewed
+human translations. Locale concurrency is bounded (four by default, configurable
+from one through sixteen) so large locale sets finish faster without issuing an
+unbounded request burst.
+
+Compiler lowering is wired into both DOM generation and synchronous SSR. It
+reactively formats translated text and attributes, preserves reorderable inline
+markup as structured nodes, and uses cached platform `Intl` formatters for
+currency and temporal values. The Playground's **Localization and Intl** example
+exercises that generated path with the Spanish catalog.
+`i18n check` is the deterministic build hook and never accesses the network,
+performs translation, or writes catalogs.
 
 Launch the browser playground from the repository root:
 

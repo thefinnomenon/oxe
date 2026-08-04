@@ -1029,6 +1029,91 @@ export App():
     expect(button.listenerCount('click')).toBe(0);
   });
 
+  it('reactively updates lowered text, attributes, and reorderable localized markup', () => {
+    const source = `export App():
+  name = "Ada"
+  total = 10
+  <main>
+    <h1 i18n={{ key: "greeting" }}>Hello {name}
+    <p i18n={{ key: "welcome" }}>Welcome
+      <strong>{name}
+    <input placeholder={"Search stories"}>
+    <data i18n={{ format: { type: "currency", currency: "USD" } }}>{total}
+`;
+    const analyzed = analyzeSource(source, 'localized.oxe', 'localized.oxe', {
+      localization: true,
+    });
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => {
+      mountApp(container: Node, options: { readonly i18n: LocalizedRuntime }): dom.MountHandle;
+    };
+    type LocalizedPart =
+      | string
+      | {
+          readonly children: readonly LocalizedPart[];
+          readonly kind: 'markup';
+          readonly name: string;
+        };
+    interface LocalizedRuntime {
+      format(id: string, options?: unknown): string;
+      formatToParts(id: string, options?: unknown): readonly LocalizedPart[];
+      formatValue(value: unknown, options: unknown): string;
+      machineValue(value: unknown, type: string): string;
+      readonly revision: runtime.Readable<number>;
+    }
+    const revision = runtime.createCell(0);
+    let locale: 'en-US' | 'fr' = 'en-US';
+    const i18n: LocalizedRuntime = {
+      format(id): string {
+        if (id === 'greeting') return locale === 'en-US' ? 'Hello Ada' : 'Bonjour Ada';
+        return locale === 'en-US' ? 'Search stories' : 'Rechercher des histoires';
+      },
+      formatToParts(): readonly LocalizedPart[] {
+        const strong = { children: ['Ada'], kind: 'markup' as const, name: 'strong' };
+        return locale === 'en-US' ? ['Welcome ', strong] : [strong, ', bienvenue'];
+      },
+      formatValue(value): string {
+        return locale === 'en-US'
+          ? `$${Number(value).toFixed(2)}`
+          : `${Number(value).toFixed(2)} $US`;
+      },
+      machineValue(value): string {
+        return String(value);
+      },
+      revision,
+    };
+    const setLocale = (nextLocale: 'en-US' | 'fr'): void => {
+      locale = nextLocale;
+      revision.write(revision.read() + 1);
+    };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node, { i18n });
+    const main = childElement(container, 0, 'main');
+    const heading = childElement(main, 0, 'h1');
+    const welcome = childElement(main, 1, 'p');
+    const search = childElement(main, 2, 'input');
+    const total = childElement(main, 3, 'data');
+
+    expect(heading.textContent).toBe('Hello Ada');
+    expect(welcome.textContent).toBe('Welcome Ada');
+    expect(search.getAttribute('placeholder')).toBe('Search stories');
+    expect(total.textContent).toBe('$10.00');
+    expect(total.getAttribute('value')).toBe('10');
+    setLocale('fr');
+    expect(heading.textContent).toBe('Bonjour Ada');
+    expect(welcome.textContent).toBe('Ada, bienvenue');
+    expect(welcome.childNodes.find((node) => node instanceof FakeElement)?.tagName).toBe('strong');
+    expect(search.getAttribute('placeholder')).toBe('Rechercher des histoires');
+    expect(total.textContent).toBe('10.00 $US');
+    mounted.unmount();
+  });
+
   it('preserves writable context identity across a generated provider boundary', () => {
     const source = `Session = createContext()
 

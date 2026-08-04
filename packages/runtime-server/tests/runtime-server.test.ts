@@ -945,6 +945,54 @@ describe('synchronous JavaScript SSR', () => {
     );
   });
 
+  it('renders compiler-lowered localization with selections, attributes, and inline markup', () => {
+    const plan = requirePlan(
+      `export App():
+  name = "Ada"
+  stories = 2
+  total = 10
+  <main>
+    <h1 i18n={{ key: "greeting" }}>Hello {name}
+    <p i18n={{ key: "stories", count: stories }}>{stories} stories
+    <p i18n={{ key: "welcome" }}>Welcome
+      <strong>{name}
+    <input placeholder={"Search stories"}>
+    <data i18n={{ format: { type: "currency", currency: "EUR" } }}>{total}
+`,
+      'localized-server.oxe',
+      { localization: true },
+    );
+    const html = renderToString(plan, {
+      i18n: {
+        format(id, options): string {
+          if (id === 'greeting') return `Bonjour ${String(options?.values?.name)}`;
+          if (id === 'stories') return `${String(options?.count)} histoires`;
+          return 'Rechercher des histoires';
+        },
+        formatToParts(_id, options) {
+          return [
+            { children: [String(options?.values?.name)], kind: 'markup', name: 'strong' },
+            ', bienvenue',
+          ];
+        },
+        formatValue(value): string {
+          return `${String(value)},00 €`;
+        },
+        machineValue(value): string {
+          return String(value);
+        },
+      },
+    });
+
+    expect(html).toContain('<h1>Bonjour Ada</h1>');
+    expect(html).toContain('<p>2 histoires</p>');
+    expect(html).toMatch(
+      /<p><!--oxe:[^:]+:start--><strong>Ada<\/strong>, bienvenue<!--oxe:[^:]+:end--><\/p>/u,
+    );
+    expect(html).toContain('<input placeholder="Rechercher des histoires">');
+    expect(html).toContain('<data value="10">10,00 €</data>');
+  });
+
   it('matches the browser backend for the same semantic graph and initial state', () => {
     const analyzed = analyzeSource(representativeSource, 'parity.oxe', 'parity.oxe');
     if (!analyzed.graph) {

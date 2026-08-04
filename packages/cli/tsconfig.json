@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "composite": true,
+    "lib": ["ES2022"],
+    "outDir": "./dist-typecheck",
+    "paths": {
+      "@oxe/i18n": ["../i18n/src/index.ts"]
+    },
+    "rootDir": ".",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "references": [{ "path": "../i18n" }]
+}

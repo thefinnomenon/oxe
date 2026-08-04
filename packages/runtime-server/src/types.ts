@@ -149,8 +149,38 @@ export interface ServerStaticAttributeV1 {
   readonly value: ServerLiteralV1;
 }
 
+export interface ServerLocalizedMessageValueV1 {
+  readonly name: string;
+  readonly value: ServerExpressionV1;
+}
+
+export interface ServerLocalizedMarkupV1 {
+  readonly dynamicAttributes: readonly ServerDynamicAttributeV1[];
+  readonly name: string;
+  readonly staticAttributes: readonly ServerStaticAttributeV1[];
+  readonly tag: string;
+}
+
+export interface ServerLocalizedMessageV1 {
+  readonly key: string;
+  readonly markup: readonly ServerLocalizedMarkupV1[];
+  readonly selection?: {
+    readonly kind: 'cardinal' | 'ordinal';
+    readonly value: ServerExpressionV1;
+  };
+  readonly source: string;
+  readonly values: readonly ServerLocalizedMessageValueV1[];
+}
+
+export interface ServerFormattedValueV1 {
+  readonly options: readonly { readonly name: string; readonly value: ServerExpressionV1 }[];
+  readonly type: 'currency' | 'date' | 'datetime' | 'time';
+  readonly value: ServerExpressionV1;
+}
+
 export interface ServerDynamicAttributeV1 {
   readonly kind: 'dynamic';
+  readonly localization?: ServerLocalizedMessageV1;
   readonly mode: 'attribute' | 'property';
   readonly name: string;
   readonly value: ServerExpressionV1;
@@ -167,7 +197,9 @@ export type ServerViewV1 =
     }
   | {
       readonly id: string;
+      readonly format?: ServerFormattedValueV1;
       readonly kind: 'text';
+      readonly localization?: ServerLocalizedMessageV1;
       readonly parts: readonly (
         | { readonly kind: 'static'; readonly value: string }
         | { readonly expression: ServerExpressionV1; readonly kind: 'expression' }
@@ -439,6 +471,21 @@ export interface ServerRenderLocation {
   readonly parentComponentInstancePath?: string;
 }
 
+export type ServerLocalizedContentPart =
+  | string
+  | {
+      readonly children: readonly ServerLocalizedContentPart[];
+      readonly kind: 'markup';
+      readonly name: string;
+    };
+
+export type ServerFormatValueOptions =
+  | ({ readonly type: 'currency'; readonly currency: string } & Omit<
+      Intl.NumberFormatOptions,
+      'currency' | 'style'
+    >)
+  | ({ readonly type: 'date' | 'datetime' | 'time' } & Intl.DateTimeFormatOptions);
+
 export interface ServerRenderOptions {
   /** Captures request-local async arguments without executing the async capability. */
   readonly captureAsyncResource?: (
@@ -452,6 +499,31 @@ export interface ServerRenderOptions {
     capability: ServerCapabilityPlanV1,
     arguments_: readonly unknown[],
   ) => unknown;
+  /** Request-local localization runtime used by compiler-lowered messages. */
+  readonly i18n?: {
+    readonly format: (
+      id: string,
+      options?: {
+        readonly count?: number;
+        readonly ordinal?: number;
+        readonly values?: Readonly<Record<string, boolean | number | string>>;
+      },
+    ) => string;
+    readonly formatToParts: (
+      id: string,
+      options?: {
+        readonly count?: number;
+        readonly markup?: readonly string[];
+        readonly ordinal?: number;
+        readonly values?: Readonly<Record<string, boolean | number | string>>;
+      },
+    ) => readonly ServerLocalizedContentPart[];
+    readonly formatValue: (value: unknown, options: ServerFormatValueOptions) => string;
+    readonly machineValue: (
+      value: unknown,
+      type: 'currency' | 'date' | 'datetime' | 'time',
+    ) => string;
+  };
   /** Reports each component occurrence before its boundary renders. */
   readonly onComponentInstance?: (location: ServerRenderLocation) => void;
   /** Resolved async binding values keyed by compiler-level binding id. */

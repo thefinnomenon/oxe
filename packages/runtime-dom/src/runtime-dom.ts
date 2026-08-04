@@ -20,6 +20,16 @@ export type DomValueMode = 'attribute' | 'property';
 export type DomEventHandler<EventType extends Event = Event> = (event: EventType) => void;
 export type MountContent = ChildNode | readonly ChildNode[];
 
+export type StructuredContentPart =
+  | string
+  | {
+      readonly children: readonly StructuredContentPart[];
+      readonly kind: 'markup';
+      readonly name: string;
+    };
+
+export type StructuredContentFactory = (children: readonly ChildNode[]) => ChildNode;
+
 export interface DomListenerOptions extends AddEventListenerOptions {
   readonly replayId?: string;
 }
@@ -218,6 +228,20 @@ export const createText = (document: Document, value?: TextValue): Text => {
   }
   return document.createTextNode(renderText(value));
 };
+
+export const createStructuredContent = (
+  document: Document,
+  parts: readonly StructuredContentPart[],
+  factories: Readonly<Record<string, StructuredContentFactory>>,
+): readonly ChildNode[] =>
+  parts.map((part) => {
+    if (typeof part === 'string') return createText(document, part);
+    const factory = factories[part.name];
+    if (!factory) {
+      throw new TypeError(`Missing localized markup factory for ${part.name}.`);
+    }
+    return factory(createStructuredContent(document, part.children, factories));
+  });
 
 type RegionEdge = 'end' | 'start';
 

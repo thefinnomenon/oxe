@@ -1,5 +1,12 @@
 import * as runtimeDom from '@oxe/runtime-dom';
 import * as runtime from '@oxe/runtime';
+import { createI18n, type LocaleCatalog } from '@oxe/i18n/runtime';
+
+import enCatalog from '../../../examples/localization/locales/en-US.json';
+import esCatalog from '../../../examples/localization/locales/es.json';
+import frCatalog from '../../../examples/localization/locales/fr.json';
+import itCatalog from '../../../examples/localization/locales/it.json';
+import ptCatalog from '../../../examples/localization/locales/pt.json';
 
 import type { PlaygroundCapabilitySet } from './demo-capabilities.js';
 
@@ -458,7 +465,14 @@ const mountPreview = async (
   observeReactivity(command.runId);
   const startedAt = performance.now();
   try {
+    const i18n = command.localization
+      ? createI18n({
+          catalogs: [enCatalog, esCatalog, frCatalog, itCatalog, ptCatalog] as LocaleCatalog[],
+          locale: 'es',
+        })
+      : undefined;
     const result: unknown = mount(previewRoot, {
+      ...(i18n ? { i18n } : {}),
       onError: (error: unknown) => postError('runtime', error, command.runId),
     });
     if (

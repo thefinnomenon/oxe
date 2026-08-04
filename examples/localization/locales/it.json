@@ -1,0 +1,26 @@
+{
+  "locale": "it",
+  "messages": {
+    "home.greeting": "Che bello rivederti, {name}",
+    "home.inline": "Realizzato con:<strong> OXE</strong>",
+    "home.powered-by": "Offerto da OXE",
+    "home.rank": {
+      "cases": {
+        "many": "Questa settimana sei arrivato all’{rank}° posto",
+        "other": "Questa settimana sei arrivato al {rank}° posto"
+      },
+      "kind": "ordinal"
+    },
+    "home.ready": "La tua lista di lettura è pronta.",
+    "home.story-count": {
+      "cases": {
+        "many": "{stories} storie salvate nella tua lista di lettura",
+        "one": "{stories} storia salvata nella tua lista di lettura",
+        "other": "{stories} storie salvate nella tua lista di lettura"
+      },
+      "kind": "cardinal"
+    },
+    "m_43b4415e3dfc1b4a": "Cerca nella tua lista di lettura"
+  },
+  "schemaVersion": "oxe.i18n.catalog.v2"
+}

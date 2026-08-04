@@ -1,0 +1,415 @@
+{
+  "messages": {
+    "home.greeting": {
+      "explicitKey": true,
+      "locations": [
+        {
+          "column": 79,
+          "file": "App.oxe",
+          "line": 8
+        }
+      ],
+      "placeholders": [
+        {
+          "kind": "expression",
+          "name": "name",
+          "token": "{name}"
+        }
+      ],
+      "source": "Welcome back, {name}",
+      "sourceHash": "3d8738849bfdc89f8fad2242c153651890a7d7672be8a83d4a1e40192e57c862",
+      "translationContext": {
+        "component": "App",
+        "contextSelectors": [],
+        "element": "h1",
+        "purpose": "dashboard welcome heading"
+      }
+    },
+    "home.inline": {
+      "explicitKey": true,
+      "locations": [
+        {
+          "column": 85,
+          "file": "App.oxe",
+          "line": 13
+        }
+      ],
+      "placeholders": [
+        {
+          "kind": "markup-open",
+          "name": "strong",
+          "token": "<strong>"
+        },
+        {
+          "kind": "markup-close",
+          "name": "strong",
+          "token": "</strong>"
+        }
+      ],
+      "source": "Built with:<strong> OXE</strong>",
+      "sourceHash": "0557aa9182f521f8ad2192402ca9348b4d3770816dbd8eff164b3854bbbced2c",
+      "translationContext": {
+        "component": "App",
+        "contextSelectors": [],
+        "element": "p",
+        "purpose": "inline-markup localization example"
+      }
+    },
+    "home.powered-by": {
+      "explicitKey": true,
+      "locations": [
+        {
+          "column": 80,
+          "file": "App.oxe",
+          "line": 17
+        }
+      ],
+      "placeholders": [],
+      "source": "Powered by OXE",
+      "sourceHash": "c8504c9846e602de7fc2ef825f9d78f681d6c1ce5553d3991b4511ccaac51ba4",
+      "translationContext": {
+        "component": "App",
+        "contextSelectors": [],
+        "element": "p",
+        "purpose": "small product attribution"
+      }
+    },
+    "home.rank": {
+      "explicitKey": true,
+      "locations": [
+        {
+          "column": 98,
+          "file": "App.oxe",
+          "line": 11
+        }
+      ],
+      "placeholders": [
+        {
+          "kind": "expression",
+          "name": "rank",
+          "token": "{rank}"
+        }
+      ],
+      "selection": {
+        "kind": "ordinal"
+      },
+      "source": "You finished in {rank} place this week",
+      "sourceHash": "f17be9432470feb50ae91c442be0a9efb970321ce1a6963f976e6fe42b1bcc03",
+      "translationContext": {
+        "component": "App",
+        "contextSelectors": [],
+        "element": "p",
+        "purpose": "weekly reading challenge placement"
+      }
+    },
+    "home.ready": {
+      "explicitKey": true,
+      "locations": [
+        {
+          "column": 102,
+          "file": "App.oxe",
+          "line": 9
+        }
+      ],
+      "placeholders": [],
+      "source": "Your reading list is ready.",
+      "sourceHash": "0dac9b971afffb5da90986ad6045cbe3a12c28b0a60ad14bcb91afed7e57c9d3",
+      "translationContext": {
+        "component": "App",
+        "contextSelectors": [],
+        "element": "p",
+        "purpose": "confirmation that saved reading content is available"
+      }
+    },
+    "home.story-count": {
+      "explicitKey": true,
+      "locations": [
+        {
+          "column": 116,
+          "file": "App.oxe",
+          "line": 10
+        }
+      ],
+      "placeholders": [
+        {
+          "kind": "expression",
+          "name": "stories",
+          "token": "{stories}"
+        }
+      ],
+      "selection": {
+        "kind": "cardinal"
+      },
+      "source": "{stories} stories saved to your reading list",
+      "sourceHash": "af26c74573975bf834d34af0c69534c7e51738b0b3970522b6440f000a6065e2",
+      "translationContext": {
+        "component": "App",
+        "contextSelectors": [],
+        "element": "p",
+        "purpose": "number of stories in the user's reading list"
+      }
+    },
+    "m_43b4415e3dfc1b4a": {
+      "explicitKey": false,
+      "locations": [
+        {
+          "column": 12,
+          "file": "App.oxe",
+          "line": 12
+        }
+      ],
+      "placeholders": [],
+      "source": "Search your stories",
+      "sourceHash": "1cf5af1692d28205924a38235fdd2eb7c2b76a2f06de9d2b3e86ea7d44ea5d7c",
+      "translationContext": {
+        "attribute": "placeholder",
+        "component": "App",
+        "contextSelectors": [],
+        "element": "input",
+        "purpose": "short form-input placeholder"
+      }
+    }
+  },
+  "schemaVersion": "oxe.i18n.manifest.v2",
+  "sourceLocale": "en-US",
+  "translations": {
+    "en-US": {
+      "home.rank": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "6017cd2915038b0c954640157cf3f674682eec8f8e3b7681d2f04686924cc5a5",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "33b44bc3b3230659780059ae6bf93e69893580464fe0c0f0f2a9ab810300fba7",
+        "status": "generated"
+      },
+      "home.story-count": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "0992a4e2bd0596a6cf3b49e8dcd54ed330a782a4c831db7cbc2e6384d8bffaf9",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "7968d871e2c2cf034bbe4c3611898ed458f1034dcec92717a4365618740425cf",
+        "status": "generated"
+      }
+    },
+    "es": {
+      "home.greeting": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "70cecb1af22034eb42eb26154e88dc556d2ca9bb9c5f0d7b3354f3196e62d7c7",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "8ad9968976bf1f12be5641cabc550371878f04956d41d52ef36b4abafda81e79",
+        "status": "generated"
+      },
+      "home.inline": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "ea7795645e8d1a65534084ec67be13549ba3a071cc313561abdb62417a9d32bc",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "c1545f4fd9c39113e71455567886dfd6a35f8044098cd6d7450eebd7de913ffe",
+        "status": "generated"
+      },
+      "home.powered-by": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "e911eb7e08437324ccb12885f04d186e18386c55bdc35a1e15c2fe254c042d3a",
+        "provider": "openai",
+        "sourceHash": "26a047d4b92e1765e99db3dbb6fa107abc94b5fbe8ca2abfba39d02a1735383c",
+        "status": "generated"
+      },
+      "home.rank": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "3589e729add43b35b940750109ec516d83b2e60da57aad9d58bf8838d5c02e9c",
+        "placeholderStrategy": "fixed",
+        "provider": "openai",
+        "sourceHash": "d1f0db2af67e4ed781a67dd0b11887c9dab5206c6b9f460de465f886fee44cc8",
+        "status": "reviewed"
+      },
+      "home.ready": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "5a4a3ae093d7f6b295dd92fa4a320cb1a1cbdee59390eae985c9fd26edc992a0",
+        "provider": "openai",
+        "sourceHash": "997c6fa09ab8f714a84c633b6c3563df3f94facb6c89796750722af7e2cf3827",
+        "status": "generated"
+      },
+      "home.story-count": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "520c79c34863cf91b62455feef04cae4d1fa37ff62ac93fb28a1c3ff2fea7f4c",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "952a5e6bfa89b3d01f2d5c1969b50c63d9d27fbf7d2de23570eff0003ba75da7",
+        "status": "generated"
+      },
+      "m_43b4415e3dfc1b4a": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "72f579932568cbb67f51730b71167f909456eea7963c4ddea743d11c93e1dfd9",
+        "provider": "openai",
+        "sourceHash": "b7523a451061043f630dc98c902ed3cb44c3ba7f671c71b3df7fcee4fb42a34a",
+        "status": "generated"
+      }
+    },
+    "fr": {
+      "home.greeting": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "0f8422cb6cf01cd88ff5326bb40ae5c772e62e0dfba7b5d3c41efcf4c66577ee",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "b6a9073c0dea424898b0b20adbba4b647bccb29ebc5beb90c1f04d57103b3763",
+        "status": "generated"
+      },
+      "home.inline": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "c75313f499201813a08bed5c4f1278cef8bd3e5a2a8a5d842caf9598c6015019",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "59937f0464fab166c98fd521f9fbb448cef4fe7c1b5a911d412a6ba5a34fe08a",
+        "status": "generated"
+      },
+      "home.powered-by": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "516236bb9143774efaccf6e3a6ed28bfb6ae4b2cf974b2df8bbf0f4546249bcc",
+        "provider": "openai",
+        "sourceHash": "b3ea96853349b0b2722da528d8cbe641363ea916edb3d846fef463881d810144",
+        "status": "generated"
+      },
+      "home.rank": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "f38db77fb89ed8164b967ceb2a86c6aa48ab0aef88b3ab1e109b279f60d6fce4",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "67fe23c2dbb4bbde4d564c9a0d33c01da1a25f94c3171921491ee88ad6dc10b0",
+        "status": "reviewed"
+      },
+      "home.ready": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "eea3a661509e9241c9f7ee981d25730d96363c37aa674b69205070e11d5b48d7",
+        "provider": "openai",
+        "sourceHash": "9cc01e82411aea65d35129ba75c95f0bea21d10f9303d4f1644ba95197810e95",
+        "status": "generated"
+      },
+      "home.story-count": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "4d380b1a174f236d3a56f43cbea9fa06dc7b29f7530430d9afd58f4fae517ee4",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "d5e59437997ab38bdd3997b3501cc881d8b3d2ce9584ca0272bf371fe625ad0d",
+        "status": "generated"
+      },
+      "m_43b4415e3dfc1b4a": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "abe532b85895abea820cd4a27368c51de1372a96ad50831dc9689c1bf667ec4f",
+        "provider": "openai",
+        "sourceHash": "e8416b3eed3b86689a44e86f2cee67a321da272d845f937615de9afec6df7d21",
+        "status": "generated"
+      }
+    },
+    "it": {
+      "home.greeting": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "cba5bc8065ae6d512319b6c9f4f0cd50fa2e30411a9e1c603e0f200d2b475a27",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "3a137d2846585d505955019e3d501b7338fe8fa1ea04e7136c07ce7cad40c719",
+        "status": "reviewed"
+      },
+      "home.inline": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "0a10122cc8aedc60f76e3768e9e79f08cfb5f9406e130df92ea6c4d771baef2c",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "d00b1d2e2931319e320e099c86f21320c3d45c3bfb73f2e2dabecc0d1caa627e",
+        "status": "generated"
+      },
+      "home.powered-by": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "b3a8c7db123776a97a7304dca550a94a4877fc43cf55181c7bc7b226ffebe004",
+        "provider": "openai",
+        "sourceHash": "2aa3ee2166fadd549ece4d5370138f2facd5e8f7dfa7324fef286a9255b106c0",
+        "status": "generated"
+      },
+      "home.rank": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "a3d834894ad2c3238356d45472c15be3d5dd051f237b0a114193f7463c1b578c",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "9c839f0f29db83a2e041fdd69f734035f88184b1faaadfc0ecb255387fc5605f",
+        "status": "generated"
+      },
+      "home.ready": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "af7188981bde58feb80c1bebedbe9ef688b5320b653fe9b1221c02f7045e32c2",
+        "provider": "openai",
+        "sourceHash": "6961b1060aa5806d5d13815de44bd6b441d413b10fdc4c2dba75e4f17146961a",
+        "status": "generated"
+      },
+      "home.story-count": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "a34ac94639be86f0e65ef2f0f08c6079541a64d39b557c3adfad76c9798c8ca8",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "f3667b4ff6965f7357ec995b6d4f191ac48233f2ac2b7d573ffb8231958bdab0",
+        "status": "generated"
+      },
+      "m_43b4415e3dfc1b4a": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "448d6179283a0aed6f68cf1f25c900229ae2a3623b5e5a44a6d687ee50bcffb9",
+        "provider": "openai",
+        "sourceHash": "4aaba18421ff835ac8a7d7b4d9c97ca7cdbdece3678ba04e82918fc608031d78",
+        "status": "generated"
+      }
+    },
+    "pt": {
+      "home.greeting": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "4bf0eca2a4975ff87a121899f01aa2b9a16200c2332ae2e3dd62050337e300a2",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "0d3aeed78b6c6fc2f0fc009bdef82d88779ace94268eb58cfa59550791e425ec",
+        "status": "reviewed"
+      },
+      "home.inline": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "46f8cc9f69a5a159c970bcb79cce975339af495a75942df60b46ed0b7f629347",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "09ce714db5bb6ed3081648c43fa15b96eac71c2eba72ce8f98707577d495e04c",
+        "status": "generated"
+      },
+      "home.powered-by": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "02a66a3df7de04cbcaa14c7522b9745d5ddef279cd1a73aef7744fb87cd9029d",
+        "provider": "openai",
+        "sourceHash": "e0b324722830e7f14f96a3f83915efa04fc8c11c24be745d89a635b823978ffb",
+        "status": "generated"
+      },
+      "home.rank": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "fc156075b51f1cca5874260d99e510dd02c8d4355416c55113e0ccecfe63b3d8",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "1dd86d63f453cd089b5cd9ce7d18fbff206c1319b2861cf036e5c2db2572aa5a",
+        "status": "generated"
+      },
+      "home.ready": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "8a1444cce7706265b33e3e536950b37b7be199e58b8797751c0a33b38801b478",
+        "provider": "openai",
+        "sourceHash": "24b653ba11fa90be83bb63173bdc067df614df43ebd86509ec3fc8f6d2784c81",
+        "status": "generated"
+      },
+      "home.story-count": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "76a864b076af77b80044d5e45f4aa6cf1f420a76eff4d469f328cd8e15efc758",
+        "placeholderStrategy": "movable",
+        "provider": "openai",
+        "sourceHash": "71b0085a8f5a26468bf2cc5649c4429fe9554fb744b1e411845fcf65c6f5e118",
+        "status": "generated"
+      },
+      "m_43b4415e3dfc1b4a": {
+        "model": "gpt-5.6-luna",
+        "outputHash": "b1280482e8fd3de1abe634d3c7d1e0e8a0b806e3e7177a2c18db139739aff6ce",
+        "provider": "openai",
+        "sourceHash": "fd695f0c611d521804ed52ea14ae24abaf53bc2c35671bd3a1aa9b309dabf1d0",
+        "status": "generated"
+      }
+    }
+  }
+}
