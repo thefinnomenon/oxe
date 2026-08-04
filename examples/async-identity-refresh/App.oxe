@@ -1,0 +1,20 @@
+export App():
+  userId = 1
+  user = playground.loadUser(userId)
+
+  nextUser():
+    userId = (userId % 4) + 1
+
+  reload():
+    refresh(user)
+
+  <main>
+    <h1>Identity and refresh
+    <p>Changing the ID resets this value to pending. Refresh keeps the current value visible.
+    <button onClick={nextUser}>Next user
+    <button onClick={reload}>Refresh current user
+    <section>
+      <h2>{user.name}
+      <p>{user.role}
+      <p>Resolved by request number {user.request} at {user.updatedAt}
+    <p>Click Next user quickly to see obsolete requests cancel in Console.

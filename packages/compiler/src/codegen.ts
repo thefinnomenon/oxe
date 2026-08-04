@@ -1,5 +1,7 @@
 import {
+  fingerprintUiGraph,
   validateUiGraph,
+  type AsyncResourceNodeV1,
   type BinaryOperatorV1,
   type CellNodeV1,
   type ComponentInstanceNodeV1,
@@ -38,6 +40,7 @@ export interface DomCodeArtifact {
   readonly moduleSource: string;
   readonly moduleSourceMap: DomSourceMapV3;
   readonly mountExport: string;
+  readonly hydrateExport?: string;
 }
 
 export interface DomSourceMapV3 {
@@ -59,7 +62,12 @@ export class OxeCodegenError extends Error {
 }
 
 type BindingNodeV1 =
-  CellNodeV1 | ComputedNodeV1 | ConstantNodeV1 | ContextConsumerNodeV1 | RefNodeV1;
+  | AsyncResourceNodeV1
+  | CellNodeV1
+  | ComputedNodeV1
+  | ConstantNodeV1
+  | ContextConsumerNodeV1
+  | RefNodeV1;
 type ChildEdgeV1 = Extract<UiEdgeV1, { readonly kind: 'child' }>;
 type EventEdgeV1 = Extract<UiEdgeV1, { readonly kind: 'event' }>;
 type PropEdgeV1 = Extract<UiEdgeV1, { readonly kind: 'prop' }>;
@@ -82,6 +90,7 @@ interface ComponentPlan {
 }
 
 interface GenerationPlan {
+  readonly buildFingerprint: string;
   readonly childrenByParent: ReadonlyMap<string, readonly ChildEdgeV1[]>;
   readonly components: readonly ComponentPlan[];
   readonly contexts: readonly ContextNodeV1[];
@@ -94,6 +103,7 @@ interface GenerationPlan {
 
 interface EmittedProgram {
   readonly componentName: string;
+  readonly hydrateName?: string;
   readonly mountName: string;
   readonly mappings: readonly GeneratedMapping[];
   readonly source: string;
@@ -105,8 +115,21 @@ interface GeneratedMapping {
   readonly source: GraphSpanV1;
 }
 
+interface SkeletonDescriptor {
+  readonly attributes?: readonly {
+    readonly mode: 'attribute' | 'property';
+    readonly name: string;
+    readonly value: boolean | number | string;
+  }[];
+  readonly children?: readonly (SkeletonDescriptor | string)[];
+  readonly tag: string;
+}
+
 const compareText = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;
+
+const sourceLocation = (span: GraphSpanV1): string =>
+  `${span.fileName}:${span.start.line}:${span.start.column}`;
 
 const compareNodes = (left: UiNodeV1, right: UiNodeV1): number =>
   left.span.start.offset - right.span.start.offset || compareText(left.id, right.id);
@@ -120,6 +143,7 @@ const unsupported = (message: string): never => {
 };
 
 const isBinding = (node: UiNodeV1): node is BindingNodeV1 =>
+  node.kind === 'async-resource' ||
   node.kind === 'cell' ||
   node.kind === 'computed' ||
   node.kind === 'constant' ||
@@ -224,6 +248,8 @@ const uniqueExpressionReads = (expression: ValueExpressionV1): readonly Expressi
 
 const nodeExpression = (node: BindingNodeV1): ValueExpressionV1 | undefined => {
   switch (node.kind) {
+    case 'async-resource':
+      return node.expression;
     case 'cell':
       return node.initial;
     case 'computed':
@@ -367,7 +393,9 @@ const buildPlan = (graph: UiGraphV1): GenerationPlan => {
       continue;
     }
     if (
-      (node.kind === 'cell' || node.kind === 'computed' || node.kind === 'context-consumer') &&
+      (node.kind === 'async-resource' ||
+        node.kind === 'cell' ||
+        node.kind === 'context-consumer') &&
       node.type === 'unknown'
     ) {
       unsupported(`Value "${node.name}" has an unknown type and cannot be emitted safely.`);
@@ -494,8 +522,15 @@ const buildPlan = (graph: UiGraphV1): GenerationPlan => {
   if (entry.parameters.length > 0) {
     return unsupported(`Entry component "${entry.component.name}" cannot require props.`);
   }
+  let buildFingerprint = 'oxe-invalid';
+  try {
+    buildFingerprint = fingerprintUiGraph(graph);
+  } catch {
+    // Expression emission below owns precise codegen diagnostics for invalid literal values.
+  }
 
   return {
+    buildFingerprint,
     childrenByParent,
     components: componentPlans,
     contexts,
@@ -620,6 +655,8 @@ const valueSource = (value: ConstantValueV1): string => {
   return literalSource(value);
 };
 
+const hydrationMarkerId = (id: string): string => encodeURIComponent(id).replaceAll('-', '%2D');
+
 const operatorSource = (operator: BinaryOperatorV1): string => {
   switch (operator) {
     case '%':
@@ -644,6 +681,40 @@ const operatorSource = (operator: BinaryOperatorV1): string => {
 const emitProgram = (plan: GenerationPlan): EmittedProgram => {
   const writer = new CodeWriter();
   const names = new NameAllocator();
+  const asyncValueIds = new Set(
+    [...plan.nodesById.values()]
+      .filter((node): node is AsyncResourceNodeV1 => node.kind === 'async-resource')
+      .map((node) => node.id),
+  );
+  const expressionIsAsync = (expression: ValueExpressionV1): boolean =>
+    uniqueExpressionReads(expression).some((read) => asyncValueIds.has(read.targetId));
+  let changedAsyncLineage = true;
+  while (changedAsyncLineage) {
+    changedAsyncLineage = false;
+    for (const node of plan.nodesById.values()) {
+      if (
+        node.kind === 'computed' &&
+        !asyncValueIds.has(node.id) &&
+        expressionIsAsync(node.expression)
+      ) {
+        asyncValueIds.add(node.id);
+        changedAsyncLineage = true;
+      }
+    }
+    for (const props of plan.propsByInstance.values()) {
+      for (const prop of props) {
+        if (
+          prop.mode === 'reactive' &&
+          !asyncValueIds.has(prop.to) &&
+          expressionIsAsync(prop.value)
+        ) {
+          asyncValueIds.add(prop.to);
+          changedAsyncLineage = true;
+        }
+      }
+    }
+  }
+  const usesAsyncResources = asyncValueIds.size > 0;
   const componentNames = new Map<string, string>();
   const contextNames = new Map<string, string>();
   const bindingNames = new Map<string, string>();
@@ -659,6 +730,9 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
     }
   }
   const mountName = names.allocate(`mount${plan.entry.component.name}`);
+  const hydrateName = usesAsyncResources
+    ? names.allocate(`hydrate${plan.entry.component.name}`)
+    : undefined;
 
   for (const context of plan.contexts) {
     contextNames.set(context.id, names.allocate(context.name));
@@ -717,6 +791,70 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         }
       : {}),
   });
+
+  const skeletonDescriptor = (
+    node: UiNodeV1,
+    activeComponents: ReadonlySet<string> = new Set(),
+  ): SkeletonDescriptor | string | undefined => {
+    if (node.kind === 'text') {
+      return '████████';
+    }
+    if (node.kind === 'element') {
+      const preservedAttributes = node.staticAttributes.filter((attribute) =>
+        ['class', 'height', 'style', 'width'].includes(attribute.name),
+      );
+      const children = (plan.childrenByParent.get(node.id) ?? []).flatMap((edge) => {
+        const child = plan.nodesById.get(edge.to);
+        if (!child) return [];
+        const descriptor = skeletonDescriptor(child, activeComponents);
+        return descriptor === undefined ? [] : [descriptor];
+      });
+      return {
+        ...(preservedAttributes.length > 0
+          ? {
+              attributes: preservedAttributes.map((attribute) => ({
+                mode: 'attribute' as const,
+                name: attribute.name,
+                value: attribute.value,
+              })),
+            }
+          : {}),
+        ...(children.length > 0 ? { children } : {}),
+        tag: node.tag,
+      };
+    }
+    if (node.kind === 'component-instance') {
+      if (activeComponents.has(node.componentId)) return undefined;
+      const target = plan.components.find(
+        (component) => component.component.id === node.componentId,
+      );
+      if (!target) return undefined;
+      return skeletonDescriptor(target.root, new Set([...activeComponents, node.componentId]));
+    }
+    if (node.kind === 'conditional-region') {
+      const first = plan.childrenByParent.get(node.id)?.[0];
+      const child = first ? plan.nodesById.get(first.to) : undefined;
+      return child ? skeletonDescriptor(child, activeComponents) : undefined;
+    }
+    if (node.kind === 'keyed-collection') {
+      const row = plan.childrenByParent.get(node.id)?.[0];
+      const child = row ? plan.nodesById.get(row.to) : undefined;
+      return child ? skeletonDescriptor(child, activeComponents) : undefined;
+    }
+    if (node.kind === 'context-provider') {
+      const child = plan.childrenByParent.get(node.id)?.[0];
+      const target = child ? plan.nodesById.get(child.to) : undefined;
+      return target ? skeletonDescriptor(target, activeComponents) : undefined;
+    }
+    if (node.kind === 'content-reference') {
+      const content = plan.nodesById.get(node.contentId);
+      if (!content || content.kind !== 'content-value') return undefined;
+      const first = content.branches[0];
+      const target = first ? plan.nodesById.get(first.resultId) : undefined;
+      return target ? skeletonDescriptor(target, activeComponents) : undefined;
+    }
+    return undefined;
+  };
   const parentByChild = new Map<string, string>();
   for (const [parentId, children] of plan.childrenByParent) {
     for (const child of children) {
@@ -745,15 +883,17 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
     }
     for (const binding of component.bindings) {
       const suffix =
-        binding.kind === 'cell'
-          ? 'Cell'
-          : binding.kind === 'computed'
-            ? 'Derived'
-            : binding.kind === 'context-consumer'
-              ? 'ContextValue'
-              : binding.kind === 'ref'
-                ? 'Ref'
-                : 'Constant';
+        binding.kind === 'async-resource'
+          ? 'Async'
+          : binding.kind === 'cell'
+            ? 'Cell'
+            : binding.kind === 'computed'
+              ? 'Derived'
+              : binding.kind === 'context-consumer'
+                ? 'ContextValue'
+                : binding.kind === 'ref'
+                  ? 'Ref'
+                  : 'Constant';
       bindingNames.set(binding.id, names.allocate(`${binding.name}${suffix}`));
     }
     for (const procedure of component.procedures) {
@@ -900,7 +1040,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
     if (path.length === 0) {
       return source;
     }
-    return `selectPath(${source}, ${JSON.stringify(path)}, { name: ${JSON.stringify(`${target.name}.${path.join('.')}`)}, traceId: ${JSON.stringify(target.id)} })`;
+    return `${asyncValueIds.has(id) ? 'selectAsyncPath' : 'selectPath'}(${source}, ${JSON.stringify(path)}, { name: ${JSON.stringify(`${target.name}.${path.join('.')}`)}, traceId: ${JSON.stringify(target.id)} })`;
   };
 
   const reactiveDependencies = (expression: ValueExpressionV1): readonly string[] => {
@@ -936,7 +1076,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
       '/** Builds this component inside an active OXE owner. Prefer the mount helper at an application boundary. */',
     );
     writer.line(
-      `const ${generatedComponentName} = (document${component.parameters.length > 0 ? ', props' : ''}) => {`,
+      `const ${generatedComponentName} = (document${usesAsyncResources ? ', asyncCoordinator' : ''}${component.parameters.length > 0 ? ', props' : ''}) => {`,
     );
     writer.indented(() => {
       for (const parameter of component.parameters) {
@@ -946,8 +1086,9 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           invalidGraph(`Parameter "${parameter.id}" has no generated name.`);
         if (parameter.parameterKind === 'value' && parameter.default) {
           const dependencies = reactiveDependencies(parameter.default);
+          const factory = asyncValueIds.has(parameter.id) ? 'createAsyncDerived' : 'createDerived';
           writer.line(
-            `const ${name} = props[${JSON.stringify(parameter.name)}] ?? createDerived([${dependencies.join(', ')}], () => ${expressionSource(parameter.default)}, { name: ${JSON.stringify(`${component.component.name}.${parameter.name} default`)}, traceId: ${JSON.stringify(parameter.id)} });`,
+            `const ${name} = props[${JSON.stringify(parameter.name)}] ?? ${factory}([${dependencies.join(', ')}], () => ${expressionSource(parameter.default)}, { name: ${JSON.stringify(`${component.component.name}.${parameter.name} default`)}, traceId: ${JSON.stringify(parameter.id)} });`,
           );
         } else {
           writer.line(`const ${name} = props[${JSON.stringify(parameter.name)}];`);
@@ -963,6 +1104,29 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           invalidGraph(`Value "${binding.id}" has no generated name.`);
         }
         switch (binding.kind) {
+          case 'async-resource': {
+            const capabilityNode =
+              binding.expression.callee.kind === 'capability-read'
+                ? plan.nodesById.get(binding.expression.callee.targetId)
+                : undefined;
+            const capability =
+              capabilityNode?.kind === 'platform-capability'
+                ? capabilityNode
+                : invalidGraph(`Async value "${binding.name}" must call a platform capability.`);
+            const dependencies = binding.expression.arguments.flatMap((argument) =>
+              reactiveDependencies(argument),
+            );
+            const argumentsSource = binding.expression.arguments
+              .map((argument) => expressionSource(argument))
+              .join(', ');
+            const capabilitySource = expressionSource(binding.expression.callee);
+            const argumentName = names.allocate(`${binding.name}Arguments`);
+            const signalName = names.allocate(`${binding.name}Signal`);
+            writer.line(
+              `const ${name} = createAsyncResource([${dependencies.join(', ')}], () => [${argumentsSource}], (${argumentName}, ${signalName}) => ${capabilitySource}(...${argumentName}, ${signalName}), { capability: ${JSON.stringify(capability.path.join('.'))}, coordinator: asyncCoordinator, name: ${JSON.stringify(`${component.component.name}.${binding.name}`)}, traceId: ${JSON.stringify(binding.id)} });`,
+            );
+            break;
+          }
           case 'constant':
             writer.line(`const ${name} = ${valueSource(binding.value)};`);
             break;
@@ -973,8 +1137,9 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
             break;
           case 'computed': {
             const dependencies = reactiveDependencies(binding.expression);
+            const factory = asyncValueIds.has(binding.id) ? 'createAsyncDerived' : 'createDerived';
             writer.line(
-              `const ${name} = createDerived([${dependencies.join(', ')}], () => ${expressionSource(binding.expression)}, { name: ${JSON.stringify(`${component.component.name}.${binding.name}`)}, traceId: ${JSON.stringify(binding.id)} });`,
+              `const ${name} = ${factory}([${dependencies.join(', ')}], () => ${expressionSource(binding.expression)}, { name: ${JSON.stringify(`${component.component.name}.${binding.name}`)}, traceId: ${JSON.stringify(binding.id)} });`,
             );
             break;
           }
@@ -1018,6 +1183,15 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
               writer.source(step.span);
               if (step.kind === 'call') {
                 writer.line(`${expressionSource(step.expression, procedureOverrides)};`);
+                continue;
+              }
+              if (step.kind === 'refresh') {
+                const target = plan.nodesById.get(step.targetId);
+                const targetName = bindingNames.get(step.targetId);
+                if (target?.kind !== 'async-resource' || !targetName) {
+                  invalidGraph(`Procedure "${procedure.name}" refreshes an invalid async value.`);
+                }
+                writer.line(`refreshAsyncResource(${targetName});`);
                 continue;
               }
               const target = plan.nodesById.get(step.targetId);
@@ -1108,12 +1282,17 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
             readableName = direct;
           } else {
             readableName = names.allocate(`${textName}Derived`);
+            const factory = expressionIsAsync(part.expression)
+              ? 'createAsyncDerived'
+              : 'createDerived';
             writer.line(
-              `const ${readableName} = createDerived([${dependencies.join(', ')}], () => ${expressionSource(part.expression)}, { name: ${JSON.stringify(`${component.component.name}.text`)}, traceId: ${JSON.stringify(text.id)} });`,
+              `const ${readableName} = ${factory}([${dependencies.join(', ')}], () => ${expressionSource(part.expression)}, { name: ${JSON.stringify(`${component.component.name}.text`)}, traceId: ${JSON.stringify(text.id)} });`,
             );
           }
           writer.line(`const ${textName} = createText(document);`);
-          writer.line(`bindText(${textName}, ${readableName});`);
+          writer.line(
+            `${expressionIsAsync(part.expression) ? 'bindAsyncText' : 'bindText'}(${textName}, ${readableName});`,
+          );
         }
         return emitted;
       };
@@ -1143,12 +1322,15 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           }
           const direct = directReadableSource(prop.value);
           if (direct) {
-            return direct;
+            return asyncValueIds.has(prop.to) && !expressionIsAsync(prop.value)
+              ? `toAsyncReadable(${direct}, { name: ${JSON.stringify(`${target.component.name}.${authoredName} async prop`)}, traceId: ${JSON.stringify(prop.to)} })`
+              : direct;
           }
           const source = names.allocate(`${target.component.name}${authoredName}Prop`);
           const dependencies = reactiveDependencies(prop.value);
+          const factory = asyncValueIds.has(prop.to) ? 'createAsyncDerived' : 'createDerived';
           writer.line(
-            `const ${source} = createDerived([${dependencies.join(', ')}], () => ${expressionSource(prop.value)}, { name: ${JSON.stringify(`${component.component.name}.${target.component.name}.${authoredName} prop`)}, traceId: ${JSON.stringify(instance.id)} });`,
+            `const ${source} = ${factory}([${dependencies.join(', ')}], () => ${expressionSource(prop.value)}, { name: ${JSON.stringify(`${component.component.name}.${target.component.name}.${authoredName} prop`)}, traceId: ${JSON.stringify(instance.id)} });`,
           );
           return source;
         };
@@ -1234,7 +1416,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         }
         const rootName = names.allocate(`${target.component.name}Root`);
         writer.line(
-          `const ${rootName} = createRoot(() => ${targetName}(document, { ${entries.join(', ')} }), { name: ${JSON.stringify(`${target.component.name} component`)} });`,
+          `const ${rootName} = createRoot(() => ${targetName}(document${usesAsyncResources ? ', asyncCoordinator' : ''}, { ${entries.join(', ')} }), { name: ${JSON.stringify(`${target.component.name} component`)} });`,
         );
         return `${rootName}.value`;
       };
@@ -1275,12 +1457,15 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           const readable = direct ?? names.allocate(`${attribute.name}Attribute`);
           if (!direct) {
             const dependencies = reactiveDependencies(attribute.value);
+            const factory = expressionIsAsync(attribute.value)
+              ? 'createAsyncDerived'
+              : 'createDerived';
             writer.line(
-              `const ${readable} = createDerived([${dependencies.join(', ')}], () => ${expressionSource(attribute.value)}, { name: ${JSON.stringify(`${component.component.name}.${attribute.name} attribute`)}, traceId: ${JSON.stringify(element.id)} });`,
+              `const ${readable} = ${factory}([${dependencies.join(', ')}], () => ${expressionSource(attribute.value)}, { name: ${JSON.stringify(`${component.component.name}.${attribute.name} attribute`)}, traceId: ${JSON.stringify(element.id)} });`,
             );
           }
           writer.line(
-            `bindDomValue(${elementName}, ${JSON.stringify(attribute.name)}, ${JSON.stringify(attribute.mode)}, ${readable});`,
+            `${expressionIsAsync(attribute.value) ? 'bindAsyncDomValue' : 'bindDomValue'}(${elementName}, ${JSON.stringify(attribute.name)}, ${JSON.stringify(attribute.mode)}, ${readable});`,
           );
         }
 
@@ -1289,7 +1474,9 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           if (!procedureName) {
             invalidGraph(`Element "${element.id}" references an unknown procedure.`);
           }
-          writer.line(`listen(${elementName}, ${JSON.stringify(event.event)}, ${procedureName});`);
+          writer.line(
+            `listen(${elementName}, ${JSON.stringify(event.event)}, ${procedureName}, { replayId: ${JSON.stringify(hydrationMarkerId(element.id))} });`,
+          );
         }
 
         for (const childEdge of plan.childrenByParent.get(element.id) ?? []) {
@@ -1445,6 +1632,13 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           ...new Set(conditions.flatMap((condition) => reactiveDependencies(condition))),
         ];
         const selectionName = names.allocate('conditionalSelection');
+        const selectionFactory = conditions.some(expressionIsAsync)
+          ? 'createAsyncDerived'
+          : 'createDerived';
+        const pendingDescriptor =
+          selectionFactory === 'createAsyncDerived' && branchEdges[0]
+            ? skeletonDescriptor(plan.nodesById.get(branchEdges[0].to) as UiNodeV1)
+            : undefined;
         const selectionSource = conditional.branches.reduceRight(
           (fallback, branch, index) =>
             branch.condition
@@ -1453,7 +1647,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           '-1',
         );
         writer.line(
-          `const ${selectionName} = createDerived([${dependencies.join(', ')}], () => ${selectionSource}, { name: ${JSON.stringify(`${component.component.name}.conditional selection`)}, traceId: ${JSON.stringify(conditional.id)} });`,
+          `const ${selectionName} = ${selectionFactory}([${dependencies.join(', ')}], () => ${selectionSource}, { name: ${JSON.stringify(`${component.component.name}.conditional selection`)}, traceId: ${JSON.stringify(conditional.id)} });`,
         );
         const regionName = names.allocate('conditionalRegion');
         const branchName = names.allocate('branch');
@@ -1493,8 +1687,12 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           });
           writer.line('}');
         });
+        const pendingOption =
+          pendingDescriptor && typeof pendingDescriptor !== 'string'
+            ? `, pending: () => createSkeleton(document, ${JSON.stringify(pendingDescriptor)})`
+            : '';
         writer.line(
-          `}, { name: ${JSON.stringify(`${component.component.name}.conditional region`)} });`,
+          `}, { hydrationId: ${JSON.stringify(hydrationMarkerId(conditional.id))}, name: ${JSON.stringify(`${component.component.name}.conditional region`)}, source: ${JSON.stringify(sourceLocation(conditional.span))}${pendingOption} });`,
         );
         return regionName;
       }
@@ -1517,6 +1715,16 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           ...new Set(conditions.flatMap((condition) => reactiveDependencies(condition))),
         ];
         const selectionName = names.allocate(`${content.name}Selection`);
+        const selectionFactory = conditions.some(expressionIsAsync)
+          ? 'createAsyncDerived'
+          : 'createDerived';
+        const firstContentResult = content.branches[0]
+          ? plan.nodesById.get(content.branches[0].resultId)
+          : undefined;
+        const pendingDescriptor =
+          selectionFactory === 'createAsyncDerived' && firstContentResult
+            ? skeletonDescriptor(firstContentResult)
+            : undefined;
         const selectionSource = content.branches.reduceRight(
           (fallback, branch, index) =>
             branch.condition
@@ -1525,7 +1733,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           '-1',
         );
         writer.line(
-          `const ${selectionName} = createDerived([${dependencies.join(', ')}], () => ${selectionSource}, { name: ${JSON.stringify(`${component.component.name}.${content.name} selection`)}, traceId: ${JSON.stringify(content.id)} });`,
+          `const ${selectionName} = ${selectionFactory}([${dependencies.join(', ')}], () => ${selectionSource}, { name: ${JSON.stringify(`${component.component.name}.${content.name} selection`)}, traceId: ${JSON.stringify(content.id)} });`,
         );
         const regionName = names.allocate(`${content.name}Content`);
         const branchName = names.allocate('contentBranch');
@@ -1561,8 +1769,12 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           });
           writer.line('}');
         });
+        const pendingOption =
+          pendingDescriptor && typeof pendingDescriptor !== 'string'
+            ? `, pending: () => createSkeleton(document, ${JSON.stringify(pendingDescriptor)})`
+            : '';
         writer.line(
-          `}, { name: ${JSON.stringify(`${component.component.name}.${content.name} content`)} });`,
+          `}, { hydrationId: ${JSON.stringify(hydrationMarkerId(content.id))}, name: ${JSON.stringify(`${component.component.name}.${content.name} content`)}, source: ${JSON.stringify(sourceLocation(content.span))}${pendingOption} });`,
         );
         return regionName;
       }
@@ -1585,8 +1797,11 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         const sourceName = direct ?? names.allocate('collectionSource');
         if (!direct) {
           const dependencies = reactiveDependencies(collection.source);
+          const sourceFactory = expressionIsAsync(collection.source)
+            ? 'createAsyncDerived'
+            : 'createDerived';
           writer.line(
-            `const ${sourceName} = createDerived([${dependencies.join(', ')}], () => ${expressionSource(collection.source)}, { name: ${JSON.stringify(`${component.component.name}.map source`)}, traceId: ${JSON.stringify(collection.id)} });`,
+            `const ${sourceName} = ${sourceFactory}([${dependencies.join(', ')}], () => ${expressionSource(collection.source)}, { name: ${JSON.stringify(`${component.component.name}.map source`)}, traceId: ${JSON.stringify(collection.id)} });`,
           );
         }
 
@@ -1597,8 +1812,18 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         const regionName = names.allocate('keyedRegion');
         writer.line(`const ${regionName} = createKeyedRegion(document, ${sourceName}, {`);
         writer.indented(() => {
+          writer.line(`hydrationId: ${JSON.stringify(hydrationMarkerId(collection.id))},`);
           writer.line(`key: (${keyValueName}) => ${keySource},`);
           writer.line(`name: ${JSON.stringify(`${component.component.name}.keyed map`)},`);
+          writer.line(`source: ${JSON.stringify(sourceLocation(collection.span))},`);
+          if (expressionIsAsync(collection.source)) {
+            const pendingDescriptor = skeletonDescriptor(row);
+            if (pendingDescriptor && typeof pendingDescriptor !== 'string') {
+              writer.line(
+                `pending: () => createSkeleton(document, ${JSON.stringify(pendingDescriptor)}),`,
+              );
+            }
+          }
           writer.line(`render: (${itemName}) => {`);
           writer.indented(() => {
             const result = row.kind === 'element' ? emitElement(row) : emitInstance(row);
@@ -1676,7 +1901,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
     writer.line();
   }
   writer.source(plan.entry.component.span);
-  writer.line(`const ${mountName} = (container) => {`);
+  writer.line(`const ${mountName} = (container, options = {}) => {`);
   writer.indented(() => {
     writer.line('const document = container.ownerDocument;');
     writer.line('if (!document) {');
@@ -1686,12 +1911,57 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
       );
     });
     writer.line('}');
-    writer.line(`return mount(container, () => ${componentName}(document));`);
+    if (usesAsyncResources) {
+      writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
+      writer.line('return mount(container, () => {');
+      writer.indented(() => {
+        writer.line(
+          `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
+        );
+        writer.line(`return ${componentName}(document, asyncCoordinator);`);
+      });
+      writer.line('}, { onError: options.onError });');
+    } else {
+      writer.line(
+        `return mount(container, () => ${componentName}(document), { onError: options.onError });`,
+      );
+    }
   });
   writer.line('};');
 
+  if (hydrateName) {
+    writer.line();
+    writer.source(plan.entry.component.span);
+    writer.line(`const ${hydrateName} = (container, options = {}) => {`);
+    writer.indented(() => {
+      writer.line('const document = container.ownerDocument;');
+      writer.line('if (!document) {');
+      writer.indented(() => {
+        writer.line(
+          `throw new Error(${JSON.stringify(`Cannot hydrate ${plan.entry.component.name}: the container has no ownerDocument.`)});`,
+        );
+      });
+      writer.line('}');
+      writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
+      writer.line('asyncCoordinator.hydrate(readSerializedAsyncCheckpoints(document));');
+      writer.line('const actualBuildFingerprint = readSerializedBuildFingerprint(document);');
+      writer.line('return hydrate(container, () => {');
+      writer.indented(() => {
+        writer.line(
+          `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
+        );
+        writer.line(`return ${componentName}(document, asyncCoordinator);`);
+      });
+      writer.line(
+        `}, { actualBuildFingerprint, buildMismatch: options.buildMismatch ?? 'reload', expectedBuildFingerprint: ${JSON.stringify(plan.buildFingerprint)}, mismatch: options.mismatch ?? 'recover', name: ${JSON.stringify(`${plan.entry.component.name} hydration`)}, onBuildMismatch: options.onBuildMismatch, onError: options.onError, onMismatch: options.onMismatch });`,
+      );
+    });
+    writer.line('};');
+  }
+
   return {
     componentName,
+    ...(hydrateName ? { hydrateName } : {}),
     mappings: writer.mappings(),
     mountName,
     source: writer.toString(),
@@ -1775,6 +2045,11 @@ const emitFactorySource = (program: EmittedProgram): string => {
     ...(program.source.includes('addCollection(') ? ['addCollection'] : []),
     'batch',
     'createCell',
+    ...(program.source.includes('createAsyncDerived(') ? ['createAsyncDerived'] : []),
+    ...(program.source.includes('createAsyncResource(') ? ['createAsyncResource'] : []),
+    ...(program.source.includes('createAsyncResourceCoordinator(')
+      ? ['createAsyncResourceCoordinator']
+      : []),
     ...(program.source.includes('createContext(') ? ['createContext'] : []),
     'createDerived',
     ...(program.source.includes('createDisposableReaction(') ? ['createDisposableReaction'] : []),
@@ -1782,23 +2057,37 @@ const emitFactorySource = (program: EmittedProgram): string => {
     'createRoot',
     ...(program.source.includes('removeCollection(') ? ['removeCollection'] : []),
     ...(program.source.includes('readContext(') ? ['readContext'] : []),
+    ...(program.source.includes('refreshAsyncResource(') ? ['refreshAsyncResource'] : []),
+    ...(program.source.includes('registerCleanup(') ? ['registerCleanup'] : []),
+    ...(program.source.includes('selectAsyncPath(') ? ['selectAsyncPath'] : []),
     ...(program.source.includes('selectPath(') ? ['selectPath'] : []),
     ...(program.source.includes('sortCollection(') ? ['sortCollection'] : []),
+    ...(program.source.includes('toAsyncReadable(') ? ['toAsyncReadable'] : []),
     'untrack',
     ...(program.source.includes('updateCollection(') ? ['updateCollection'] : []),
     ...(program.source.includes('withContext(') ? ['withContext'] : []),
   ].join(', ');
   const domBindings = [
     'appendChild',
+    ...(program.source.includes('bindAsyncDomValue(') ? ['bindAsyncDomValue'] : []),
+    ...(program.source.includes('bindAsyncText(') ? ['bindAsyncText'] : []),
     'bindDomValue',
     'bindText',
     'createConditionalRegion',
     'createElement',
     'createKeyedRegion',
+    ...(program.source.includes('createSkeleton(') ? ['createSkeleton'] : []),
     ...(program.source.includes('createStaticTemplate(') ? ['createStaticTemplate'] : []),
     'createText',
     'listen',
+    ...(program.source.includes('hydrate(') ? ['hydrate'] : []),
     'mount',
+    ...(program.source.includes('readSerializedAsyncCheckpoints(')
+      ? ['readSerializedAsyncCheckpoints']
+      : []),
+    ...(program.source.includes('readSerializedBuildFingerprint(')
+      ? ['readSerializedBuildFingerprint']
+      : []),
     'setDomValue',
   ].join(', ');
   writer.line('(runtime, dom) => {');
@@ -1810,7 +2099,9 @@ const emitFactorySource = (program: EmittedProgram): string => {
       writer.line(line);
     }
     writer.line();
-    writer.line(`return { ${program.componentName}, ${program.mountName} };`);
+    writer.line(
+      `return { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''} };`,
+    );
   });
   writer.line('}');
   return `${writer.toString()}\n`;
@@ -1822,6 +2113,11 @@ const emitModuleSource = (program: EmittedProgram): string => {
     ...(program.source.includes('addCollection(') ? ['addCollection'] : []),
     'batch',
     'createCell',
+    ...(program.source.includes('createAsyncDerived(') ? ['createAsyncDerived'] : []),
+    ...(program.source.includes('createAsyncResource(') ? ['createAsyncResource'] : []),
+    ...(program.source.includes('createAsyncResourceCoordinator(')
+      ? ['createAsyncResourceCoordinator']
+      : []),
     ...(program.source.includes('createContext(') ? ['createContext'] : []),
     'createDerived',
     ...(program.source.includes('createDisposableReaction(') ? ['createDisposableReaction'] : []),
@@ -1829,23 +2125,37 @@ const emitModuleSource = (program: EmittedProgram): string => {
     'createRoot',
     ...(program.source.includes('removeCollection(') ? ['removeCollection'] : []),
     ...(program.source.includes('readContext(') ? ['readContext'] : []),
+    ...(program.source.includes('refreshAsyncResource(') ? ['refreshAsyncResource'] : []),
+    ...(program.source.includes('registerCleanup(') ? ['registerCleanup'] : []),
+    ...(program.source.includes('selectAsyncPath(') ? ['selectAsyncPath'] : []),
     ...(program.source.includes('selectPath(') ? ['selectPath'] : []),
     ...(program.source.includes('sortCollection(') ? ['sortCollection'] : []),
+    ...(program.source.includes('toAsyncReadable(') ? ['toAsyncReadable'] : []),
     'untrack',
     ...(program.source.includes('updateCollection(') ? ['updateCollection'] : []),
     ...(program.source.includes('withContext(') ? ['withContext'] : []),
   ].join(', ');
   const domBindings = [
     'appendChild',
+    ...(program.source.includes('bindAsyncDomValue(') ? ['bindAsyncDomValue'] : []),
+    ...(program.source.includes('bindAsyncText(') ? ['bindAsyncText'] : []),
     'bindDomValue',
     'bindText',
     'createConditionalRegion',
     'createElement',
     'createKeyedRegion',
+    ...(program.source.includes('createSkeleton(') ? ['createSkeleton'] : []),
     ...(program.source.includes('createStaticTemplate(') ? ['createStaticTemplate'] : []),
     'createText',
     'listen',
+    ...(program.source.includes('hydrate(') ? ['hydrate'] : []),
     'mount',
+    ...(program.source.includes('readSerializedAsyncCheckpoints(')
+      ? ['readSerializedAsyncCheckpoints']
+      : []),
+    ...(program.source.includes('readSerializedBuildFingerprint(')
+      ? ['readSerializedBuildFingerprint']
+      : []),
     'setDomValue',
   ].join(', ');
   writer.line(`import { ${runtimeBindings} } from '@oxe/runtime';`);
@@ -1855,7 +2165,9 @@ const emitModuleSource = (program: EmittedProgram): string => {
     writer.line(line);
   }
   writer.line();
-  writer.line(`export { ${program.componentName}, ${program.mountName} };`);
+  writer.line(
+    `export { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''} };`,
+  );
   return `${writer.toString()}\n`;
 };
 
@@ -1868,6 +2180,7 @@ export const generateDomArtifact = (graph: UiGraphV1): DomCodeArtifact => {
     moduleSource: emitModuleSource(program),
     moduleSourceMap: buildSourceMap(program, `${program.componentName}.js`, 3, 0),
     mountExport: program.mountName,
+    ...(program.hydrateName ? { hydrateExport: program.hydrateName } : {}),
   };
 };
 

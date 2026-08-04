@@ -1,0 +1,28 @@
+{
+  "name": "@oxe/runtime-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "bench": "vitest bench --run",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" --max-warnings=0",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@oxe/graph": "workspace:*",
+    "@oxe/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@oxe/compiler": "workspace:*",
+    "@oxe/runtime-dom": "workspace:*"
+  }
+}

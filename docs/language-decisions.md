@@ -642,36 +642,48 @@ value they need, and obsolete work is cancelled or ignored. Authored code does
 not expose `async`, `await`, pending state, concurrency, priority, or scheduler
 controls for normal dataflow.
 
+Compiler-visible async platform capabilities use `kind: "async"` and must
+declare a return type. Their return values remain plain in authored OXE; the
+graph records the capability, canonical arguments, and host scope that form the
+resource identity.
+
+Equal identities share one in-flight request across consumers. Owners are
+reference-counted, the last disappearing consumer aborts pending work, and a
+late completion from an obsolete identity is ignored. An identity change resets
+the value to pending. The one explicit refresh operation is:
+
+```oxe
+reload():
+  refresh(user)
+```
+
+Refreshing the same identity retains its ready value while new work runs. Async
+lineage propagates through derived values and component props, including exact
+record paths such as `user.name`; authored resource wrappers are not required.
+
 ## Loading and errors
 
-The compiler generates skeleton and error modes from the real component template.
-Components may provide companions:
+The compiler generates pending modes from the real consuming template without
+authored loading syntax. Text receives a short inline placeholder; a pending
+attribute preserves its owning element and dimensions; a conditional preserves
+one inert branch shape; and a collection preserves one representative inert row.
+Compiler-generated controls do not receive event behavior while pending.
 
-```oxe
-UserCard.skeleton = <UserCardSkeleton>
-UserCard.error = (error) => <UserCardError error={error}>
-```
+Call-site/component overrides and skeleton hints are deliberately not part of the
+language yet. They should be introduced only after concrete applications show
+that automatic geometry plus host styling is insufficient.
 
-Call sites may override or suppress their display:
+Async failures use one typed error channel with `not-found`, `unauthorized`,
+`forbidden`, `validation`, and `unexpected` classifications plus an HTTP status.
+They bubble to one global error policy. Validation failures normally stop at a
+form/action boundary; authentication policy may render, redirect, or choose the
+final response. A nearest component/route error boundary remains a possible
+future feature, not settled authored syntax.
 
-```oxe
-<UserCard skeleton={CustomSkeleton}>
-<UserCard skeleton={false}>
-<UserCard error={CustomError}>
-<UserCard error={false}>
-```
-
-Override precedence is:
-
-1. Call-site override
-2. Component companion
-3. Compiler-generated default
-
-Supported skeleton hints include `skeleton:length`, `skeleton:lines`, and
-`skeleton:count`.
-
-Suppressing an error display does not suppress internal logging or development
-tooling.
+Loading regions are compiler-derived at the smallest consuming text, attribute,
+or structural site. Static siblings render immediately. Disconnected consumers
+of one resource retain separate visual regions while one resource completion can
+reveal all of them in the same streamed batch.
 
 ## Routing
 
@@ -744,7 +756,13 @@ The executable slice now covers:
 - static and reactive DOM attributes/properties, text interpolation, and
   `onClick`, and
 - direct-DOM ownership, branch cleanup, and keyed insertion/movement/removal
-  without a virtual DOM.
+  without a virtual DOM,
+- compiler-owned async capabilities with canonical identity deduplication,
+  cancellation, stale-result rejection, same-identity refresh retention,
+  field-path derivation, component-prop propagation, and granular text/attribute
+  bindings, and
+- generated eager hydration entry points that restore serialized ready resources
+  and adopt matching DOM without replacement.
 
 The compiler classifies assignments as constants, writable cells, or derived
 computations and emits explicit reactive/procedural edges. Keyed collection item
@@ -752,9 +770,28 @@ bindings and region ownership are also explicit graph nodes. This is
 implementation status, not a reduction of the settled language. Ordinary calls
 through compiler-visible procedure capabilities are implemented. Contexts,
 typed platform capabilities, compiler-owned resources, platform refs, and static
-DOM template cloning are also implemented. Top-level helper declarations,
-authored nullable types, async dataflow, SSR, and hydration remain subsequent
-slices.
+DOM template cloning are also implemented. The current graph lowers to both a
+JSON-only synchronous server plan and a v2 deferred-region plan. The inert patch
+transport, checkpoint serialization, and eager DOM-adoption primitives are
+implemented. A backend-neutral readiness executor now deduplicates equal runtime
+identities, writes independent regions as they settle, batches shared readiness,
+awaits sink backpressure, aborts outstanding work, preserves typed failures, and
+serializes final checkpoints. The initial JavaScript plan adapter renders a
+static shell plus granular text, attribute, derived-child-prop, structural, and
+keyed-collection patches using request-local component and keyed-row paths.
+Same-resource consumers inside structural reveals resolve in the enclosing patch;
+newly exposed resources and regions register dynamically with the portable
+executor. Compiler-owned comment markers let eager hydration adopt conditional
+and keyed regions, while stable event ids plus occurrence indexes replay early
+clicks and inputs after listener attachment. Direct same-component async request
+dependencies wait for their argument resources before calculating identity or
+starting work. Dependent identities now trace through forwarded component props
+and mapped row values. The compiler generates localized text, attribute,
+structural, and representative-row pending companions; failures route to one
+global policy; root structural work gates HTTP status; and hydration recovers the
+nearest source-linked conditional or keyed boundary after verifying the build
+fingerprint. Authored loading/error override syntax remains intentionally absent.
+Top-level helper declarations and authored nullable types also remain open.
 
 ## Open language questions
 

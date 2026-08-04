@@ -1,6 +1,8 @@
 import { analyzeProject, generateDomArtifact, parseSource, scanSource } from '@oxe/compiler';
 import { serializeUiGraph } from '@oxe/graph';
 
+import { capabilitiesForPlayground, type PlaygroundCapabilitySet } from './demo-capabilities.js';
+
 import {
   OXE_PLAYGROUND_PROTOCOL_VERSION,
   isCompileRequest,
@@ -36,6 +38,7 @@ const graphStats = (graph: {
 });
 
 const compile = async (request: {
+  readonly capabilitySet?: PlaygroundCapabilitySet;
   readonly entryExport: string;
   readonly entryModuleId: string;
   readonly files: readonly CompileFile[];
@@ -49,6 +52,7 @@ const compile = async (request: {
     tokenJson: prettyJson(scanSource(file.source, file.moduleId).tokens),
   }));
   const analyzed = await analyzeProject({
+    capabilities: capabilitiesForPlayground(request.capabilitySet),
     entryModuleId: request.entryModuleId,
     entryExport: request.entryExport,
     loadModule: async (moduleId) => sources.get(moduleId),

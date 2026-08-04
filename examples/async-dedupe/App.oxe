@@ -1,0 +1,12 @@
+export App():
+  headerUser = playground.loadUser(2)
+  accountUser = playground.loadUser(2)
+
+  <main>
+    <h1>Shared request deduplication
+    <p>Two authored calls use the same capability and arguments.
+    <header>Signed in as {headerUser.name}
+    <section>
+      <h2>Account
+      <p>{accountUser.email}
+    <p>Open Console: one request serves both consumers.

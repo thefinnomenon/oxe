@@ -261,7 +261,7 @@ export interface ContextProviderNodeV1 extends NodeBaseV1 {
 }
 
 export interface PlatformCapabilityNodeV1 extends NodeBaseV1 {
-  readonly capabilityKind: 'effect' | 'pure' | 'resource';
+  readonly capabilityKind: 'async' | 'effect' | 'pure' | 'resource';
   readonly dispose?: 'dispose';
   readonly kind: 'platform-capability';
   readonly parameters: readonly PrimitiveTypeV1[];
@@ -270,6 +270,14 @@ export interface PlatformCapabilityNodeV1 extends NodeBaseV1 {
   readonly target: 'client' | 'server' | 'universal';
   /** Stable host target used to reject competing persistent writers. */
   readonly writes?: string;
+}
+
+/** A compiler-owned asynchronous value loaded through a platform capability. */
+export interface AsyncResourceNodeV1 extends NodeBaseV1 {
+  readonly expression: Extract<ValueExpressionV1, { readonly kind: 'call' }>;
+  readonly kind: 'async-resource';
+  readonly name: string;
+  readonly type: PrimitiveTypeV1;
 }
 
 export interface ResourceNodeV1 extends NodeBaseV1 {
@@ -299,6 +307,12 @@ export interface CallStepV1 {
   readonly span: GraphSpanV1;
 }
 
+export interface RefreshStepV1 {
+  readonly kind: 'refresh';
+  readonly span: GraphSpanV1;
+  readonly targetId: NodeIdV1;
+}
+
 export interface CollectionMutationStepV1 {
   readonly kind: 'collection-mutation';
   readonly limit?: ValueExpressionV1;
@@ -310,7 +324,7 @@ export interface CollectionMutationStepV1 {
   readonly value?: ValueExpressionV1;
 }
 
-export type ProcedureStepV1 = CallStepV1 | CollectionMutationStepV1 | WriteStepV1;
+export type ProcedureStepV1 = CallStepV1 | CollectionMutationStepV1 | RefreshStepV1 | WriteStepV1;
 
 export interface ProcedureNodeV1 extends NodeBaseV1 {
   readonly kind: 'procedure';
@@ -376,6 +390,7 @@ export type PropSpreadSourceV1 =
     };
 
 export type UiNodeV1 =
+  | AsyncResourceNodeV1
   | CellNodeV1
   | CollectionItemNodeV1
   | ComponentInstanceNodeV1

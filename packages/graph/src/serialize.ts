@@ -158,3 +158,13 @@ const canonicalize = (value: unknown): JsonValue => {
 
 export const serializeUiGraph = (graph: UiGraphV1): string =>
   `${JSON.stringify(canonicalize(normalizeGraph(graph)), null, 2)}\n`;
+
+/** Stable, non-cryptographic build identity used only to reject incompatible hydration payloads. */
+export const fingerprintUiGraph = (graph: UiGraphV1): string => {
+  let hash = 0x811c9dc5;
+  for (const character of serializeUiGraph(graph)) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `oxe-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+};

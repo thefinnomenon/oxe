@@ -1,4 +1,6 @@
 import {
+  createAsyncResource,
+  createAsyncResourceCoordinator,
   createCell,
   createDerived,
   createReaction,
@@ -9,6 +11,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendChild,
+  bindAsyncDomValue,
+  bindAsyncText,
   bindText,
   bindDomValue,
   createConditionalRegion,
@@ -16,8 +20,11 @@ import {
   createKeyedRegion,
   createStaticTemplate,
   createText,
+  hydrate,
   listen,
   mount,
+  OxeHydrationBuildMismatch,
+  OxeHydrationMismatch,
   setDomValue,
   type TextValue,
 } from '../src/index.js';
@@ -25,6 +32,7 @@ import {
 type FakeListener = (event: Event) => void;
 
 class FakeNode {
+  public readonly nodeType: number = 0;
   public readonly childNodes: FakeNode[] = [];
   public failNextRemoval = false;
   public parentNode: FakeNode | null = null;
@@ -85,6 +93,7 @@ class FakeNode {
 }
 
 class FakeText extends FakeNode {
+  public override readonly nodeType = 3;
   public constructor(public data: string) {
     super();
   }
@@ -94,12 +103,28 @@ class FakeText extends FakeNode {
   }
 }
 
+class FakeComment extends FakeNode {
+  public override readonly nodeType = 8;
+  public constructor(public data: string) {
+    super();
+  }
+
+  public override cloneNode(): FakeComment {
+    return new FakeComment(this.data);
+  }
+}
+
 class FakeElement extends FakeNode {
+  public override readonly nodeType = 1;
   readonly #listeners = new Map<string, Set<FakeListener>>();
   readonly #attributes = new Map<string, string>();
 
   public constructor(public readonly tagName: string) {
     super();
+  }
+
+  public get localName(): string {
+    return this.tagName;
   }
 
   public addEventListener(
@@ -127,6 +152,11 @@ class FakeElement extends FakeNode {
         listener({ type } as Event);
       }
     }
+  }
+
+  public dispatchEvent(event: Event): boolean {
+    this.emit(event.type);
+    return true;
   }
 
   public getAttribute(name: string): string | null {
@@ -171,6 +201,10 @@ class FakeElement extends FakeNode {
 }
 
 class FakeDocument {
+  public createComment(data: string): FakeComment {
+    return new FakeComment(data);
+  }
+
   public createElement(tagName: string): FakeElement {
     return new FakeElement(tagName);
   }
@@ -217,6 +251,346 @@ describe('direct DOM primitives', () => {
     expect(first.getAttribute('class')).toBe('card');
   });
 
+  it('hydrates matching DOM by identity and attaches reactive updates without replacement', () => {
+    const document = asDocument(new FakeDocument());
+    const container = new FakeElement('container');
+    const serverMain = new FakeElement('main');
+    const serverHeading = new FakeElement('h1');
+    const serverLabel = new FakeText('Count: ');
+    const serverValue = new FakeText('1');
+    serverHeading.appendChild(serverLabel);
+    serverHeading.appendChild(serverValue);
+    serverMain.appendChild(serverHeading);
+    container.appendChild(serverMain);
+    let increment: (() => void) | undefined;
+
+    const hydrated = hydrate(asNode(container), () => {
+      const count = createCell(1, { name: 'count' });
+      increment = () => count.write(count.read() + 1);
+      const main = createElement(document, 'main');
+      const heading = createElement(document, 'h1');
+      appendChild(heading, createText(document, 'Count: '));
+      const value = createText(document);
+      bindText(value, count);
+      appendChild(heading, value);
+      appendChild(main, heading);
+      return main;
+    });
+
+    expect(container.childNodes[0]).toBe(serverMain);
+    expect(serverMain.childNodes[0]).toBe(serverHeading);
+    expect(serverHeading.childNodes).toEqual([serverLabel, serverValue]);
+    increment?.();
+    expect(serverValue.data).toBe('2');
+    hydrated.unmount();
+    expect(container.childNodes).toEqual([]);
+  });
+
+  it('adopts a conditional region between compiler-owned comment markers', () => {
+    const document = asDocument(new FakeDocument());
+    const container = new FakeElement('container');
+    const start = new FakeComment('oxe:profile%2Dchoice:start');
+    const serverBranch = new FakeElement('strong');
+    serverBranch.appendChild(new FakeText('Active'));
+    const end = new FakeComment('oxe:profile%2Dchoice:end');
+    container.appendChild(start);
+    container.appendChild(serverBranch);
+    container.appendChild(end);
+    const active = createCell(true, { name: 'active' });
+
+    const hydrated = hydrate(asNode(container), () =>
+      createConditionalRegion(
+        document,
+        active,
+        (visible) => {
+          const element = createElement(document, visible ? 'strong' : 'em');
+          appendChild(element, createText(document, visible ? 'Active' : 'Inactive'));
+          return element;
+        },
+        { hydrationId: 'profile%2Dchoice' },
+      ),
+    );
+
+    expect(container.childNodes).toEqual([start, serverBranch, end]);
+    active.write(false);
+    expect(container.childNodes[0]).toBe(start);
+    expect((container.childNodes[1] as FakeElement | undefined)?.tagName).toBe('em');
+    expect(container.childNodes[2]).toBe(end);
+    hydrated.unmount();
+  });
+
+  it('adopts keyed rows between markers and preserves them during reordering', () => {
+    const document = asDocument(new FakeDocument());
+    const container = new FakeElement('container');
+    const start = new FakeComment('oxe:users%2Dlist:start');
+    const first = new FakeElement('li');
+    first.appendChild(new FakeText('Ada'));
+    const second = new FakeElement('li');
+    second.appendChild(new FakeText('Grace'));
+    const end = new FakeComment('oxe:users%2Dlist:end');
+    container.appendChild(start);
+    container.appendChild(first);
+    container.appendChild(second);
+    container.appendChild(end);
+    const users = createCell(
+      [
+        { id: 1, name: 'Ada' },
+        { id: 2, name: 'Grace' },
+      ],
+      { name: 'users' },
+    );
+
+    const hydrated = hydrate(asNode(container), () =>
+      createKeyedRegion(document, users, {
+        hydrationId: 'users%2Dlist',
+        key: (user) => user.id,
+        render: (user) => {
+          const item = createElement(document, 'li');
+          const text = createText(document);
+          bindText(
+            text,
+            createDerived([user], () => user.read().name, { name: 'user name' }),
+          );
+          appendChild(item, text);
+          return item;
+        },
+      }),
+    );
+
+    expect(container.childNodes).toEqual([start, first, second, end]);
+    users.write([
+      { id: 2, name: 'Grace Hopper' },
+      { id: 1, name: 'Ada Lovelace' },
+    ]);
+    expect(container.childNodes).toEqual([start, second, first, end]);
+    expect((second.childNodes[0] as FakeText | undefined)?.data).toBe('Grace Hopper');
+    expect((first.childNodes[0] as FakeText | undefined)?.data).toBe('Ada Lovelace');
+    hydrated.unmount();
+  });
+
+  it('replays captured early events in order after listeners attach', () => {
+    const document = asDocument(new FakeDocument());
+    const container = new FakeElement('container');
+    const serverButton = new FakeElement('button');
+    const serverCount = new FakeText('0');
+    serverButton.appendChild(serverCount);
+    container.appendChild(serverButton);
+    const earlyGlobal = globalThis as typeof globalThis & {
+      __oxeEarly?: { events: { target: string; type: string }[] };
+    };
+    earlyGlobal.__oxeEarly = {
+      events: [
+        { target: 'counter%2Dbutton', type: 'click' },
+        { target: 'counter%2Dbutton', type: 'click' },
+      ],
+    };
+
+    try {
+      const hydrated = hydrate(asNode(container), () => {
+        const count = createCell(0, { name: 'count' });
+        const button = createElement(document, 'button');
+        const text = createText(document);
+        bindText(text, count);
+        appendChild(button, text);
+        listen(button, 'click', () => count.write(count.read() + 1), {
+          replayId: 'counter%2Dbutton',
+        });
+        return button;
+      });
+
+      expect(container.childNodes[0]).toBe(serverButton);
+      expect(serverCount.data).toBe('2');
+      expect(earlyGlobal.__oxeEarly?.events).toEqual([]);
+      hydrated.unmount();
+    } finally {
+      delete earlyGlobal.__oxeEarly;
+    }
+  });
+
+  it('replays early events to the matching repeated target occurrence', () => {
+    const document = asDocument(new FakeDocument());
+    const container = new FakeElement('container');
+    const serverButtons = [new FakeElement('button'), new FakeElement('button')];
+    const serverCounts = [new FakeText('0'), new FakeText('0')];
+    serverButtons.forEach((button, index) => {
+      const count = serverCounts[index];
+      if (!count) throw new Error('Expected a server count node.');
+      button.appendChild(count);
+      container.appendChild(button);
+    });
+    const earlyGlobal = globalThis as typeof globalThis & {
+      __oxeEarly?: {
+        events: { occurrence?: number; target: string; type: string }[];
+      };
+    };
+    earlyGlobal.__oxeEarly = {
+      events: [
+        { occurrence: 1, target: 'row%2Dbutton', type: 'click' },
+        { occurrence: 0, target: 'row%2Dbutton', type: 'click' },
+        { occurrence: 1, target: 'row%2Dbutton', type: 'click' },
+      ],
+    };
+
+    try {
+      const hydrated = hydrate(asNode(container), () =>
+        [0, 1].map(() => {
+          const count = createCell(0, { name: 'row count' });
+          const button = createElement(document, 'button');
+          const text = createText(document);
+          bindText(text, count);
+          appendChild(button, text);
+          listen(button, 'click', () => count.write(count.read() + 1), {
+            replayId: 'row%2Dbutton',
+          });
+          return button;
+        }),
+      );
+
+      expect(serverCounts.map((count) => count.data)).toEqual(['1', '2']);
+      expect(earlyGlobal.__oxeEarly.events).toEqual([]);
+      hydrated.unmount();
+    } finally {
+      delete earlyGlobal.__oxeEarly;
+    }
+  });
+
+  it('reports exact hydration mismatches and supports controlled replacement recovery', () => {
+    const document = asDocument(new FakeDocument());
+    const build = (): Element => {
+      const main = createElement(document, 'main');
+      appendChild(main, createText(document, 'Client'));
+      return main;
+    };
+    const throwingContainer = new FakeElement('container');
+    throwingContainer.appendChild(new FakeElement('p'));
+    expect(() => hydrate(asNode(throwingContainer), build)).toThrow(OxeHydrationMismatch);
+
+    const recoveringContainer = new FakeElement('container');
+    const stale = new FakeElement('p');
+    recoveringContainer.appendChild(stale);
+    const recovered = hydrate(asNode(recoveringContainer), build, { mismatch: 'replace' });
+    expect(recoveringContainer.childNodes[0]).not.toBe(stale);
+    expect((recoveringContainer.childNodes[0] as FakeElement | undefined)?.tagName).toBe('main');
+    recovered.unmount();
+  });
+
+  it('rejects incompatible server and client build fingerprints before adoption', () => {
+    const container = new FakeElement('container');
+    container.appendChild(new FakeElement('main'));
+
+    expect(() =>
+      hydrate(
+        asNode(container),
+        () => asNode(container.childNodes[0] as FakeElement) as ChildNode,
+        {
+          actualBuildFingerprint: 'oxe-server',
+          buildMismatch: 'throw',
+          expectedBuildFingerprint: 'oxe-client',
+        },
+      ),
+    ).toThrow(OxeHydrationBuildMismatch);
+  });
+
+  it('recovers only the nearest compiler-owned structural boundary', () => {
+    const document = asDocument(new FakeDocument());
+    const container = new FakeElement('container');
+    const staticServer = new FakeElement('p');
+    staticServer.appendChild(new FakeText('Static'));
+    const start = new FakeComment('oxe:profile%2Dchoice:start');
+    const staleBranch = new FakeElement('strong');
+    staleBranch.appendChild(new FakeText('Stale'));
+    const end = new FakeComment('oxe:profile%2Dchoice:end');
+    container.appendChild(staticServer);
+    container.appendChild(start);
+    container.appendChild(staleBranch);
+    container.appendChild(end);
+    const mismatches: OxeHydrationMismatch[] = [];
+
+    const hydrated = hydrate(
+      asNode(container),
+      () => {
+        const staticClient = createElement(document, 'p');
+        appendChild(staticClient, createText(document, 'Static'));
+        const region = createConditionalRegion(
+          document,
+          createCell(true, { name: 'active' }),
+          () => {
+            const branch = createElement(document, 'strong');
+            appendChild(branch, createText(document, 'Fresh'));
+            return branch;
+          },
+          {
+            hydrationId: 'profile%2Dchoice',
+            name: 'Profile choice',
+            source: 'profile.oxe:4:5',
+          },
+        );
+        return [staticClient, ...region];
+      },
+      { mismatch: 'recover', onMismatch: (error) => mismatches.push(error) },
+    );
+
+    expect(container.childNodes[0]).toBe(staticServer);
+    expect(container.childNodes[1]).toBe(start);
+    expect(container.childNodes[2]).not.toBe(staleBranch);
+    expect((container.childNodes[2] as FakeElement | undefined)?.tagName).toBe('strong');
+    expect((container.childNodes[2]?.childNodes[0] as FakeText | undefined)?.data).toBe('Fresh');
+    expect(container.childNodes[3]).toBe(end);
+    expect(mismatches).toEqual([
+      expect.objectContaining({
+        boundaryId: 'profile%2Dchoice',
+        boundaryName: 'Profile choice',
+        boundarySource: 'profile.oxe:4:5',
+      }),
+    ]);
+    hydrated.unmount();
+  });
+
+  it('recovers a mismatched keyed boundary without replacing static siblings', () => {
+    const document = asDocument(new FakeDocument());
+    const container = new FakeElement('container');
+    const staticServer = new FakeElement('h1');
+    staticServer.appendChild(new FakeText('Users'));
+    const start = new FakeComment('oxe:users%2Dlist:start');
+    const staleRow = new FakeElement('li');
+    staleRow.appendChild(new FakeText('Stale'));
+    const end = new FakeComment('oxe:users%2Dlist:end');
+    container.appendChild(staticServer);
+    container.appendChild(start);
+    container.appendChild(staleRow);
+    container.appendChild(end);
+
+    const hydrated = hydrate(
+      asNode(container),
+      () => {
+        const heading = createElement(document, 'h1');
+        appendChild(heading, createText(document, 'Users'));
+        const rows = createKeyedRegion(
+          document,
+          createCell([{ id: 1, name: 'Ada' }], { name: 'users' }),
+          {
+            hydrationId: 'users%2Dlist',
+            key: (user) => user.id,
+            render: (user) => {
+              const row = createElement(document, 'li');
+              appendChild(row, createText(document, user.read().name));
+              return row;
+            },
+          },
+        );
+        return [heading, ...rows];
+      },
+      { mismatch: 'recover' },
+    );
+
+    expect(container.childNodes[0]).toBe(staticServer);
+    expect(container.childNodes[1]).toBe(start);
+    expect(container.childNodes[2]).not.toBe(staleRow);
+    expect((container.childNodes[2]?.childNodes[0] as FakeText | undefined)?.data).toBe('Ada');
+    expect(container.childNodes[3]).toBe(end);
+    hydrated.unmount();
+  });
+
   it('owns reactive text bindings for the lifetime of a mount', () => {
     const document = asDocument(new FakeDocument());
     const container = new FakeElement('container');
@@ -250,6 +624,52 @@ describe('direct DOM primitives', () => {
 
     label.write('after unmount');
     expect(text.data).toBe('');
+  });
+
+  it('reports a shared async failure once without rendering error strings', async () => {
+    const document = asDocument(new FakeDocument());
+    const container = new FakeElement('container');
+    const failure = new Error('Private database detail');
+    const errors: unknown[] = [];
+    let text: FakeText | undefined;
+    let image: FakeElement | undefined;
+
+    const mounted = mount(
+      asNode(container),
+      () => {
+        const coordinator = createAsyncResourceCoordinator();
+        registerCleanup(() => coordinator.dispose(), { kind: 'resource', name: 'coordinator' });
+        const value = createAsyncResource<readonly [], string>(
+          [],
+          () => [] as const,
+          () => Promise.reject(failure),
+          { capability: 'test.load', coordinator, name: 'test value' },
+        );
+        const wrapper = createElement(document, 'section');
+        const textNode = createText(document);
+        const imageElement = createElement(document, 'img');
+        text = asFakeText(textNode);
+        image = asFakeElement(imageElement);
+        bindAsyncText(textNode, value, { name: 'profile name' });
+        bindAsyncDomValue(imageElement, 'src', 'attribute', value, { name: 'profile image' });
+        appendChild(wrapper, textNode);
+        appendChild(wrapper, imageElement);
+        return wrapper;
+      },
+      { onError: (error, context) => errors.push(error, context) },
+    );
+
+    expect(text?.data).toBe('████████');
+    expect(image?.getAttribute('aria-busy')).toBe('true');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(text?.data).toBe('████████');
+    expect(text?.data).not.toContain('Error');
+    expect(image?.getAttribute('aria-busy')).toBeNull();
+    expect(errors).toEqual([
+      failure,
+      expect.objectContaining({ kind: 'async-text', name: 'profile name' }),
+    ]);
+    mounted.unmount();
   });
 
   it('sets static DOM values and owns reactive attribute updates', () => {

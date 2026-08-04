@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   addCollection,
+  asyncResourceIdentity,
   batch,
+  createAsyncDerived,
+  createAsyncResource,
+  createAsyncResourceCoordinator,
   createCell,
   createContext,
   createDerived,
@@ -13,15 +17,38 @@ import {
   removeCollection,
   registerCleanup,
   selectPath,
+  selectAsyncPath,
   sortCollection,
+  subscribeOwnershipSnapshots,
   subscribeReactiveTrace,
   untrack,
   updateCollection,
   withContext,
   type OxeRuntimeError,
+  type OwnershipSnapshot,
   type ReactiveTraceEvent,
   type Readable,
 } from '../src/index.js';
+
+const deferred = <T>(): {
+  readonly promise: Promise<T>;
+  readonly reject: (error: unknown) => void;
+  readonly resolve: (value: T) => void;
+} => {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+};
+
+const settleAsyncResources = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+};
 
 describe('reactive graph', () => {
   it('updates collections immutably with deterministic limits and stable sorting', () => {
@@ -684,7 +711,208 @@ describe('reactive graph', () => {
   });
 });
 
+describe('async resource graph', () => {
+  it('deduplicates equal identities and derives individual record fields', async () => {
+    const coordinator = createAsyncResourceCoordinator();
+    const request = deferred<{ readonly avatar: string; readonly name: string }>();
+    let calls = 0;
+    const root = createRoot(() => {
+      const first = createAsyncResource(
+        [],
+        () => ['user-1'] as const,
+        () => {
+          calls += 1;
+          return request.promise;
+        },
+        { capability: 'users.get', coordinator, name: 'first user' },
+      );
+      const second = createAsyncResource(
+        [],
+        () => ['user-1'] as const,
+        () => {
+          calls += 1;
+          return request.promise;
+        },
+        { capability: 'users.get', coordinator, name: 'second user' },
+      );
+      const name = selectAsyncPath(first, ['name'], { name: 'user name' });
+      return { first, name, second };
+    });
+
+    await settleAsyncResources();
+    expect(calls).toBe(1);
+    expect(root.value.first.snapshot().status).toBe('pending');
+
+    request.resolve({ avatar: '/ada.png', name: 'Ada' });
+    await settleAsyncResources();
+    expect(root.value.first.read()).toEqual({ avatar: '/ada.png', name: 'Ada' });
+    expect(root.value.second.read()).toBe(root.value.first.read());
+    expect(root.value.name.read()).toBe('Ada');
+    expect(coordinator.checkpoints()).toEqual([
+      {
+        identity: asyncResourceIdentity('users.get', ['user-1']),
+        value: { avatar: '/ada.png', name: 'Ada' },
+      },
+    ]);
+
+    root.dispose();
+    coordinator.dispose();
+  });
+
+  it('aborts obsolete identities and ignores their late completion', async () => {
+    const coordinator = createAsyncResourceCoordinator();
+    const requests = new Map<
+      string,
+      ReturnType<typeof deferred<{ readonly name: string }>> & { readonly signal: AbortSignal }
+    >();
+    const root = createRoot(() => {
+      const id = createCell('user-1');
+      const user = createAsyncResource(
+        [id],
+        () => [id.read()] as const,
+        ([nextId], signal) => {
+          const request = deferred<{ readonly name: string }>();
+          requests.set(nextId, { ...request, signal });
+          return request.promise;
+        },
+        { capability: 'users.get', coordinator },
+      );
+      return { id, user };
+    });
+
+    await settleAsyncResources();
+    const obsolete = requests.get('user-1');
+    root.value.id.write('user-2');
+    await settleAsyncResources();
+    expect(obsolete?.signal.aborted).toBe(true);
+    obsolete?.resolve({ name: 'Obsolete' });
+    requests.get('user-2')?.resolve({ name: 'Grace' });
+    await settleAsyncResources();
+    expect(root.value.user.read()).toEqual({ name: 'Grace' });
+
+    root.dispose();
+    coordinator.dispose();
+  });
+
+  it('retains ready data during refresh and hydrates without rerunning the loader', async () => {
+    const identity = asyncResourceIdentity('users.get', ['user-1'], 'tenant-a');
+    const hydratedCoordinator = createAsyncResourceCoordinator();
+    hydratedCoordinator.hydrate([{ identity, value: { name: 'Ada' } }]);
+    const refresh = deferred<{ readonly name: string }>();
+    let hydratedCalls = 0;
+    const hydratedRoot = createRoot(() =>
+      createAsyncResource(
+        [],
+        () => ['user-1'] as const,
+        () => {
+          hydratedCalls += 1;
+          return refresh.promise;
+        },
+        { capability: 'users.get', coordinator: hydratedCoordinator, scope: 'tenant-a' },
+      ),
+    );
+    expect(hydratedRoot.value.read()).toEqual({ name: 'Ada' });
+    expect(hydratedCalls).toBe(0);
+
+    hydratedRoot.value.refresh();
+    await settleAsyncResources();
+    expect(hydratedCalls).toBe(1);
+    expect(hydratedRoot.value.snapshot()).toMatchObject({
+      status: 'refreshing',
+      value: { name: 'Ada' },
+    });
+
+    refresh.resolve({ name: 'Grace' });
+    await settleAsyncResources();
+    expect(hydratedRoot.value.read()).toEqual({ name: 'Grace' });
+
+    hydratedRoot.dispose();
+    hydratedCoordinator.dispose();
+  });
+
+  it('propagates pending and failure through async derived values', async () => {
+    const coordinator = createAsyncResourceCoordinator();
+    const request = deferred<number>();
+    const root = createRoot(() => {
+      const value = createAsyncResource(
+        [],
+        () => [] as const,
+        () => request.promise,
+        {
+          capability: 'numbers.get',
+          coordinator,
+        },
+      );
+      return createAsyncDerived([value], () => value.read() * 2);
+    });
+
+    expect(root.value.snapshot().status).toBe('pending');
+    request.reject(new Error('No number'));
+    await settleAsyncResources();
+    expect(root.value.snapshot()).toMatchObject({ status: 'failed' });
+    expect(() => root.value.read()).toThrow('No number');
+
+    root.dispose();
+    coordinator.dispose();
+  });
+});
+
 describe('ownership-scoped context', () => {
+  it('reports live owners and named resources only while inspection is subscribed', () => {
+    const snapshots: OwnershipSnapshot[] = [];
+    const subscription = subscribeOwnershipSnapshots((snapshot) => snapshots.push(snapshot));
+    const SessionContext = createContext<string>('SessionContext');
+
+    const root = createRoot(
+      () => {
+        const count = createCell(1, { name: 'count' });
+        const doubled = createDerived([count], () => count.read() * 2, {
+          name: 'doubled',
+          traceId: 'derived:doubled',
+        });
+        registerCleanup(() => undefined, { name: 'unsubscribe', kind: 'resource' });
+        withContext(SessionContext, 'active', () => {
+          createReaction([doubled], () => doubled.read(), { name: 'text binding' });
+        });
+      },
+      { name: 'app root', traceId: 'component:app' },
+    );
+
+    const mounted = snapshots.at(-1);
+    expect(mounted?.summary).toEqual({
+      contexts: 1,
+      derived: 1,
+      owners: 4,
+      reactions: 1,
+      resources: 1,
+      roots: 1,
+    });
+    expect(mounted?.owners).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'root', name: 'app root', traceId: 'component:app' }),
+        expect.objectContaining({
+          kind: 'derived',
+          name: 'doubled',
+          traceId: 'derived:doubled',
+        }),
+        expect.objectContaining({ kind: 'context', name: 'SessionContext provider' }),
+        expect.objectContaining({ kind: 'reaction', name: 'text binding' }),
+      ]),
+    );
+    expect(mounted?.owners.find((owner) => owner.name === 'app root')?.resources).toEqual([
+      { kind: 'resource', name: 'unsubscribe' },
+    ]);
+
+    root.dispose();
+    expect(snapshots.at(-1)?.summary.owners).toBe(0);
+    expect(snapshots.at(-1)?.summary.resources).toBe(0);
+
+    const snapshotCount = snapshots.length;
+    subscription.dispose();
+    createRoot(() => undefined).dispose();
+    expect(snapshots).toHaveLength(snapshotCount);
+  });
+
   it('reads the nearest identity-matched provider', () => {
     const SessionContext = createContext<string>('SessionContext');
     const values: string[] = [];

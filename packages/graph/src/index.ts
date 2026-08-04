@@ -1,6 +1,7 @@
-export { serializeUiGraph } from './serialize.js';
+export { fingerprintUiGraph, serializeUiGraph } from './serialize.js';
 export { validateUiGraph, type GraphDiagnostic, type GraphDiagnosticCode } from './validate.js';
 export type {
+  AsyncResourceNodeV1,
   BinaryOperatorV1,
   CellNodeV1,
   CallStepV1,
@@ -40,6 +41,7 @@ export type {
   PropSpreadSourceV1,
   ProcedureNodeV1,
   ResourceNodeV1,
+  RefreshStepV1,
   RefNodeV1,
   StaticAttributeV1,
   TextNodeV1,

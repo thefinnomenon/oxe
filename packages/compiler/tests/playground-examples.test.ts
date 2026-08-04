@@ -2,14 +2,41 @@ import { readFile } from 'node:fs/promises';
 
 import { describe, expect, it } from 'vitest';
 
-import { analyzeSource, generateDomArtifact } from '../src/index.js';
+import {
+  analyzeSource,
+  generateDomArtifact,
+  type PlatformCapabilityContract,
+} from '../src/index.js';
 
 interface ExampleExpectation {
+  readonly capabilities?: readonly PlatformCapabilityContract[];
   readonly directory: string;
   readonly diagnostic?: string;
 }
 
+const asyncUserCapabilities = [
+  {
+    kind: 'async',
+    name: 'playground.loadUser',
+    parameters: ['number'],
+    returns: 'record',
+  },
+  {
+    kind: 'async',
+    name: 'playground.listUserIds',
+    parameters: [],
+    returns: 'array',
+  },
+] as const satisfies readonly PlatformCapabilityContract[];
+
 const examples: readonly ExampleExpectation[] = [
+  { directory: 'async-granular', capabilities: asyncUserCapabilities },
+  { directory: 'async-dedupe', capabilities: asyncUserCapabilities },
+  { directory: 'async-identity-refresh', capabilities: asyncUserCapabilities },
+  { directory: 'async-props', capabilities: asyncUserCapabilities },
+  { directory: 'async-structural', capabilities: asyncUserCapabilities },
+  { directory: 'async-collection', capabilities: asyncUserCapabilities },
+  { directory: 'async-error', capabilities: asyncUserCapabilities },
   { directory: 'component-composition' },
   { directory: 'composition-features' },
   { directory: 'context' },
@@ -33,7 +60,9 @@ describe('playground examples', () => {
     it(`${example.directory} matches its compiler expectation`, async () => {
       const moduleId = `examples/${example.directory}/App.oxe`;
       const source = await readFile(new URL(`../../../${moduleId}`, import.meta.url), 'utf8');
-      const result = analyzeSource(source, moduleId, moduleId);
+      const result = analyzeSource(source, moduleId, moduleId, {
+        capabilities: example.capabilities ?? [],
+      });
 
       if (example.diagnostic) {
         expect(result.graph).toBeUndefined();

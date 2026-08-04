@@ -1,3 +1,5 @@
+import type { PlaygroundCapabilitySet } from './demo-capabilities.js';
+
 export const OXE_SIZE_ENDPOINT = '/__oxe/size';
 
 export interface OxeSizeProjectFile {
@@ -6,6 +8,7 @@ export interface OxeSizeProjectFile {
 }
 
 export interface OxeSizeRequest {
+  readonly capabilitySet?: PlaygroundCapabilitySet;
   readonly entryExport: string;
   readonly entryModuleId: string;
   readonly files: readonly OxeSizeProjectFile[];

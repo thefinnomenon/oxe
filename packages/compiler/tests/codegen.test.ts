@@ -33,6 +33,44 @@ const counterGraph = () => {
 };
 
 describe('DOM code generation', () => {
+  it('emits async resources, granular bindings, refresh, and eager hydration adoption', () => {
+    const result = analyzeSource(
+      `export App():
+  user = users.load(1)
+  reload():
+    refresh(user)
+  <main>
+    <p>Static
+    <img src={user.avatar}>
+    <h1>{user.name}
+    <button onClick={reload}>Reload
+`,
+      'async.oxe',
+      'async.oxe',
+      {
+        capabilities: [
+          { kind: 'async', name: 'users.load', parameters: ['number'], returns: 'record' },
+        ],
+      },
+    );
+    if (!result.graph) {
+      throw new Error(`Expected a graph, received: ${JSON.stringify(result.diagnostics)}`);
+    }
+    const artifact = generateDomArtifact(result.graph);
+
+    expect(result.graph.nodes).toContainEqual(
+      expect.objectContaining({ kind: 'async-resource', name: 'user' }),
+    );
+    expect(artifact.hydrateExport).toBe('hydrateApp');
+    expect(artifact.factorySource).toContain('createAsyncResource(');
+    expect(artifact.factorySource).toContain('bindAsyncDomValue(');
+    expect(artifact.factorySource).toContain('bindAsyncText(');
+    expect(artifact.factorySource).toContain('refreshAsyncResource(userAsync);');
+    expect(artifact.factorySource).toContain('asyncCoordinator.hydrate(');
+    expect(artifact.factorySource).toContain('readSerializedAsyncCheckpoints(document)');
+    expect(artifact.moduleSource).toContain('hydrateApp');
+  });
+
   it('emits a deterministic injectable factory using direct DOM and reactive primitives', () => {
     const graph = counterGraph();
     const source = generateDomFactorySource(graph);
@@ -58,7 +96,7 @@ describe('DOM code generation', () => {
     );
     expect(source).toContain('batch(() => {');
     expect(source).toContain('countCell.write((countCell.read() + 1));');
-    expect(source).toContain('listen(buttonElement, "click", incrementHandler);');
+    expect(source).toContain('listen(buttonElement, "click", incrementHandler, { replayId:');
     expect(source).toContain('bindText(');
     expect(source).not.toContain('innerHTML');
     expect(source).not.toContain('addEventListener');

@@ -16,10 +16,12 @@ OXE starts in TypeScript.
 - Rust would not make browser DOM updates intrinsically faster; a WASM runtime would
   add a costly boundary around DOM operations.
 
-Rust remains a future option for the parser, analyzer, optimizer, or CLI after the
-language and intermediate representation stabilize. It should be introduced only
-after profiles show compiler throughput or memory is a meaningful bottleneck and a
-Rust implementation can preserve identical diagnostics and source maps.
+Rust remains a future option for the parser, analyzer, optimizer, CLI, or server
+renderer after the relevant intermediate representation stabilizes. The
+serializable server render plan now provides a language-neutral backend boundary.
+Rust should still be introduced only after profiles show compiler throughput,
+memory, or SSR throughput is a meaningful bottleneck and a native implementation
+can preserve the JavaScript reference backend's golden outputs and diagnostics.
 
 ## Architectural boundaries
 
@@ -53,7 +55,8 @@ authored OXE language.
       bytes, with runtime/module attribution and tooling explicitly excluded.
 - [x] Add precise source maps from generated JavaScript and graph nodes to OXE.
 - [x] Explain why each computation reran and which dependency invalidated it.
-- [ ] Add owner/resource leak reporting and retained-memory inspection.
+- [x] Add opt-in live owner/resource snapshots and cleanup leak inspection.
+- [ ] Add retained-memory sizing and host-level retainer inspection.
 
 Acceptance: valid examples render and update in a real browser; invalid examples
 produce clickable source diagnostics without destroying the last valid preview;
@@ -153,22 +156,53 @@ and selection, clean up removed regions, and remain keyboard accessible.
 
 ## Milestone 5: server rendering and hydration
 
-- [ ] Render deterministic HTML on the server.
-- [ ] Stream async regions while preserving document order.
-- [ ] Serialize the minimum graph state required by the client.
-- [ ] Hydrate without rerunning server work or replacing matching DOM.
-- [ ] Diagnose server/client divergence with source locations.
+- [x] Define a deterministic, serializable server render plan with explicit
+      blocking boundaries and ordered sink delivery.
+- [x] Render deterministic HTML for the current synchronous UI slice with a
+      JavaScript reference backend.
+- [x] Compare initial browser and server output for representative components,
+      conditions, collections, content, and context.
+- [x] Define v2 deferred regions at the smallest async consumers with stable
+      document markers and readiness delivery metadata.
+- [x] Define inert streamed replacement/attribute patches, CSP bootstrap hashing,
+      short-window batching policy, and stale patch tokens.
+- [x] Serialize ready resource checkpoints required by the client.
+- [x] Add eager hydration adoption that restores checkpoints without rerunning
+      resource work or replacing matching simple DOM.
+- [x] Schedule backend-instantiated v2 regions as backpressure-aware readiness
+      streams with request-identity deduplication, cancellation, batching, typed
+      error bubbling, and final checkpoints.
+- [x] Instantiate the initial one-instance JavaScript v2 path into async
+      capability requests, static shell markers, granular text/attribute patches,
+      structural-choice patches, and derived child-prop consumers.
+- [x] Expand repeated components and keyed rows into request-local marker paths,
+      and dynamically schedule additional resources revealed by nested regions.
+- [x] Adopt matching conditionals and keyed collections between compiler-owned
+      hydration comments without replacing their existing nodes.
+- [x] Capture early click/input metadata and replay matching events in original
+      order only after eager hydration has attached all generated listeners.
+- [x] Trace dependent request identities through forwarded component props and
+      mapped child values.
+- [x] Infer root structural HTTP status gates and allow host promotion of
+      additional resources before headers commit.
+- [x] Recover only the smallest conditional/keyed mismatch when possible and
+      fall back to controlled root replacement.
+- [x] Diagnose server/client divergence with compiler boundary source locations
+      and reject incompatible build fingerprints before adoption.
 
 Acceptance: server-rendered examples hydrate without duplicate requests or DOM
 replacement and recover safely from deliberate mismatches.
 
 ## Milestone 6: native async UI behavior
 
-- [ ] Lower ordinary async assignments into cancellable graph resources.
-- [ ] Generate component skeletons and error modes from their real structure.
+- [x] Lower ordinary async assignments into cancellable graph resources.
+- [x] Generate component skeletons and pending modes from their real structure.
 - [ ] Implement override precedence and skeleton hints.
-- [ ] Retain prior data for same-identity refreshes and reset for identity changes.
-- [ ] Integrate typed expected failures separately from unexpected faults.
+- [x] Retain prior data for same-identity refreshes and reset for identity changes.
+- [x] Define and implement typed async failure classes for runtime and server
+      policy.
+- [x] Connect generated pending companions and one global browser/server failure
+      policy without rendering private error strings into content.
 
 ## Milestone 7: application framework integration
 
@@ -194,6 +228,11 @@ OXE will compare total application output, not an isolated runtime file:
 
 Benchmarks must include dynamic dependencies, large keyed lists, forms, context,
 async navigation, SSR dashboards, and authorized data—not only signal loops.
+Until timing benchmarks run in a controlled environment, the synchronous SSR
+reference backend gates reproducible structural work: bytes written, views,
+elements, expressions, components, collection items, and maximum component depth.
+The runtime-server package also includes repeatable blocking/keyed and
+readiness/deduplication microbenchmarks; browser and end-to-end cases remain.
 
 ## Provisional implementation assumptions
 

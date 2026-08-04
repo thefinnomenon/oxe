@@ -1,7 +1,9 @@
 import type { Diagnostic, DomSourceMapV3 } from '@oxe/compiler';
-import type { ReactiveTraceEvent, ReactiveTraceSource } from '@oxe/runtime';
+import type { OwnershipSnapshot, ReactiveTraceEvent, ReactiveTraceSource } from '@oxe/runtime';
 
-export const OXE_PLAYGROUND_PROTOCOL_VERSION = 3 as const;
+import { isPlaygroundCapabilitySet, type PlaygroundCapabilitySet } from './demo-capabilities.js';
+
+export const OXE_PLAYGROUND_PROTOCOL_VERSION = 5 as const;
 
 export type CompileStage = 'analyze' | 'codegen' | 'complete' | 'internal' | 'parse' | 'scan';
 
@@ -30,6 +32,7 @@ export interface CompileModuleOutput {
 }
 
 export interface CompileRequest {
+  readonly capabilitySet?: PlaygroundCapabilitySet;
   readonly entryExport: string;
   readonly entryModuleId: string;
   readonly files: readonly CompileFile[];
@@ -57,6 +60,7 @@ export interface CompileResult {
 }
 
 export interface PreviewMountCommand {
+  readonly capabilitySet?: PlaygroundCapabilitySet;
   readonly factorySource: string;
   readonly factorySourceMap?: DomSourceMapV3;
   readonly mountExport: string;
@@ -128,11 +132,19 @@ export interface PreviewReactivityEvent {
   readonly version: typeof OXE_PLAYGROUND_PROTOCOL_VERSION;
 }
 
+export interface PreviewOwnershipEvent {
+  readonly runId: number;
+  readonly snapshot: OwnershipSnapshot;
+  readonly type: 'preview:ownership';
+  readonly version: typeof OXE_PLAYGROUND_PROTOCOL_VERSION;
+}
+
 export type PreviewEvent =
   | PreviewConsoleEvent
   | PreviewErrorEvent
   | PreviewMountedEvent
   | PreviewMutationsEvent
+  | PreviewOwnershipEvent
   | PreviewReactivityEvent
   | PreviewReadyEvent;
 
@@ -216,6 +228,46 @@ const isReactiveTraceEvent = (value: unknown): value is ReactiveTraceEvent =>
       isReactiveTraceSource(value.computation) &&
       (value.computation.kind === 'derived' || value.computation.kind === 'reaction')));
 
+const ownershipKinds = new Set(['context', 'derived', 'reaction', 'root']);
+const resourceKinds = new Set(['cleanup', 'event-listener', 'keyed-region', 'resource']);
+
+const isOwnershipSummary = (value: unknown): boolean =>
+  isRecord(value) &&
+  ['contexts', 'derived', 'owners', 'reactions', 'resources', 'roots'].every(
+    (key) => typeof value[key] === 'number' && Number.isSafeInteger(value[key]) && value[key] >= 0,
+  );
+
+const isOwnershipSnapshot = (value: unknown): value is OwnershipSnapshot =>
+  isRecord(value) &&
+  typeof value.timestamp === 'number' &&
+  Number.isFinite(value.timestamp) &&
+  isOwnershipSummary(value.summary) &&
+  Array.isArray(value.owners) &&
+  value.owners.every(
+    (owner) =>
+      isRecord(owner) &&
+      typeof owner.id === 'number' &&
+      Number.isSafeInteger(owner.id) &&
+      owner.id > 0 &&
+      typeof owner.name === 'string' &&
+      typeof owner.kind === 'string' &&
+      ownershipKinds.has(owner.kind) &&
+      typeof owner.childCount === 'number' &&
+      Number.isSafeInteger(owner.childCount) &&
+      owner.childCount >= 0 &&
+      (owner.parentId === undefined ||
+        (typeof owner.parentId === 'number' && Number.isSafeInteger(owner.parentId))) &&
+      isOptionalString(owner.traceId) &&
+      Array.isArray(owner.resources) &&
+      owner.resources.every(
+        (resource) =>
+          isRecord(resource) &&
+          typeof resource.name === 'string' &&
+          typeof resource.kind === 'string' &&
+          resourceKinds.has(resource.kind),
+      ),
+  );
+
 export const isCompileRequest = (value: unknown): value is CompileRequest =>
   isRecord(value) &&
   value.type === 'compile' &&
@@ -225,6 +277,7 @@ export const isCompileRequest = (value: unknown): value is CompileRequest =>
   value.entryModuleId.length > 0 &&
   typeof value.entryExport === 'string' &&
   value.entryExport.length > 0 &&
+  (value.capabilitySet === undefined || isPlaygroundCapabilitySet(value.capabilitySet)) &&
   Array.isArray(value.files) &&
   value.files.length > 0 &&
   value.files.every(
@@ -275,6 +328,7 @@ export const isPreviewCommand = (value: unknown): value is PreviewCommand => {
   }
   return (
     value.type === 'preview:mount' &&
+    (value.capabilitySet === undefined || isPlaygroundCapabilitySet(value.capabilitySet)) &&
     typeof value.factorySource === 'string' &&
     (value.factorySourceMap === undefined || isSourceMap(value.factorySourceMap)) &&
     typeof value.mountExport === 'string'
@@ -313,6 +367,8 @@ export const isPreviewEvent = (value: unknown): value is PreviewEvent => {
       );
     case 'preview:mutations':
       return isRunId(value.runId) && isMutationCounts(value.counts);
+    case 'preview:ownership':
+      return isRunId(value.runId) && isOwnershipSnapshot(value.snapshot);
     case 'preview:reactivity':
       return isRunId(value.runId) && isReactiveTraceEvent(value.event);
     default:

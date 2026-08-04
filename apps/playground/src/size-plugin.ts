@@ -15,6 +15,8 @@ import {
 } from 'esbuild';
 import type { Plugin } from 'vite';
 
+import { capabilitiesForPlayground, isPlaygroundCapabilitySet } from './demo-capabilities.js';
+
 import {
   OXE_SIZE_ENDPOINT,
   type OxeSizeDiagnostic,
@@ -292,6 +294,7 @@ const validateRequest = (value: unknown): OxeSizeRequest => {
     throw new OxeSizeRequestError(400, 'INVALID_REQUEST', 'Expected a JSON request object.');
   }
   const request = value as {
+    capabilitySet?: unknown;
     entryExport?: unknown;
     entryModuleId?: unknown;
     files?: unknown;
@@ -306,6 +309,9 @@ const validateRequest = (value: unknown): OxeSizeRequest => {
       'INVALID_REQUEST',
       'Expected "entryModuleId", "entryExport", and a "files" array.',
     );
+  }
+  if (request.capabilitySet !== undefined && !isPlaygroundCapabilitySet(request.capabilitySet)) {
+    throw new OxeSizeRequestError(400, 'INVALID_REQUEST', 'Unknown Playground capability set.');
   }
   if (request.entryModuleId.length === 0 || request.entryModuleId.length > 512) {
     throw new OxeSizeRequestError(
@@ -362,6 +368,7 @@ const validateRequest = (value: unknown): OxeSizeRequest => {
     );
   }
   return {
+    ...(request.capabilitySet ? { capabilitySet: request.capabilitySet } : {}),
     entryModuleId: request.entryModuleId,
     entryExport: request.entryExport,
     files,
@@ -377,6 +384,7 @@ const requestKey = (request: OxeSizeRequest): string => {
     .update(request.entryModuleId)
     .update('\0')
     .update(request.entryExport);
+  hash.update('\0').update(request.capabilitySet ?? 'none');
   for (const file of [...request.files].sort((left, right) =>
     left.moduleId.localeCompare(right.moduleId),
   )) {
@@ -409,6 +417,7 @@ export const createOxeSizeMeasurementService = (
     const work = (async (): Promise<OxeSizeSuccess> => {
       const sources = new Map(request.files.map((file) => [file.moduleId, file.source]));
       const analyzed = await analyzeProject({
+        capabilities: capabilitiesForPlayground(request.capabilitySet),
         entryModuleId: request.entryModuleId,
         entryExport: request.entryExport,
         loadModule: async (moduleId) => sources.get(moduleId),

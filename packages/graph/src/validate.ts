@@ -283,6 +283,15 @@ const procedureStepExpressions = (
   if (step.kind === 'call') {
     return [step.expression];
   }
+  if (step.kind === 'refresh') {
+    return [
+      {
+        kind: 'read',
+        span: step.span,
+        targetId: step.targetId,
+      },
+    ];
+  }
   if (step.kind === 'write') {
     return [step.value];
   }
@@ -296,6 +305,8 @@ const procedureStepExpressions = (
 
 const nodeExpressions = (node: UiNodeV1): readonly ValueExpressionV1[] => {
   switch (node.kind) {
+    case 'async-resource':
+      return [node.expression];
     case 'cell':
       return [node.initial];
     case 'computed':
@@ -409,13 +420,15 @@ const edgeKindsAreValid = (edge: UiEdgeV1, nodes: ReadonlyMap<string, UiNodeV1>)
           from.kind === 'content-value' ||
           from.kind === 'keyed-collection' ||
           from.kind === 'element' ||
+          from.kind === 'async-resource' ||
           from.kind === 'computed' ||
           from.kind === 'effect' ||
           from.kind === 'procedure' ||
           from.kind === 'resource' ||
           from.kind === 'text' ||
           (from.kind === 'component-parameter' && from.parameterKind === 'value')) &&
-        (to.kind === 'cell' ||
+        (to.kind === 'async-resource' ||
+          to.kind === 'cell' ||
           to.kind === 'collection-item' ||
           to.kind === 'computed' ||
           to.kind === 'constant' ||
@@ -513,7 +526,12 @@ const expectedProjection = (graph: UiGraphV1): Map<string, ProjectedEdge> => {
           }
         }
       }
-    } else if (node.kind === 'effect' || node.kind === 'resource' || node.kind === 'text') {
+    } else if (
+      node.kind === 'async-resource' ||
+      node.kind === 'effect' ||
+      node.kind === 'resource' ||
+      node.kind === 'text'
+    ) {
       for (const expression of nodeExpressions(node)) {
         const references: ExpressionReference[] = [];
         collectExpressionReferences(expression, references, true);
@@ -1392,6 +1410,7 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
         const target = nodes.get(reference.targetId);
         if (
           target &&
+          target.kind !== 'async-resource' &&
           target.kind !== 'cell' &&
           target.kind !== 'computed' &&
           target.kind !== 'constant' &&
@@ -1434,8 +1453,19 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
         }
         requireReference(step.targetId, step.span);
         const target = nodes.get(step.targetId);
+        if (step.kind === 'refresh') {
+          if (target && target.kind !== 'async-resource') {
+            diagnostics.push({
+              code: 'OXE3003',
+              message: `Procedure refresh "${step.targetId}" must reference an async resource.`,
+              span: step.span,
+            });
+          }
+          continue;
+        }
         if (
           target &&
+          target.kind !== 'async-resource' &&
           target.kind !== 'cell' &&
           !(target.kind === 'context-consumer' && target.writable)
         ) {
@@ -1594,6 +1624,7 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
         const target = nodes.get(reference.targetId);
         if (
           target &&
+          target.kind !== 'async-resource' &&
           target.kind !== 'cell' &&
           target.kind !== 'computed' &&
           target.kind !== 'constant' &&

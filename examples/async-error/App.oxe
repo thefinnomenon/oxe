@@ -1,0 +1,10 @@
+export App():
+  user = playground.loadUser(404)
+
+  <main>
+    <h1>Global async failure
+    <p>The failed value stays a safe pending placeholder, and private error text never enters the DOM.
+    <article>
+      <h2>{user.name}
+      <p>{user.role}
+    <p>Open the Playground runtime error panel to inspect the globally reported failure.

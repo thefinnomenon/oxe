@@ -119,6 +119,7 @@ const expressionLabel = (
 
 export const graphNodeLabel = (node: UiNodeV1, nodes: ReadonlyMap<NodeIdV1, UiNodeV1>): string => {
   switch (node.kind) {
+    case 'async-resource':
     case 'cell':
     case 'collection-item':
     case 'component':

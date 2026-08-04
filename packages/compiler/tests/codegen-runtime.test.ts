@@ -216,7 +216,130 @@ const childText = (parent: FakeNode, index: number): FakeText => {
   return child;
 };
 
+const settleAsync = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
 describe('generated counter with the OXE runtime', () => {
+  it('loads, deduplicates, refreshes, and binds async capability values granularly', async () => {
+    const source = `export App():
+  first = playground.loadUser(1)
+  second = playground.loadUser(1)
+  reload():
+    refresh(first)
+  <main>
+    <p>Static content
+    <p>{first.name}
+    <p>{second.email}
+    <button onClick={reload}>Reload
+`;
+    const analyzed = analyzeSource(source, 'async.oxe', 'async.oxe', {
+      capabilities: [
+        {
+          kind: 'async',
+          name: 'playground.loadUser',
+          parameters: ['number'],
+          returns: 'record',
+        },
+      ],
+    });
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+
+    const pending: {
+      resolve(value: { readonly email: string; readonly name: string }): void;
+      readonly signal: AbortSignal;
+    }[] = [];
+    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`, {
+      playground: {
+        loadUser: (_id: number, signal: AbortSignal) =>
+          new Promise<{ readonly email: string; readonly name: string }>((resolve) => {
+            pending.push({ resolve, signal });
+          }),
+      },
+    }) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => { mountApp(container: Node): dom.MountHandle };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node);
+    const main = childElement(container, 0, 'main');
+    const reload = childElement(main, 3, 'button');
+
+    await settleAsync();
+    expect(pending).toHaveLength(1);
+    expect(main.textContent).toContain('Static content');
+    expect(main.textContent).toContain('████████');
+
+    pending[0]?.resolve({ email: 'ada@example.test', name: 'Ada' });
+    await settleAsync();
+    expect(main.textContent).toBe('Static contentAdaada@example.testReload');
+
+    reload.emit('click');
+    await settleAsync();
+    expect(pending).toHaveLength(2);
+    expect(main.textContent).toBe('Static contentAdaada@example.testReload');
+    pending[1]?.resolve({ email: 'ada@new.test', name: 'Ada refreshed' });
+    await settleAsync();
+    expect(main.textContent).toBe('Static contentAda refreshedada@new.testReload');
+
+    mounted.unmount();
+    expect(container.childNodes).toEqual([]);
+  });
+
+  it('keeps static siblings visible while an async structural choice is pending', async () => {
+    const source = `export App():
+  user = playground.loadUser(1)
+  <main>
+    <p>Static content
+    ?
+      user.active ? <strong>Active account
+      : <em>Inactive account
+`;
+    const analyzed = analyzeSource(source, 'async-choice.oxe', 'async-choice.oxe', {
+      capabilities: [
+        {
+          kind: 'async',
+          name: 'playground.loadUser',
+          parameters: ['number'],
+          returns: 'record',
+        },
+      ],
+    });
+    if (!analyzed.graph) {
+      throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
+    }
+    let resolveUser: ((value: { readonly active: boolean }) => void) | undefined;
+    const generatedSource = generateDomFactorySource(analyzed.graph);
+    expect(generatedSource).toContain('createAsyncDerived(');
+    const createGenerated = runInNewContext(`(${generatedSource})`, {
+      playground: {
+        loadUser: () =>
+          new Promise<{ readonly active: boolean }>((resolve) => {
+            resolveUser = resolve;
+          }),
+      },
+    }) as (
+      runtimeApi: typeof runtime,
+      domApi: typeof dom,
+    ) => { mountApp(container: Node): dom.MountHandle };
+    const document = new FakeDocument();
+    const container = new FakeElement(document, 'container');
+    const mounted = createGenerated(runtime, dom).mountApp(container as unknown as Node);
+    const main = childElement(container, 0, 'main');
+
+    await settleAsync();
+    expect(main.textContent).toBe('Static content████████');
+    resolveUser?.({ active: true });
+    await settleAsync();
+    expect(main.textContent).toBe('Static contentActive account');
+
+    mounted.unmount();
+  });
+
   it('switches a conditional region incrementally and disposes the removed branch', () => {
     const source = `export App():
   visible = true
@@ -235,7 +358,12 @@ describe('generated counter with the OXE runtime', () => {
     if (!analyzed.graph) {
       throw new Error(`Expected a graph, received ${JSON.stringify(analyzed.diagnostics)}.`);
     }
-    const createGenerated = runInNewContext(`(${generateDomFactorySource(analyzed.graph)})`) as (
+    const generatedSource = generateDomFactorySource(analyzed.graph);
+    const conditional = analyzed.graph.nodes.find((node) => node.kind === 'conditional-region');
+    if (!conditional) throw new Error('Expected a conditional region.');
+    const hydrationId = encodeURIComponent(conditional.id).replaceAll('-', '%2D');
+    expect(generatedSource).toContain(`hydrationId: ${JSON.stringify(hydrationId)}`);
+    const createGenerated = runInNewContext(`(${generatedSource})`) as (
       runtimeApi: typeof runtime,
       domApi: typeof dom,
     ) => { mountApp(container: Node): dom.MountHandle };

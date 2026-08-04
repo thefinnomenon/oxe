@@ -1,6 +1,8 @@
 import * as runtimeDom from '@oxe/runtime-dom';
 import * as runtime from '@oxe/runtime';
 
+import type { PlaygroundCapabilitySet } from './demo-capabilities.js';
+
 import {
   OXE_PLAYGROUND_PROTOCOL_VERSION,
   isPreviewCommand,
@@ -29,7 +31,120 @@ let activeRunId: number | null = null;
 let commandSequence = 0;
 let mutationObserver: MutationObserver | undefined;
 let reactiveTraceSubscription: runtime.Disposable | undefined;
+let ownershipSubscription: runtime.Disposable | undefined;
 let counts: MutationCounts = emptyMutationCounts();
+
+interface DemoUser {
+  readonly active: boolean;
+  readonly avatar: string;
+  readonly email: string;
+  readonly name: string;
+  readonly request: number;
+  readonly role: string;
+  readonly updatedAt: string;
+}
+
+let demoRequestSequence = 0;
+
+const demoUsers = [
+  {
+    color: '#6857d9',
+    email: 'ada@example.test',
+    initials: 'AL',
+    name: 'Ada Lovelace',
+    role: 'Compiler engineer',
+  },
+  {
+    color: '#147d64',
+    email: 'grace@example.test',
+    initials: 'GH',
+    name: 'Grace Hopper',
+    role: 'Systems pioneer',
+  },
+  {
+    color: '#b45309',
+    email: 'margaret@example.test',
+    initials: 'MH',
+    name: 'Margaret Hamilton',
+    role: 'Reliability lead',
+  },
+  {
+    color: '#be3f5f',
+    email: 'radia@example.test',
+    initials: 'RP',
+    name: 'Radia Perlman',
+    role: 'Network architect',
+  },
+] as const;
+
+const avatarDataUrl = (initials: string, color: string): string => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="48" fill="${color}"/><text x="48" y="57" text-anchor="middle" font-family="system-ui,sans-serif" font-size="30" font-weight="700" fill="white">${initials}</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+};
+
+const loadDemoUser = (id: number, signal?: AbortSignal): Promise<DemoUser> => {
+  const request = ++demoRequestSequence;
+  const index = Math.abs(Math.trunc(id) - 1) % demoUsers.length;
+  const user = demoUsers[index] ?? demoUsers[0];
+  const delay = 650 + index * 180;
+  console.info(`async request #${request}: user ${id} (${delay}ms)`);
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('The async request was cancelled.', 'AbortError'));
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      console.info(`async response #${request}: ${user.name}`);
+      resolve({
+        active: true,
+        avatar: avatarDataUrl(user.initials, user.color),
+        email: user.email,
+        name: user.name,
+        request,
+        role: user.role,
+        updatedAt: new Date().toLocaleTimeString(),
+      });
+    }, delay);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        window.clearTimeout(timeout);
+        console.info(`async cancellation #${request}: user ${id}`);
+        reject(new DOMException('The async request was cancelled.', 'AbortError'));
+      },
+      { once: true },
+    );
+  });
+};
+
+const installDemoCapabilities = (set: PlaygroundCapabilitySet | undefined): void => {
+  demoRequestSequence = 0;
+  if (set !== 'async-users') {
+    Reflect.deleteProperty(globalThis, 'playground');
+    return;
+  }
+  Object.defineProperty(globalThis, 'playground', {
+    configurable: true,
+    value: Object.freeze({
+      listUserIds: (signal?: AbortSignal) =>
+        new Promise<readonly number[]>((resolve, reject) => {
+          const timeout = window.setTimeout(() => resolve([1, 2, 3]), 900);
+          signal?.addEventListener(
+            'abort',
+            () => {
+              window.clearTimeout(timeout);
+              reject(new DOMException('The async request was cancelled.', 'AbortError'));
+            },
+            { once: true },
+          );
+        }),
+      loadUser: (id: number, signal?: AbortSignal) =>
+        id === 404
+          ? Promise.reject(new runtime.OxeAsyncFailure('not-found', 'Demo user 404 was not found.'))
+          : loadDemoUser(id, signal),
+    }),
+  });
+};
 
 function emptyMutationCounts(): MutationCounts {
   return { addedNodes: 0, attributes: 0, characterData: 0, childList: 0, removedNodes: 0 };
@@ -139,8 +254,18 @@ const postMutations = (runId: number): void => {
   });
 };
 
-const observeReactivity = (runId: number): void => {
+const stopReactivity = (): void => {
   reactiveTraceSubscription?.dispose();
+  reactiveTraceSubscription = undefined;
+};
+
+const stopOwnership = (): void => {
+  ownershipSubscription?.dispose();
+  ownershipSubscription = undefined;
+};
+
+const observeReactivity = (runId: number): void => {
+  stopReactivity();
   reactiveTraceSubscription = runtime.subscribeReactiveTrace((event) => {
     if (activeRunId !== runId) {
       return;
@@ -150,6 +275,21 @@ const observeReactivity = (runId: number): void => {
       version: OXE_PLAYGROUND_PROTOCOL_VERSION,
       runId,
       event,
+    });
+  });
+};
+
+const observeOwnership = (runId: number): void => {
+  stopOwnership();
+  ownershipSubscription = runtime.subscribeOwnershipSnapshots((snapshot) => {
+    if (activeRunId !== runId) {
+      return;
+    }
+    postToParent({
+      type: 'preview:ownership',
+      version: OXE_PLAYGROUND_PROTOCOL_VERSION,
+      runId,
+      snapshot,
     });
   });
 };
@@ -213,13 +353,15 @@ const unmountActive = (runId: number | null): boolean => {
 
 const clearPreview = (command: PreviewCommand): void => {
   commandSequence += 1;
-  activeRunId = command.runId;
+  const previousRunId = activeRunId;
   mutationObserver?.disconnect();
   mutationObserver = undefined;
-  reactiveTraceSubscription?.dispose();
-  reactiveTraceSubscription = undefined;
-  unmountActive(command.runId);
+  unmountActive(previousRunId);
+  stopReactivity();
+  stopOwnership();
+  activeRunId = command.runId;
   previewRoot.replaceChildren();
+  observeOwnership(command.runId);
 };
 
 const inlineSourceMap = (
@@ -265,10 +407,14 @@ const mountPreview = async (
   command: Extract<PreviewCommand, { readonly type: 'preview:mount' }>,
 ): Promise<void> => {
   const sequence = ++commandSequence;
-  activeRunId = command.runId;
+  const previousRunId = activeRunId;
   mutationObserver?.disconnect();
-  unmountActive(command.runId);
+  unmountActive(previousRunId);
+  stopReactivity();
+  stopOwnership();
+  activeRunId = command.runId;
   previewRoot.replaceChildren();
+  observeOwnership(command.runId);
 
   let createGenerated: GeneratedFactory;
   try {
@@ -287,6 +433,8 @@ const mountPreview = async (
   if (sequence !== commandSequence) {
     return;
   }
+
+  installDemoCapabilities(command.capabilitySet);
 
   let generated: GeneratedExports;
   try {
@@ -310,7 +458,9 @@ const mountPreview = async (
   observeReactivity(command.runId);
   const startedAt = performance.now();
   try {
-    const result: unknown = mount(previewRoot);
+    const result: unknown = mount(previewRoot, {
+      onError: (error: unknown) => postError('runtime', error, command.runId),
+    });
     if (
       typeof result !== 'object' ||
       result === null ||
@@ -324,8 +474,7 @@ const mountPreview = async (
   } catch (error) {
     mutationObserver?.disconnect();
     mutationObserver = undefined;
-    reactiveTraceSubscription?.dispose();
-    reactiveTraceSubscription = undefined;
+    stopReactivity();
     postError('mount', error, command.runId);
     return;
   }

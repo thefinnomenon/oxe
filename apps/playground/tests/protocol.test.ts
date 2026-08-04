@@ -48,6 +48,8 @@ describe('playground message protocol', () => {
     };
 
     expect(isCompileRequest(request)).toBe(true);
+    expect(isCompileRequest({ ...request, capabilitySet: 'async-users' })).toBe(true);
+    expect(isCompileRequest({ ...request, capabilitySet: 'unknown' })).toBe(false);
     expect(isCompileRequest({ ...request, runId: -1 })).toBe(false);
     expect(isCompileRequest({ ...request, entryModuleId: undefined })).toBe(false);
     expect(isCompileRequest({ ...request, entryModuleId: 'playground/Missing.oxe' })).toBe(false);
@@ -64,8 +66,19 @@ describe('playground message protocol', () => {
         runId: 7,
         factorySource: '() => ({})',
         mountExport: 'mountApp',
+        capabilitySet: 'async-users',
       }),
     ).toBe(true);
+    expect(
+      isPreviewCommand({
+        type: 'preview:mount',
+        version: OXE_PLAYGROUND_PROTOCOL_VERSION,
+        runId: 7,
+        factorySource: '() => ({})',
+        mountExport: 'mountApp',
+        capabilitySet: 'unknown',
+      }),
+    ).toBe(false);
     expect(
       isPreviewCommand({
         type: 'preview:mount',
@@ -122,6 +135,42 @@ describe('playground message protocol', () => {
           reason: 'invalid path',
           source: { name: 'profile', path: [1] },
           timestamp: 12.5,
+        },
+      }),
+    ).toBe(false);
+
+    const ownershipEvent = {
+      type: 'preview:ownership',
+      version: OXE_PLAYGROUND_PROTOCOL_VERSION,
+      runId: 7,
+      snapshot: {
+        timestamp: 12.5,
+        summary: {
+          contexts: 0,
+          derived: 0,
+          owners: 1,
+          reactions: 0,
+          resources: 1,
+          roots: 1,
+        },
+        owners: [
+          {
+            childCount: 0,
+            id: 1,
+            kind: 'root',
+            name: 'DOM mount',
+            resources: [{ kind: 'event-listener', name: 'click' }],
+          },
+        ],
+      },
+    };
+    expect(isPreviewEvent(ownershipEvent)).toBe(true);
+    expect(
+      isPreviewEvent({
+        ...ownershipEvent,
+        snapshot: {
+          ...ownershipEvent.snapshot,
+          owners: [{ ...ownershipEvent.snapshot.owners[0], kind: 'unknown-owner' }],
         },
       }),
     ).toBe(false);

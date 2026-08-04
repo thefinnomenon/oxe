@@ -63,11 +63,12 @@ const isConstantRecord = (
 ): value is { readonly [name: string]: ConstantValueV1 } =>
   typeof value === 'object' && !Array.isArray(value);
 type SemanticDiagnosticCode = Extract<DiagnosticCode, `OXE2${string}`>;
-type ValueClassification = 'cell' | 'computed' | 'constant' | 'context' | 'resource';
+type ValueClassification =
+  'async-resource' | 'cell' | 'computed' | 'constant' | 'context' | 'resource';
 
 export interface PlatformCapabilityContract {
   readonly dispose?: 'dispose';
-  readonly kind: 'effect' | 'pure' | 'resource';
+  readonly kind: 'async' | 'effect' | 'pure' | 'resource';
   /** Dot-separated host path, for example analytics.identify. */
   readonly name: string;
   readonly parameters: readonly PrimitiveTypeV1[];
@@ -157,6 +158,8 @@ interface ComponentSymbols {
 
 interface ComponentInvocation {
   readonly arguments: ReadonlyMap<string, AttributeNode>;
+  /** Value props inside a map body are lowered later with the callback's lexical values. */
+  readonly deferredValueProps: boolean;
   readonly element: ElementNode;
   readonly owner: ComponentSymbols;
   readonly spreads: readonly SpreadAttributeNode[];
@@ -300,6 +303,15 @@ const createAnalysisState = (
         state,
         'OXE2008',
         `Resource capability "${contract.name}" must declare dispose: "dispose".`,
+        span,
+      );
+      continue;
+    }
+    if (contract.kind === 'async' && !contract.returns) {
+      report(
+        state,
+        'OXE2008',
+        `Async capability "${contract.name}" must declare a return type.`,
         span,
       );
       continue;
@@ -865,7 +877,11 @@ const classifyBindings = (
   };
 
   for (const binding of bindings.values()) {
-    if (binding.classification === 'context' || binding.classification === 'resource') {
+    if (
+      binding.classification === 'async-resource' ||
+      binding.classification === 'context' ||
+      binding.classification === 'resource'
+    ) {
       continue;
     }
     binding.classification =
@@ -922,6 +938,7 @@ const diagnoseCycles = (bindings: ReadonlyMap<string, BindingInfo>, state: Analy
     if (
       !binding ||
       binding.classification === 'cell' ||
+      binding.classification === 'async-resource' ||
       binding.classification === 'context' ||
       binding.classification === 'resource' ||
       !binding.expression
@@ -1827,7 +1844,7 @@ const addWriteEdges = (edges: UiEdgeV1[], procedure: ProcedureNodeV1): void => {
     { readonly path: readonly string[]; readonly span: GraphSpanV1 }[]
   >();
   for (const step of procedure.steps) {
-    if (step.kind === 'call') {
+    if (step.kind === 'call' || step.kind === 'refresh') {
       continue;
     }
     const sites = sitesByTarget.get(step.targetId) ?? [];
@@ -1852,6 +1869,15 @@ const addWriteEdges = (edges: UiEdgeV1[], procedure: ProcedureNodeV1): void => {
 const procedureStepExpressions = (step: ProcedureStepV1): readonly ValueExpressionV1[] => {
   if (step.kind === 'call') {
     return [step.expression];
+  }
+  if (step.kind === 'refresh') {
+    return [
+      {
+        kind: 'read',
+        span: step.span,
+        targetId: step.targetId,
+      },
+    ];
   }
   if (step.kind === 'write') {
     return [step.value];
@@ -2375,7 +2401,11 @@ const collectComponentInvocations = (
 ): readonly ComponentInvocation[] => {
   const invocations: ComponentInvocation[] = [];
 
-  const visitElement = (element: ElementNode, owner: ComponentSymbols): void => {
+  const visitElement = (
+    element: ElementNode,
+    owner: ComponentSymbols,
+    deferredValueProps = false,
+  ): void => {
     if (owner.contexts.has(element.name.name)) {
       const valueAttributes = element.attributes.filter(
         (attribute): attribute is AttributeNode =>
@@ -2411,11 +2441,11 @@ const collectComponentInvocations = (
       }
       for (const child of element.children) {
         if (child.kind === 'Element') {
-          visitElement(child, owner);
+          visitElement(child, owner, deferredValueProps);
         } else if (child.kind === 'ConditionalRegion') {
-          visitConditionalRegion(child, owner);
+          visitConditionalRegion(child, owner, deferredValueProps);
         } else if (child.kind === 'Interpolation' && child.expression.kind === 'MapExpression') {
-          visitElement(child.expression.body, owner);
+          visitElement(child.expression.body, owner, true);
         }
       }
       return;
@@ -2534,14 +2564,21 @@ const collectComponentInvocations = (
         );
       }
 
-      invocations.push({ arguments: argumentsByName, element, owner, spreads, target });
+      invocations.push({
+        arguments: argumentsByName,
+        deferredValueProps,
+        element,
+        owner,
+        spreads,
+        target,
+      });
       for (const child of element.children) {
         if (child.kind === 'Element') {
-          visitElement(child, owner);
+          visitElement(child, owner, deferredValueProps);
         } else if (child.kind === 'ConditionalRegion') {
-          visitConditionalRegion(child, owner);
+          visitConditionalRegion(child, owner, deferredValueProps);
         } else if (child.kind === 'Interpolation' && child.expression.kind === 'MapExpression') {
-          visitElement(child.expression.body, owner);
+          visitElement(child.expression.body, owner, true);
         }
       }
       return;
@@ -2557,21 +2594,25 @@ const collectComponentInvocations = (
     }
     for (const child of element.children) {
       if (child.kind === 'Element') {
-        visitElement(child, owner);
+        visitElement(child, owner, deferredValueProps);
       } else if (child.kind === 'ConditionalRegion') {
-        visitConditionalRegion(child, owner);
+        visitConditionalRegion(child, owner, deferredValueProps);
       } else if (child.kind === 'Interpolation' && child.expression.kind === 'MapExpression') {
-        visitElement(child.expression.body, owner);
+        visitElement(child.expression.body, owner, true);
       }
     }
   };
 
-  const visitConditionalRegion = (region: ConditionalRegionNode, owner: ComponentSymbols): void => {
+  const visitConditionalRegion = (
+    region: ConditionalRegionNode,
+    owner: ComponentSymbols,
+    deferredValueProps = false,
+  ): void => {
     for (const branch of region.branches) {
       const result =
         branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
       if (result.kind === 'Element') {
-        visitElement(result, owner);
+        visitElement(result, owner, deferredValueProps);
       }
     }
   };
@@ -2789,6 +2830,9 @@ const lowerInvocationValueProps = (
         (invocation.owner.procedures.has(attribute.value.name) ||
           invocation.owner.parameters.get(attribute.value.name)?.parameterKind === 'procedure');
       if (parameter.parameterKind === 'rest' && isProcedureCapability) {
+        continue;
+      }
+      if (invocation.deferredValueProps) {
         continue;
       }
       const value = lowerExpression(
@@ -3216,10 +3260,7 @@ const lowerTextGroup = (
         context.state,
       );
       if (expression) {
-        const type = inferStandaloneExpression(expression, context.valuesById, context.state);
-        if (type === 'unknown') {
-          continue;
-        }
+        inferStandaloneExpression(expression, context.valuesById, context.state);
         const resolved = evaluateResolvedConstant(expression, context.constantValues);
         if (typeof resolved === 'number' && !Number.isFinite(resolved)) {
           report(
@@ -3510,8 +3551,9 @@ const lowerKeyedCollection = (
       map.collection.span,
     );
   }
-  const itemType = inferArrayItemTypeWithoutDiagnostics(source, context.valuesById) ?? 'unknown';
-  if (itemType === 'unknown') {
+  const inferredItemType = inferArrayItemTypeWithoutDiagnostics(source, context.valuesById);
+  const itemType = inferredItemType ?? 'unknown';
+  if (!inferredItemType) {
     report(
       context.state,
       'OXE2015',
@@ -3703,9 +3745,7 @@ const lowerPlatformElement = (
     if (!expression) {
       continue;
     }
-    if (inferStandaloneExpression(expression, context.valuesById, context.state) === 'unknown') {
-      continue;
-    }
+    inferStandaloneExpression(expression, context.valuesById, context.state);
     const value = evaluateResolvedConstant(expression, context.constantValues);
     if (typeof value === 'number' && !Number.isFinite(value)) {
       report(
@@ -3866,7 +3906,20 @@ const lowerComponentInstance = (
     }
     const authoredMetadata = { authoredName: attribute.name.name, index };
     if (parameter.parameterKind === 'value' || parameter.parameterKind === 'rest') {
-      const prop = valueProps?.get(attribute);
+      const prelowered = valueProps?.get(attribute);
+      const value =
+        prelowered?.value ??
+        (invocation.deferredValueProps
+          ? lowerExpression(
+              attribute.value,
+              context.values,
+              `prop "${parameter.declaration.name}" passed to <${invocation.target.component.name.name}> inside ${context.scopeName}`,
+              context.state,
+            )
+          : undefined);
+      const prop = value
+        ? ({ attribute, invocation, parameter, value } satisfies LoweredValueProp)
+        : undefined;
       if (!prop) {
         if (parameter.parameterKind !== 'rest') {
           continue;
@@ -4121,7 +4174,10 @@ const analyzeComponent = (
           `Procedure write "${targetName ?? '<unknown>'}" must target a component value.`,
           statement.span,
         );
-      } else if (target.classification === 'resource') {
+      } else if (
+        target.classification === 'async-resource' ||
+        target.classification === 'resource'
+      ) {
         report(
           state,
           'OXE2008',
@@ -4157,7 +4213,17 @@ const analyzeComponent = (
       continue;
     }
 
-    if (binding.classification === 'resource' && binding.expression.kind === 'call') {
+    if (binding.classification === 'async-resource' && binding.expression.kind === 'call') {
+      nodes.push({
+        expression: binding.expression,
+        id: binding.id,
+        kind: 'async-resource',
+        name: binding.declaration.target.name,
+        span: graphSpan(binding.declaration.span),
+        type: binding.type,
+      });
+      addReadEdges(edges, binding.id, [binding.expression], 'reactive');
+    } else if (binding.classification === 'resource' && binding.expression.kind === 'call') {
       nodes.push({
         expression: binding.expression,
         id: binding.id,
@@ -4238,6 +4304,32 @@ const analyzeComponent = (
     }
     for (const statement of procedure.declaration.body) {
       if (statement.kind === 'ExpressionStatement') {
+        if (
+          statement.expression.kind === 'CallExpression' &&
+          statement.expression.callee.kind === 'Identifier' &&
+          statement.expression.callee.name === 'refresh'
+        ) {
+          const argument = statement.expression.arguments[0];
+          const target =
+            argument?.kind === 'Identifier' ? symbols.bindings.get(argument.name) : undefined;
+          if (statement.expression.arguments.length !== 1 || !argument) {
+            report(state, 'OXE2009', 'refresh() expects exactly one async value.', statement.span);
+          } else if (!target || target.classification !== 'async-resource') {
+            report(
+              state,
+              'OXE2008',
+              'refresh() must receive the name of a compiler-owned async value.',
+              argument.span,
+            );
+          } else {
+            steps.push({
+              kind: 'refresh',
+              span: graphSpan(statement.span),
+              targetId: target.id,
+            });
+          }
+          continue;
+        }
         const expression = lowerExpression(
           statement.expression,
           procedureValues,
@@ -4528,11 +4620,11 @@ const analyzeComponent = (
       (candidate) =>
         expression.callee.kind === 'capability-read' && candidate.id === expression.callee.targetId,
     );
-    if (platform?.contract.kind === 'pure') {
+    if (platform?.contract.kind === 'pure' || platform?.contract.kind === 'async') {
       report(
         state,
         'OXE2008',
-        `Pure capability "${platform.contract.name}" returns a value and cannot be used as a top-level effect.`,
+        `${platform.contract.kind === 'async' ? 'Async' : 'Pure'} capability "${platform.contract.name}" returns a value and cannot be used as a top-level effect.`,
         effect.span,
       );
       continue;
@@ -4992,7 +5084,14 @@ const analyzeComponentSet = (
         const platform = [...state.platformCapabilities.values()].find(
           (candidate) => candidate.id === capabilityTargetId,
         );
-        if (platform?.contract.kind === 'resource') {
+        if (platform?.contract.kind === 'async') {
+          binding.classification = 'async-resource';
+          if (platform.contract.returns === 'array') {
+            // Async contracts describe the collection boundary without requiring an
+            // application-wide schema for every row. Mark its item shape as opaque.
+            binding.itemType = 'unknown';
+          }
+        } else if (platform?.contract.kind === 'resource') {
           binding.classification = 'resource';
         } else if (platform?.contract.kind === 'effect') {
           report(

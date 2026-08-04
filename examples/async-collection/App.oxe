@@ -1,0 +1,15 @@
+export App():
+  userIds = playground.listUserIds()
+
+  <main>
+    <h1>Streaming async collection
+    <p>The static heading appears first, followed by one representative skeleton row.
+    <ul>
+      {userIds.map(id => <UserRow id={id}>)}
+
+UserRow(id = 1):
+  user = playground.loadUser(id)
+
+  <li>
+    <strong>{user.name}
+    <span>{user.role}

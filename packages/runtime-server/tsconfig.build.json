@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["tests/**/*.ts", "vitest.config.ts"],
+  "references": [
+    { "path": "../graph/tsconfig.build.json" },
+    { "path": "../runtime/tsconfig.build.json" }
+  ]
+}

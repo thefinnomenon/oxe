@@ -18,8 +18,23 @@ import expressionValuesSource from '../../../examples/expression-values/App.oxe?
 import keyedCollectionSource from '../../../examples/keyed-collection/App.oxe?raw';
 import staticSource from '../../../examples/static/App.oxe?raw';
 import untrackSnapshotSource from '../../../examples/untrack-snapshot/App.oxe?raw';
+import asyncDedupeSource from '../../../examples/async-dedupe/App.oxe?raw';
+import asyncGranularSource from '../../../examples/async-granular/App.oxe?raw';
+import asyncIdentityRefreshSource from '../../../examples/async-identity-refresh/App.oxe?raw';
+import asyncPropsSource from '../../../examples/async-props/App.oxe?raw';
+import asyncStructuralSource from '../../../examples/async-structural/App.oxe?raw';
+import asyncCollectionSource from '../../../examples/async-collection/App.oxe?raw';
+import asyncErrorSource from '../../../examples/async-error/App.oxe?raw';
 
-export const exampleGroups = ['Basics', 'Components', 'Reactivity', 'Diagnostics'] as const;
+import type { PlaygroundCapabilitySet } from './demo-capabilities.js';
+
+export const exampleGroups = [
+  'Basics',
+  'Async data',
+  'Components',
+  'Reactivity',
+  'Diagnostics',
+] as const;
 
 export type ExampleGroup = (typeof exampleGroups)[number];
 
@@ -29,6 +44,7 @@ export interface PlaygroundFile {
 }
 
 export interface PlaygroundExample {
+  readonly capabilitySet?: PlaygroundCapabilitySet;
   readonly description: string;
   readonly entryExport: string;
   readonly entryModuleId: string;
@@ -46,6 +62,7 @@ const singleFileExample = (
   label: example.label,
   group: example.group,
   description: example.description,
+  ...(example.capabilitySet ? { capabilitySet: example.capabilitySet } : {}),
   ...(example.intentionallyInvalid === undefined
     ? {}
     : { intentionallyInvalid: example.intentionallyInvalid }),
@@ -55,6 +72,71 @@ const singleFileExample = (
 });
 
 export const examples: readonly PlaygroundExample[] = [
+  singleFileExample({
+    id: 'async-structural',
+    label: 'Localized loading skeleton',
+    group: 'Async data',
+    description: 'Only the async structural consumer receives a compiler-derived inert skeleton.',
+    moduleId: 'examples/async-structural/App.oxe',
+    source: asyncStructuralSource,
+    capabilitySet: 'async-users',
+  }),
+  singleFileExample({
+    id: 'async-collection',
+    label: 'Async collection rows',
+    group: 'Async data',
+    description:
+      'An async keyed collection starts with one skeleton row, then creates row-local requests.',
+    moduleId: 'examples/async-collection/App.oxe',
+    source: asyncCollectionSource,
+    capabilitySet: 'async-users',
+  }),
+  singleFileExample({
+    id: 'async-error',
+    label: 'Global async error',
+    group: 'Async data',
+    description: 'Failures report globally without rendering private Error strings into content.',
+    moduleId: 'examples/async-error/App.oxe',
+    source: asyncErrorSource,
+    capabilitySet: 'async-users',
+  }),
+  singleFileExample({
+    id: 'async-granular',
+    label: 'Granular async fields',
+    group: 'Async data',
+    description:
+      'Static UI appears immediately while only async field consumers show placeholders.',
+    moduleId: 'examples/async-granular/App.oxe',
+    source: asyncGranularSource,
+    capabilitySet: 'async-users',
+  }),
+  singleFileExample({
+    id: 'async-dedupe',
+    label: 'Shared request dedupe',
+    group: 'Async data',
+    description: 'Equal capability identities share one request across disconnected consumers.',
+    moduleId: 'examples/async-dedupe/App.oxe',
+    source: asyncDedupeSource,
+    capabilitySet: 'async-users',
+  }),
+  singleFileExample({
+    id: 'async-identity-refresh',
+    label: 'Identity and refresh',
+    group: 'Async data',
+    description: 'Identity changes cancel stale work; refresh retains the previous ready value.',
+    moduleId: 'examples/async-identity-refresh/App.oxe',
+    source: asyncIdentityRefreshSource,
+    capabilitySet: 'async-users',
+  }),
+  singleFileExample({
+    id: 'async-props',
+    label: 'Async component props',
+    group: 'Async data',
+    description: 'Async lineage crosses component props without an authored resource wrapper.',
+    moduleId: 'examples/async-props/App.oxe',
+    source: asyncPropsSource,
+    capabilitySet: 'async-users',
+  }),
   singleFileExample({
     id: 'conditional-region',
     label: 'Conditional region',

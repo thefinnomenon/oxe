@@ -1,0 +1,11 @@
+export App():
+  user = playground.loadUser(1)
+
+  <main>
+    <h1>Granular async rendering
+    <p>This introduction is static, so it appears without waiting for the profile.
+    <section>
+      <img src={user.avatar} alt={"Profile avatar"}>
+      <h2>{user.name}
+      <p>{user.role}
+    <footer>Only the avatar, name, and role above depend on the request.

@@ -1,0 +1,16 @@
+export App():
+  user = playground.loadUser(3)
+
+  <main>
+    <h1>Async values through components
+    <p>The parent passes a plain-looking value and async ownership stays compiler-managed.
+    <UserCard user={user}>
+    <footer>The component receives field-granular async dependencies without an authored wrapper.
+
+UserCard(user):
+  displayName = user.name
+
+  <article>
+    <img src={user.avatar} alt={"Profile avatar"}>
+    <h2>{displayName}
+    <p>{user.email}

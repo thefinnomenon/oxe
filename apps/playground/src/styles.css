@@ -682,6 +682,7 @@ button {
 .diagnostic-list,
 .console-list,
 .trace-list,
+.ownership-list,
 .graph-node-list {
   display: grid;
   gap: 0.55rem;
@@ -756,7 +757,8 @@ button {
 }
 
 .console-row,
-.trace-row {
+.trace-row,
+.ownership-row {
   padding: 0.6rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: 0.55rem;
@@ -764,6 +766,65 @@ button {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.72rem;
   line-height: 1.45;
+}
+
+.ownership-row {
+  margin-left: calc(var(--ownership-depth, 0) * min(1.1rem, 3vw));
+  padding: 0;
+}
+
+.ownership-card {
+  display: block;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: 0;
+  border-radius: inherit;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+button.ownership-card {
+  cursor: pointer;
+}
+
+button.ownership-card:hover,
+button.ownership-card:focus-visible {
+  background: var(--panel-raised);
+}
+
+.ownership-heading {
+  display: flex;
+  gap: 0.55rem;
+  align-items: baseline;
+}
+
+.ownership-kind,
+.ownership-count {
+  color: var(--muted);
+  font-size: 0.67rem;
+}
+
+.ownership-kind {
+  min-width: 4rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.ownership-count {
+  margin-left: auto;
+}
+
+.ownership-resources {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0.45rem 0 0 4.55rem;
+  padding: 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.67rem;
+  list-style: none;
 }
 
 .trace-row {

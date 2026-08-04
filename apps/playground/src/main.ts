@@ -1,5 +1,5 @@
 import type { NodeIdV1, UiGraphV1 } from '@oxe/graph';
-import type { ReactiveTraceEvent } from '@oxe/runtime';
+import type { OwnershipOwnerSnapshot, OwnershipSnapshot, ReactiveTraceEvent } from '@oxe/runtime';
 
 import {
   defaultExample,
@@ -35,6 +35,7 @@ type OutputTab =
   | 'diagnostics'
   | 'console'
   | 'reactivity'
+  | 'ownership'
   | 'generated'
   | 'graph'
   | 'ast'
@@ -57,6 +58,7 @@ const tabs: readonly { readonly id: OutputTab; readonly label: string }[] = [
   { id: 'diagnostics', label: 'Diagnostics' },
   { id: 'console', label: 'Console' },
   { id: 'reactivity', label: 'Reactivity' },
+  { id: 'ownership', label: 'Ownership' },
   { id: 'generated', label: 'Generated JS' },
   { id: 'graph', label: 'Graph' },
   { id: 'ast', label: 'AST' },
@@ -218,6 +220,19 @@ applicationRoot.innerHTML = `
             </div>
           </section>
 
+          <section class="output-pane" id="pane-ownership" role="tabpanel">
+            <div class="pane-scroll">
+              <div class="pane-toolbar">
+                <div>
+                  <h2 class="pane-title">Live ownership</h2>
+                  <span class="pane-hint">Owners and cleanup-bound resources retained by the current preview. Both counts should return to zero after unmount.</span>
+                </div>
+              </div>
+              <div class="ownership-summary metrics-grid" id="ownership-summary"></div>
+              <ol class="ownership-list" id="ownership-list" aria-live="polite"></ol>
+            </div>
+          </section>
+
           <section class="output-pane" id="pane-generated" role="tabpanel">
             <pre class="code-output" id="generated-output" tabindex="0"></pre>
           </section>
@@ -311,6 +326,8 @@ const consoleList = requireElement('#console-list', HTMLOListElement);
 const clearConsoleButton = requireElement('#clear-console-button', HTMLButtonElement);
 const reactivityList = requireElement('#reactivity-list', HTMLOListElement);
 const clearReactivityButton = requireElement('#clear-reactivity-button', HTMLButtonElement);
+const ownershipSummary = requireElement('#ownership-summary', HTMLDivElement);
+const ownershipList = requireElement('#ownership-list', HTMLOListElement);
 const generatedOutput = requireElement('#generated-output', HTMLPreElement);
 const graphSummary = requireElement('#graph-summary', HTMLDivElement);
 const graphNodeList = requireElement('#graph-node-list', HTMLOListElement);
@@ -381,6 +398,7 @@ let mountMilliseconds: number | undefined;
 let mutations = emptyMutations();
 let consoleEvents: PreviewConsoleEvent[] = [];
 let reactivityEvents: ReactiveTraceEvent[] = [];
+let ownership: OwnershipSnapshot | undefined;
 let previewErrors: PreviewErrorEvent[] = [];
 let sizeRequestSequence = 0;
 let sizeState: SizeState = { exact: false, status: 'idle' };
@@ -535,6 +553,10 @@ const updateTabCounts = (): void => {
   const reactivityCountElement = document.querySelector('[data-tab-count="reactivity"]');
   if (reactivityCountElement) {
     reactivityCountElement.textContent = String(reactivityEvents.length);
+  }
+  const ownershipCountElement = document.querySelector('[data-tab-count="ownership"]');
+  if (ownershipCountElement) {
+    ownershipCountElement.textContent = String(ownership?.summary.owners ?? 0);
   }
 };
 
@@ -757,6 +779,99 @@ const renderReactivity = (): void => {
     card.append(heading, reason, source);
     item.append(card);
     reactivityList.append(item);
+  }
+  updateTabCounts();
+};
+
+const ownershipDepth = (
+  owner: OwnershipOwnerSnapshot,
+  ownersById: ReadonlyMap<number, OwnershipOwnerSnapshot>,
+): number => {
+  let depth = 0;
+  let parentId = owner.parentId;
+  const visited = new Set<number>();
+  while (parentId !== undefined && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = ownersById.get(parentId);
+    if (!parent) {
+      break;
+    }
+    depth += 1;
+    parentId = parent.parentId;
+  }
+  return depth;
+};
+
+const renderOwnership = (): void => {
+  ownershipSummary.replaceChildren();
+  ownershipList.replaceChildren();
+  const summary = ownership?.summary;
+  ownershipSummary.append(
+    createMetric('Live owners', String(summary?.owners ?? 0)),
+    createMetric('Resources', String(summary?.resources ?? 0)),
+    createMetric('Roots', String(summary?.roots ?? 0)),
+    createMetric('Reactions', String(summary?.reactions ?? 0)),
+  );
+
+  if (!ownership || ownership.owners.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'empty-state';
+    empty.textContent = ownership
+      ? 'No live owners or cleanup-bound resources. The previous preview released its ownership tree.'
+      : 'The preview has not reported its ownership tree yet.';
+    ownershipList.append(empty);
+    updateTabCounts();
+    return;
+  }
+
+  const ownersById = new Map(ownership.owners.map((owner) => [owner.id, owner]));
+  const graph = currentResult?.graphJson ? parseGraph(currentResult.graphJson) : undefined;
+  for (const owner of ownership.owners) {
+    const item = document.createElement('li');
+    item.className = 'ownership-row';
+    item.style.setProperty('--ownership-depth', String(ownershipDepth(owner, ownersById)));
+    const target = owner.traceId
+      ? graph?.nodes.find((node) => node.id === owner.traceId)
+      : undefined;
+    const card: HTMLButtonElement | HTMLDivElement = target
+      ? document.createElement('button')
+      : document.createElement('div');
+    card.className = 'ownership-card';
+    if (card instanceof HTMLButtonElement && target) {
+      card.type = 'button';
+      card.addEventListener('click', () => {
+        selectedGraphNodeId = target.id;
+        showTab('graph');
+        renderGraph();
+        revealSpan(target.span.fileName, target.span.start.offset, target.span.end.offset);
+      });
+    }
+
+    const heading = document.createElement('div');
+    heading.className = 'ownership-heading';
+    const kind = document.createElement('span');
+    kind.className = 'ownership-kind';
+    kind.textContent = owner.kind;
+    const name = document.createElement('strong');
+    name.textContent = owner.name;
+    const children = document.createElement('span');
+    children.className = 'ownership-count';
+    children.textContent = `${owner.childCount} child${owner.childCount === 1 ? '' : 'ren'}`;
+    heading.append(kind, name, children);
+    card.append(heading);
+
+    if (owner.resources.length > 0) {
+      const resources = document.createElement('ul');
+      resources.className = 'ownership-resources';
+      for (const resource of owner.resources) {
+        const resourceItem = document.createElement('li');
+        resourceItem.textContent = `${resource.kind} · ${resource.name}`;
+        resources.append(resourceItem);
+      }
+      card.append(resources);
+    }
+    item.append(card);
+    ownershipList.append(item);
   }
   updateTabCounts();
 };
@@ -1176,6 +1291,7 @@ const measureSize = async (
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        ...(selectedExample.capabilitySet ? { capabilitySet: selectedExample.capabilitySet } : {}),
         entryModuleId: selectedExample.entryModuleId,
         entryExport: selectedExample.entryExport,
         files,
@@ -1210,6 +1326,7 @@ const postPreviewMount = (result: CompileResult): void => {
       type: 'preview:mount',
       version: OXE_PLAYGROUND_PROTOCOL_VERSION,
       runId: result.runId,
+      ...(selectedExample.capabilitySet ? { capabilitySet: selectedExample.capabilitySet } : {}),
       factorySource: result.factorySource,
       ...(result.factorySourceMap ? { factorySourceMap: result.factorySourceMap } : {}),
       mountExport: result.mountExport,
@@ -1288,7 +1405,9 @@ const handleCompileResult = (result: CompileResult): void => {
   mountMilliseconds = undefined;
   mutations = emptyMutations();
   reactivityEvents = [];
+  ownership = undefined;
   renderReactivity();
+  renderOwnership();
   mountTime.textContent = 'Mount —';
   mutationStatus.textContent = 'DOM mutations —';
   setCompileTone('success', 'Compiled');
@@ -1323,6 +1442,7 @@ const compileSource = (): void => {
     type: 'compile',
     version: OXE_PLAYGROUND_PROTOCOL_VERSION,
     runId,
+    ...(selectedExample.capabilitySet ? { capabilitySet: selectedExample.capabilitySet } : {}),
     entryModuleId: selectedExample.entryModuleId,
     entryExport: selectedExample.entryExport,
     files: currentProjectFiles(),
@@ -1367,6 +1487,7 @@ const loadExample = (example: PlaygroundExample): void => {
   mutations = emptyMutations();
   consoleEvents = [];
   reactivityEvents = [];
+  ownership = undefined;
   previewErrors = [];
   generatedOutput.textContent = '';
   graphOutput.textContent = '';
@@ -1383,6 +1504,7 @@ const loadExample = (example: PlaygroundExample): void => {
   renderDiagnostics();
   renderConsole();
   renderReactivity();
+  renderOwnership();
   renderGraph();
   renderSize();
   updateSizeShortcut();
@@ -1426,6 +1548,7 @@ const createDebugReport = (): string => {
     previewErrors,
     console: consoleEvents,
     reactivity: reactivityEvents,
+    ownership,
     size: sizeState,
     graph: currentResult?.graphJson ? JSON.parse(currentResult.graphJson) : undefined,
     generatedJavaScript: currentResult?.moduleSource,
@@ -1446,7 +1569,12 @@ for (const tab of tabs) {
   const label = document.createElement('span');
   label.textContent = tab.label;
   button.append(label);
-  if (tab.id === 'diagnostics' || tab.id === 'console' || tab.id === 'reactivity') {
+  if (
+    tab.id === 'diagnostics' ||
+    tab.id === 'console' ||
+    tab.id === 'reactivity' ||
+    tab.id === 'ownership'
+  ) {
     const count = document.createElement('span');
     count.className = 'tab-count';
     count.dataset.tabCount = tab.id;
@@ -1521,6 +1649,13 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       }
       reactivityEvents = [...reactivityEvents.slice(-499), event.data.event];
       renderReactivity();
+      break;
+    case 'preview:ownership':
+      if (event.data.runId !== (lastSuccessfulResult?.runId ?? latestRequestedRunId)) {
+        return;
+      }
+      ownership = event.data.snapshot;
+      renderOwnership();
       break;
     case 'preview:error':
       if (event.data.runId !== null && event.data.runId !== lastSuccessfulResult?.runId) {

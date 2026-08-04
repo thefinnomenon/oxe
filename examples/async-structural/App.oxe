@@ -1,0 +1,13 @@
+export App():
+  user = playground.loadUser(1)
+
+  <main>
+    <h1>Localized structural loading
+    <p>This introduction renders immediately. Only the choice below gets a skeleton.
+    <section>
+      ?
+        user.active ? <article>
+          <h2>{user.name}
+          <p>{user.role}
+        : <p>Account unavailable
+    <footer>The compiler derives the pending geometry from one inert branch.

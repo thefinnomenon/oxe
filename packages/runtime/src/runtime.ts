@@ -3,18 +3,31 @@ import { OxeRuntimeError } from './errors.js';
 const MAX_FLUSH_RUNS = 100_000;
 const CONTEXT_VALUE: unique symbol = Symbol('OXE_CONTEXT_VALUE');
 const REACTIVE_SOURCE: unique symbol = Symbol('OXE_REACTIVE_SOURCE');
+const ASYNC_RESOURCE: unique symbol = Symbol('OXE_ASYNC_RESOURCE');
 
 type Cleanup = () => void;
 type ComputationState = 'clean' | 'disposed' | 'running' | 'stale';
 type Equality<T> = (previous: T, next: T) => boolean;
 
+export type OwnershipOwnerKind = 'context' | 'derived' | 'reaction' | 'root';
+export type OwnershipResourceKind = 'cleanup' | 'event-listener' | 'keyed-region' | 'resource';
+
+interface CleanupEntry {
+  readonly cleanup: Cleanup;
+  readonly kind: OwnershipResourceKind;
+  readonly name: string;
+}
+
 interface OwnerNode {
   readonly name: string;
   readonly parent: OwnerNode | undefined;
   readonly children: Set<OwnerNode>;
-  readonly cleanups: Cleanup[];
+  readonly cleanups: CleanupEntry[];
+  readonly ownerKind: OwnershipOwnerKind;
+  readonly traceId: string | undefined;
   contexts: Map<symbol, unknown> | undefined;
   disposed: boolean;
+  inspectionId: number | undefined;
 }
 
 interface SourceNode {
@@ -65,6 +78,89 @@ export interface Readable<T> {
   read(): T;
 }
 
+export type AsyncFailureKind =
+  'forbidden' | 'not-found' | 'unauthorized' | 'unexpected' | 'validation';
+
+export class OxeAsyncPending extends Error {
+  public readonly identity: string;
+
+  public constructor(identity: string) {
+    super(`Async resource "${identity}" is pending.`);
+    this.name = 'OxeAsyncPending';
+    this.identity = identity;
+  }
+}
+
+export class OxeAsyncFailure extends Error {
+  public readonly details: unknown;
+  public readonly kind: AsyncFailureKind;
+  public readonly status: number;
+
+  public constructor(
+    kind: AsyncFailureKind,
+    message: string,
+    options: {
+      readonly cause?: unknown;
+      readonly details?: unknown;
+      readonly status?: number;
+    } = {},
+  ) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
+    this.name = 'OxeAsyncFailure';
+    this.kind = kind;
+    this.status =
+      options.status ??
+      (kind === 'not-found'
+        ? 404
+        : kind === 'unauthorized'
+          ? 401
+          : kind === 'forbidden'
+            ? 403
+            : kind === 'validation'
+              ? 400
+              : 500);
+    this.details = options.details;
+  }
+}
+
+export type AsyncResourceSnapshot<T> =
+  | {
+      readonly identity: string;
+      readonly status: 'pending';
+    }
+  | {
+      readonly identity: string;
+      readonly status: 'ready' | 'refreshing';
+      readonly value: T;
+    }
+  | {
+      readonly error: unknown;
+      readonly identity: string;
+      readonly status: 'failed';
+    };
+
+export interface AsyncReadable<T> extends Readable<T> {
+  readonly [ASYNC_RESOURCE]: true;
+  refresh(): void;
+  snapshot(): AsyncResourceSnapshot<T>;
+}
+
+export interface AsyncResourceCheckpoint {
+  readonly identity: string;
+  readonly value: unknown;
+}
+
+export interface AsyncResourceCoordinator extends Disposable {
+  checkpoints(): readonly AsyncResourceCheckpoint[];
+  hydrate(checkpoints: readonly AsyncResourceCheckpoint[]): void;
+}
+
+export interface AsyncResourceOptions extends NamedOptions {
+  readonly capability: string;
+  readonly coordinator: AsyncResourceCoordinator;
+  readonly scope?: string;
+}
+
 export interface Cell<T> extends Readable<T> {
   write(next: T): T;
   writePath(path: readonly string[], next: unknown): T;
@@ -109,7 +205,36 @@ export interface ReactiveTraceEvent {
   readonly timestamp: number;
 }
 
+export interface OwnershipResourceSnapshot {
+  readonly kind: OwnershipResourceKind;
+  readonly name: string;
+}
+
+export interface OwnershipOwnerSnapshot {
+  readonly childCount: number;
+  readonly id: number;
+  readonly kind: OwnershipOwnerKind;
+  readonly name: string;
+  readonly parentId?: number;
+  readonly resources: readonly OwnershipResourceSnapshot[];
+  readonly traceId?: string;
+}
+
+export interface OwnershipSnapshot {
+  readonly owners: readonly OwnershipOwnerSnapshot[];
+  readonly summary: {
+    readonly contexts: number;
+    readonly derived: number;
+    readonly owners: number;
+    readonly reactions: number;
+    readonly resources: number;
+    readonly roots: number;
+  };
+  readonly timestamp: number;
+}
+
 export type ReactiveTraceListener = (event: ReactiveTraceEvent) => void;
+export type OwnershipSnapshotListener = (snapshot: OwnershipSnapshot) => void;
 
 export interface CellOptions<T> extends NamedOptions {
   readonly equals?: Equality<T>;
@@ -119,12 +244,281 @@ export interface DerivedOptions<T> extends NamedOptions {
   readonly equals?: Equality<T>;
 }
 
+export interface CleanupOptions {
+  readonly kind?: OwnershipResourceKind;
+  readonly name?: string;
+}
+
+interface AsyncCoordinatorEntry {
+  controller: AbortController | undefined;
+  generation: number;
+  readonly identity: string;
+  load: ((signal: AbortSignal) => unknown | PromiseLike<unknown>) | undefined;
+  readonly listeners: Set<(snapshot: AsyncResourceSnapshot<unknown>) => void>;
+  snapshot: AsyncResourceSnapshot<unknown>;
+}
+
+interface AsyncCoordinatorState {
+  disposed: boolean;
+  readonly entries: Map<string, AsyncCoordinatorEntry>;
+}
+
+const asyncCoordinatorStates = new WeakMap<AsyncResourceCoordinator, AsyncCoordinatorState>();
+
+const canonicalAsyncValue = (value: unknown, seen: Set<object>): string => {
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'boolean' || typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new TypeError('Async resource identity numbers must be finite.');
+    }
+    return Object.is(value, -0) ? '0' : JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      throw new TypeError('Async resource identities cannot contain cycles.');
+    }
+    seen.add(value);
+    const result = `[${value.map((item) => canonicalAsyncValue(item, seen)).join(',')}]`;
+    seen.delete(value);
+    return result;
+  }
+  if (typeof value === 'object') {
+    if (seen.has(value)) {
+      throw new TypeError('Async resource identities cannot contain cycles.');
+    }
+    seen.add(value);
+    const record = value as Record<string, unknown>;
+    const fields = Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalAsyncValue(record[key], seen)}`);
+    seen.delete(value);
+    return `{${fields.join(',')}}`;
+  }
+  throw new TypeError(`Async resource identities cannot contain ${typeof value} values.`);
+};
+
+/** Produces the deterministic capability + arguments + security-scope identity used for sharing. */
+export const asyncResourceIdentity = (
+  capability: string,
+  arguments_: readonly unknown[],
+  scope = 'default',
+): string =>
+  `${scope.length}:${scope}|${capability.length}:${capability}|${canonicalAsyncValue(arguments_, new Set())}`;
+
+const coordinatorState = (coordinator: AsyncResourceCoordinator): AsyncCoordinatorState => {
+  const state = asyncCoordinatorStates.get(coordinator);
+  if (!state || state.disposed) {
+    throw new OxeRuntimeError(
+      'OXE_RUNTIME_INVALID_ASYNC_COORDINATOR',
+      'Async resource coordinator is missing or disposed.',
+    );
+  }
+  return state;
+};
+
+const reportAsyncListenerErrors = (errors: readonly unknown[]): void => {
+  if (errors.length === 0) {
+    return;
+  }
+  queueMicrotask(() => {
+    throw errors.length === 1
+      ? errors[0]
+      : new AggregateError(errors, 'Multiple async resource consumers failed while updating.');
+  });
+};
+
+const publishAsyncEntry = (entry: AsyncCoordinatorEntry): void => {
+  const errors: unknown[] = [];
+  for (const listener of entry.listeners) {
+    try {
+      listener(entry.snapshot);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  reportAsyncListenerErrors(errors);
+};
+
+const isAbortFailure = (error: unknown): boolean =>
+  error instanceof DOMException
+    ? error.name === 'AbortError'
+    : typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
+
+const startAsyncEntry = (state: AsyncCoordinatorState, entry: AsyncCoordinatorEntry): void => {
+  const load = entry.load;
+  if (!load || state.disposed || entry.listeners.size === 0) {
+    return;
+  }
+  entry.controller?.abort();
+  const controller = new AbortController();
+  const generation = entry.generation + 1;
+  entry.controller = controller;
+  entry.generation = generation;
+  entry.snapshot =
+    entry.snapshot.status === 'ready' || entry.snapshot.status === 'refreshing'
+      ? {
+          identity: entry.identity,
+          status: 'refreshing',
+          value: entry.snapshot.value,
+        }
+      : { identity: entry.identity, status: 'pending' };
+  publishAsyncEntry(entry);
+
+  void Promise.resolve()
+    .then(() => load(controller.signal))
+    .then(
+      (value) => {
+        if (
+          state.disposed ||
+          controller.signal.aborted ||
+          entry.generation !== generation ||
+          state.entries.get(entry.identity) !== entry
+        ) {
+          return;
+        }
+        entry.controller = undefined;
+        entry.snapshot = { identity: entry.identity, status: 'ready', value };
+        publishAsyncEntry(entry);
+      },
+      (error: unknown) => {
+        if (
+          state.disposed ||
+          controller.signal.aborted ||
+          isAbortFailure(error) ||
+          entry.generation !== generation ||
+          state.entries.get(entry.identity) !== entry
+        ) {
+          return;
+        }
+        entry.controller = undefined;
+        entry.snapshot = { error, identity: entry.identity, status: 'failed' };
+        publishAsyncEntry(entry);
+      },
+    );
+};
+
+/** Creates an ownership-neutral request table; generated application roots share one instance. */
+export const createAsyncResourceCoordinator = (): AsyncResourceCoordinator => {
+  const state: AsyncCoordinatorState = { disposed: false, entries: new Map() };
+  const coordinator: AsyncResourceCoordinator = {
+    checkpoints: () =>
+      [...state.entries.values()]
+        .filter(
+          (
+            entry,
+          ): entry is AsyncCoordinatorEntry & {
+            snapshot: Extract<AsyncResourceSnapshot<unknown>, { status: 'ready' | 'refreshing' }>;
+          } => entry.snapshot.status === 'ready' || entry.snapshot.status === 'refreshing',
+        )
+        .map((entry) => ({ identity: entry.identity, value: entry.snapshot.value }))
+        .sort((left, right) => left.identity.localeCompare(right.identity)),
+    hydrate: (checkpoints) => {
+      if (state.disposed) {
+        throw new OxeRuntimeError(
+          'OXE_RUNTIME_INVALID_ASYNC_COORDINATOR',
+          'Cannot hydrate a disposed async resource coordinator.',
+        );
+      }
+      for (const checkpoint of checkpoints) {
+        if (state.entries.has(checkpoint.identity)) {
+          continue;
+        }
+        state.entries.set(checkpoint.identity, {
+          controller: undefined,
+          generation: 0,
+          identity: checkpoint.identity,
+          listeners: new Set(),
+          load: undefined,
+          snapshot: {
+            identity: checkpoint.identity,
+            status: 'ready',
+            value: checkpoint.value,
+          },
+        });
+      }
+    },
+    dispose: () => {
+      if (state.disposed) {
+        return;
+      }
+      state.disposed = true;
+      for (const entry of state.entries.values()) {
+        entry.controller?.abort();
+        entry.listeners.clear();
+      }
+      state.entries.clear();
+    },
+  };
+  asyncCoordinatorStates.set(coordinator, state);
+  return coordinator;
+};
+
+interface AsyncAcquisition {
+  refresh(): void;
+  release(): void;
+}
+
+const acquireAsyncResource = (
+  coordinator: AsyncResourceCoordinator,
+  identity: string,
+  load: (signal: AbortSignal) => unknown | PromiseLike<unknown>,
+  listener: (snapshot: AsyncResourceSnapshot<unknown>) => void,
+): AsyncAcquisition => {
+  const state = coordinatorState(coordinator);
+  let entry = state.entries.get(identity);
+  if (!entry) {
+    entry = {
+      controller: undefined,
+      generation: 0,
+      identity,
+      listeners: new Set(),
+      load,
+      snapshot: { identity, status: 'pending' },
+    };
+    state.entries.set(identity, entry);
+  } else {
+    entry.load = load;
+  }
+  entry.listeners.add(listener);
+  listener(entry.snapshot);
+  if (entry.snapshot.status === 'pending' && !entry.controller) {
+    startAsyncEntry(state, entry);
+  }
+  let released = false;
+  return {
+    refresh: () => {
+      if (!released && entry && entry.listeners.size > 0) {
+        startAsyncEntry(state, entry);
+      }
+    },
+    release: () => {
+      if (released || !entry) {
+        return;
+      }
+      released = true;
+      entry.listeners.delete(listener);
+      if (entry.listeners.size === 0) {
+        entry.controller?.abort();
+        state.entries.delete(identity);
+      }
+    },
+  };
+};
+
 let activeOwner: OwnerNode | undefined;
 let batchDepth = 0;
 let flushing = false;
 const pendingReactions: ComputationNode[] = [];
 const ownerScopes = new WeakMap<OwnerScope, OwnerNode>();
 const reactiveTraceListeners = new Set<ReactiveTraceListener>();
+const ownershipSnapshotListeners = new Set<OwnershipSnapshotListener>();
+const inspectedOwners = new Map<number, OwnerNode>();
+let nextInspectionId = 1;
 
 const sourceTrace = (source: SourceNode): ReactiveTraceSource => ({
   ...(source.traceId ? { id: source.traceId } : {}),
@@ -151,13 +545,99 @@ export const subscribeReactiveTrace = (listener: ReactiveTraceListener): Disposa
   return { dispose: () => reactiveTraceListeners.delete(listener) };
 };
 
-const createOwnerNode = (name: string, parent: OwnerNode | undefined): OwnerNode => ({
+const ownershipSnapshot = (): OwnershipSnapshot => {
+  const owners = [...inspectedOwners.values()]
+    .filter((owner) => !owner.disposed && owner.inspectionId !== undefined)
+    .map((owner): OwnershipOwnerSnapshot => ({
+      childCount: [...owner.children].filter((child) => !child.disposed).length,
+      id: owner.inspectionId as number,
+      kind: owner.ownerKind,
+      name: owner.name,
+      ...(owner.parent?.inspectionId === undefined ? {} : { parentId: owner.parent.inspectionId }),
+      resources: owner.cleanups.map(({ kind, name }) => ({ kind, name })),
+      ...(owner.traceId ? { traceId: owner.traceId } : {}),
+    }))
+    .sort((left, right) => left.id - right.id);
+
+  return Object.freeze({
+    owners,
+    summary: Object.freeze({
+      contexts: owners.filter((owner) => owner.kind === 'context').length,
+      derived: owners.filter((owner) => owner.kind === 'derived').length,
+      owners: owners.length,
+      reactions: owners.filter((owner) => owner.kind === 'reaction').length,
+      resources: owners.reduce((total, owner) => total + owner.resources.length, 0),
+      roots: owners.filter((owner) => owner.kind === 'root').length,
+    }),
+    timestamp: Date.now(),
+  });
+};
+
+const emitOwnershipSnapshot = (): void => {
+  if (ownershipSnapshotListeners.size === 0) {
+    return;
+  }
+  const snapshot = ownershipSnapshot();
+  for (const listener of ownershipSnapshotListeners) {
+    listener(snapshot);
+  }
+};
+
+const inspectOwner = (owner: OwnerNode): void => {
+  if (ownershipSnapshotListeners.size === 0 || owner.inspectionId !== undefined) {
+    return;
+  }
+  owner.inspectionId = nextInspectionId;
+  nextInspectionId += 1;
+  inspectedOwners.set(owner.inspectionId, owner);
+  emitOwnershipSnapshot();
+};
+
+const stopInspectingOwner = (owner: OwnerNode): void => {
+  if (owner.inspectionId === undefined) {
+    return;
+  }
+  inspectedOwners.delete(owner.inspectionId);
+  emitOwnershipSnapshot();
+};
+
+/**
+ * Observes owners and external resources created while this development-only
+ * subscription is active. No iterable owner registry is retained without a listener.
+ */
+export const subscribeOwnershipSnapshots = (listener: OwnershipSnapshotListener): Disposable => {
+  ownershipSnapshotListeners.add(listener);
+  listener(ownershipSnapshot());
+  let disposed = false;
+  return {
+    dispose: () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      ownershipSnapshotListeners.delete(listener);
+      if (ownershipSnapshotListeners.size === 0) {
+        inspectedOwners.clear();
+      }
+    },
+  };
+};
+
+const createOwnerNode = (
+  name: string,
+  parent: OwnerNode | undefined,
+  ownerKind: OwnershipOwnerKind,
+  traceId?: string,
+): OwnerNode => ({
   name,
   parent,
   children: new Set(),
   cleanups: [],
+  ownerKind,
+  traceId,
   contexts: undefined,
   disposed: false,
+  inspectionId: undefined,
 });
 
 const throwCollectedErrors = (errors: unknown[], message: string): void => {
@@ -193,6 +673,10 @@ const runOwnerCleanups = (owner: OwnerNode): void => {
   const cleanups = owner.cleanups.splice(0);
   const errors: unknown[] = [];
 
+  if (cleanups.length > 0) {
+    emitOwnershipSnapshot();
+  }
+
   for (let index = children.length - 1; index >= 0; index -= 1) {
     const child = children[index];
     if (child) {
@@ -206,7 +690,7 @@ const runOwnerCleanups = (owner: OwnerNode): void => {
 
   for (let index = cleanups.length - 1; index >= 0; index -= 1) {
     try {
-      cleanups[index]?.();
+      cleanups[index]?.cleanup();
     } catch (error) {
       errors.push(error);
     }
@@ -247,6 +731,7 @@ const disposeOwner = (owner: OwnerNode): void => {
     runOwnerCleanups(owner);
   } finally {
     owner.contexts?.clear();
+    stopInspectingOwner(owner);
   }
 };
 
@@ -637,6 +1122,8 @@ const createComputation = (
     cleanups: [],
     contexts: undefined,
     disposed: false,
+    inspectionId: undefined,
+    ownerKind: kind,
     equals,
     observers: new Set(),
     sourceKind: 'computation',
@@ -653,6 +1140,7 @@ const createComputation = (
   };
 
   parent.children.add(computation);
+  inspectOwner(computation);
 
   for (const dependency of dependencies) {
     const source = (dependency as Readable<unknown> & { [REACTIVE_SOURCE]?: SourceNode })[
@@ -803,6 +1291,195 @@ export const createDerived = <T>(
   } as Readable<T>;
 };
 
+const asyncReadableFromCell = <T>(
+  state: Cell<AsyncResourceSnapshot<T>>,
+  refresh: () => void,
+): AsyncReadable<T> => {
+  const source = (state as Cell<AsyncResourceSnapshot<T>> & { [REACTIVE_SOURCE]?: SourceNode })[
+    REACTIVE_SOURCE
+  ];
+  if (!source) {
+    throw new OxeRuntimeError(
+      'OXE_RUNTIME_INVALID_DEPENDENCY',
+      'Async resource state is not backed by an OXE reactive source.',
+    );
+  }
+  return {
+    [ASYNC_RESOURCE]: true,
+    [REACTIVE_SOURCE]: source,
+    read: () => {
+      const snapshot = state.read();
+      if (snapshot.status === 'ready' || snapshot.status === 'refreshing') {
+        return snapshot.value;
+      }
+      if (snapshot.status === 'failed') {
+        throw snapshot.error;
+      }
+      throw new OxeAsyncPending(snapshot.identity);
+    },
+    refresh,
+    snapshot: () => state.read(),
+  } as AsyncReadable<T>;
+};
+
+export const isAsyncReadable = (value: unknown): value is AsyncReadable<unknown> =>
+  typeof value === 'object' &&
+  value !== null &&
+  ASYNC_RESOURCE in value &&
+  value[ASYNC_RESOURCE] === true;
+
+/**
+ * Creates one compiler-owned async value. Equal capability identities share work
+ * through the supplied coordinator and the final consumer aborts pending work.
+ */
+export const createAsyncResource = <Arguments extends readonly unknown[], Value>(
+  dependencies: readonly Readable<unknown>[],
+  arguments_: () => Arguments,
+  load: (arguments_: Arguments, signal: AbortSignal) => Value | PromiseLike<Value>,
+  options: AsyncResourceOptions,
+): AsyncReadable<Value> => {
+  const state = createCell<AsyncResourceSnapshot<Value>>(
+    { identity: '', status: 'pending' },
+    {
+      name: `${options.name ?? options.capability} state`,
+      ...(options.traceId ? { traceId: options.traceId } : {}),
+    },
+  );
+  let acquisition: AsyncAcquisition | undefined;
+  let currentIdentity = '';
+  const release = (): void => {
+    acquisition?.release();
+    acquisition = undefined;
+  };
+  registerCleanup(release, { kind: 'resource', name: options.name ?? options.capability });
+
+  createReaction(
+    dependencies,
+    () => {
+      let nextArguments: Arguments;
+      try {
+        nextArguments = arguments_();
+      } catch (error) {
+        release();
+        currentIdentity = '';
+        state.write(
+          error instanceof OxeAsyncPending
+            ? { identity: error.identity, status: 'pending' }
+            : {
+                error,
+                identity: options.traceId ?? options.name ?? options.capability,
+                status: 'failed',
+              },
+        );
+        return;
+      }
+      const identity = asyncResourceIdentity(
+        options.capability,
+        nextArguments,
+        options.scope ?? 'default',
+      );
+      if (identity === currentIdentity && acquisition) {
+        return;
+      }
+      release();
+      currentIdentity = identity;
+      state.write({ identity, status: 'pending' });
+      acquisition = acquireAsyncResource(
+        options.coordinator,
+        identity,
+        (signal) => load(nextArguments, signal),
+        (snapshot) => state.write(snapshot as AsyncResourceSnapshot<Value>),
+      );
+    },
+    {
+      name: options.name ?? options.capability,
+      ...(options.traceId ? { traceId: options.traceId } : {}),
+    },
+  );
+
+  return asyncReadableFromCell(state, () => acquisition?.refresh());
+};
+
+/** Propagates pending and failed states through an ordinary derived expression. */
+export const createAsyncDerived = <T>(
+  dependencies: readonly Readable<unknown>[],
+  run: () => T,
+  options: NamedOptions = {},
+): AsyncReadable<T> => {
+  const state = createCell<AsyncResourceSnapshot<T>>(
+    { identity: options.traceId ?? options.name ?? 'derived', status: 'pending' },
+    {
+      name: `${options.name ?? 'async derived'} state`,
+      ...(options.traceId ? { traceId: options.traceId } : {}),
+    },
+  );
+  createReaction(
+    dependencies,
+    () => {
+      try {
+        state.write({
+          identity: options.traceId ?? options.name ?? 'derived',
+          status: 'ready',
+          value: run(),
+        });
+      } catch (error) {
+        state.write(
+          error instanceof OxeAsyncPending
+            ? { identity: error.identity, status: 'pending' }
+            : {
+                error,
+                identity: options.traceId ?? options.name ?? 'derived',
+                status: 'failed',
+              },
+        );
+      }
+    },
+    {
+      name: options.name ?? 'async derived',
+      ...(options.traceId ? { traceId: options.traceId } : {}),
+    },
+  );
+  return asyncReadableFromCell(state, () => {
+    for (const dependency of dependencies) {
+      if (isAsyncReadable(dependency)) {
+        dependency.refresh();
+      }
+    }
+  });
+};
+
+/** Wraps a synchronous readable for a parameter that may be async at another call site. */
+export const toAsyncReadable = <T>(
+  source: Readable<T>,
+  options: NamedOptions = {},
+): AsyncReadable<T> =>
+  isAsyncReadable(source)
+    ? (source as AsyncReadable<T>)
+    : createAsyncDerived([source], () => source.read(), {
+        name: options.name ?? 'async-compatible value',
+        ...(options.traceId ? { traceId: options.traceId } : {}),
+      });
+
+export const selectAsyncPath = <T, Selected = unknown>(
+  source: AsyncReadable<T>,
+  path: readonly string[],
+  options: NamedOptions = {},
+): AsyncReadable<Selected> =>
+  path.length === 0
+    ? (source as unknown as AsyncReadable<Selected>)
+    : createAsyncDerived([source], () => readPath(source.read(), path) as Selected, options);
+
+/** The one authored refresh operation; values stay plain while the compiler keeps their origin. */
+export const refreshAsyncResource = (source: AsyncReadable<unknown>): void => {
+  if (!isAsyncReadable(source)) {
+    throw new OxeRuntimeError(
+      'OXE_RUNTIME_INVALID_DEPENDENCY',
+      'refresh() requires a compiler-owned async value.',
+    );
+  }
+  source.refresh();
+};
+
 /**
  * Creates a stable reactive view of one nested property path. Cell-backed paths
  * invalidate only when their selected value changes; derived paths retain the
@@ -900,7 +1577,10 @@ export const createDisposableReaction = (
     current = undefined;
     resource?.dispose();
   };
-  registerCleanup(disposeCurrent);
+  registerCleanup(disposeCurrent, {
+    kind: 'resource',
+    name: options.name ?? 'Disposable resource',
+  });
   const reaction = createReaction(
     dependencies,
     () => {
@@ -926,8 +1606,9 @@ export const createDisposableReaction = (
 
 export const createRoot = <T>(run: () => T, options: NamedOptions = {}): Root<T> => {
   const parent = activeOwner;
-  const root = createOwnerNode(options.name ?? 'root', parent);
+  const root = createOwnerNode(options.name ?? 'root', parent, 'root', options.traceId);
   parent?.children.add(root);
+  inspectOwner(root);
 
   const previousOwner = activeOwner;
   activeOwner = root;
@@ -1024,8 +1705,14 @@ export const untrack = <T>(run: () => T): T => {
   return run();
 };
 
-export const registerCleanup = (cleanup: Cleanup): void => {
-  requireOwner('registerCleanup()').cleanups.push(cleanup);
+export const registerCleanup = (cleanup: Cleanup, options: CleanupOptions = {}): void => {
+  const owner = requireOwner('registerCleanup()');
+  owner.cleanups.push({
+    cleanup,
+    kind: options.kind ?? 'cleanup',
+    name: options.name ?? 'Cleanup',
+  });
+  emitOwnershipSnapshot();
 };
 
 export const createContext = <T>(name = 'Context'): Context<T> => ({
@@ -1035,9 +1722,10 @@ export const createContext = <T>(name = 'Context'): Context<T> => ({
 
 export const withContext = <T, R>(context: Context<T>, value: T, run: () => R): R => {
   const parent = requireOwner('withContext()');
-  const scope = createOwnerNode(`${context.name} provider`, parent);
+  const scope = createOwnerNode(`${context.name} provider`, parent, 'context');
   scope.contexts = new Map([[context.id, value]]);
   parent.children.add(scope);
+  inspectOwner(scope);
 
   const previousOwner = activeOwner;
   activeOwner = scope;
