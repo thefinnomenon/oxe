@@ -12,6 +12,7 @@ interface ExampleExpectation {
 const examples: readonly ExampleExpectation[] = [
   { directory: 'component-composition' },
   { directory: 'composition-features' },
+  { directory: 'context' },
   { directory: 'conditional-region' },
   { directory: 'conditional-values' },
   { directory: 'keyed-collection' },
@@ -22,6 +23,7 @@ const examples: readonly ExampleExpectation[] = [
   { directory: 'derived' },
   { directory: 'batched' },
   { directory: 'diagnostics-unknown-name', diagnostic: 'OXE2002' },
+  { directory: 'diagnostics-missing-context-provider', diagnostic: 'OXE2008' },
   { directory: 'diagnostics-cycle', diagnostic: 'OXE2004' },
   { directory: 'diagnostics-type-error', diagnostic: 'OXE2009' },
 ];

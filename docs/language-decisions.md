@@ -439,15 +439,16 @@ cards = users.map(user =>
 
 ## Context
 
-A context declaration is identified by `createContext()`, not by a naming suffix:
+A context declaration is identified by `createContext()`, not by a naming suffix. The
+recommended convention is a descriptive name ending in `Context`:
 
 ```oxe
-Session = createContext()
+SessionContext = createContext()
 ```
 
-Names such as `Session`, `Theme`, and `EditorContext` are all valid. An ordinary
-component or value may also end in `Context`; spelling never determines context
-identity.
+Names such as `Session` and `Theme` remain valid because the convention is not a
+compiler rule. An ordinary component or value may also end in `Context`; spelling
+never determines context identity.
 
 The context object itself provides and retrieves its value:
 
@@ -455,11 +456,11 @@ The context object itself provides and retrieves its value:
 App():
   session = createSession()
 
-  <Session value={session}>
+  <SessionContext value={session}>
     <Router>
 
 Header():
-  session = Session()
+  session = SessionContext()
 
   <Avatar user={session.user}>
 ```
@@ -468,8 +469,8 @@ Context rules:
 
 - `createContext()` creates a unique identity; matching never uses a variable's
   textual name.
-- `<Session value={session}>` provides a value to its descendant subtree.
-- `Session()` retrieves the nearest matching value.
+- `<SessionContext value={session}>` provides a value to its descendant subtree.
+- `SessionContext()` retrieves the nearest matching value.
 - Nested providers override the value only for their descendants.
 - Context transports the original reactive value and preserves its writability.
 - Context does not create state or persistence. It scopes access to a value.

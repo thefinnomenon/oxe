@@ -6,8 +6,10 @@ import componentModulesCardSource from '../../../examples/component-modules/Card
 import conditionalRegionSource from '../../../examples/conditional-region/App.oxe?raw';
 import conditionalValuesSource from '../../../examples/conditional-values/App.oxe?raw';
 import contentValuesSource from '../../../examples/content-values/App.oxe?raw';
+import contextSource from '../../../examples/context/App.oxe?raw';
 import counterSource from '../../../examples/counter/App.oxe?raw';
 import cycleSource from '../../../examples/diagnostics-cycle/App.oxe?raw';
+import missingContextProviderSource from '../../../examples/diagnostics-missing-context-provider/App.oxe?raw';
 import typeErrorSource from '../../../examples/diagnostics-type-error/App.oxe?raw';
 import unknownNameSource from '../../../examples/diagnostics-unknown-name/App.oxe?raw';
 import derivedSource from '../../../examples/derived/App.oxe?raw';
@@ -126,6 +128,14 @@ export const examples: readonly PlaygroundExample[] = [
     moduleId: 'examples/composition-features/App.oxe',
     source: compositionFeaturesSource,
   }),
+  singleFileExample({
+    id: 'context',
+    label: 'Context',
+    group: 'Components',
+    description: 'Provider-scoped shared state with reactive field updates in a descendant.',
+    moduleId: 'examples/context/App.oxe',
+    source: contextSource,
+  }),
   {
     id: 'component-modules',
     label: 'Component modules',
@@ -183,6 +193,15 @@ export const examples: readonly PlaygroundExample[] = [
     description: 'An unresolved identifier demonstrates exact source spans.',
     moduleId: 'examples/diagnostics-unknown-name/App.oxe',
     source: unknownNameSource,
+    intentionallyInvalid: true,
+  }),
+  singleFileExample({
+    id: 'missing-context-provider',
+    label: 'Missing context provider',
+    group: 'Diagnostics',
+    description: 'A context read without an ancestor provider produces a source diagnostic.',
+    moduleId: 'examples/diagnostics-missing-context-provider/App.oxe',
+    source: missingContextProviderSource,
     intentionallyInvalid: true,
   }),
   singleFileExample({

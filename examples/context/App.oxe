@@ -1,0 +1,14 @@
+SessionContext = createContext()
+
+export App():
+  session = { name: "Ada", role: "admin" }
+  <SessionContext value={session}>
+    <Profile>
+
+Profile():
+  session = SessionContext()
+  rename():
+    session.name = "Grace"
+  <main>
+    <p>Signed in as {session.name}
+    <button onClick={rename}>Rename to Grace

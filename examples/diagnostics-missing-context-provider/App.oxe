@@ -1,0 +1,5 @@
+SessionContext = createContext()
+
+export App():
+  session = SessionContext()
+  <p>Signed in as {session.name}
