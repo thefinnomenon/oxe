@@ -25,6 +25,7 @@ export {
   OxeCodegenError,
   type CodegenErrorCode,
   type DomCodeArtifact,
+  type DomCodegenOptions,
   type DomSourceMapV3,
 } from './codegen.js';
 export type {

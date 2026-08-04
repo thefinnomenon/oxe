@@ -1,0 +1,15 @@
+export Page():
+  params = useParams()
+  search = useSearchParams()
+
+  next():
+    navigate("/projects/beta", { scroll: "preserve" })
+
+  activity():
+    setSearchParams({ tab: "activity" }, { replace: true })
+
+  <article>
+    <h3>Project {params.projectId}
+    <p>Tab: {search.tab}
+    <button onClick={next}>Open beta and preserve scroll
+    <button onClick={activity}>Replace search with activity

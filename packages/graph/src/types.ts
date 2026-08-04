@@ -23,6 +23,9 @@ export interface GraphAccessV1 {
 
 export type PrimitiveTypeV1 = 'array' | 'boolean' | 'number' | 'record' | 'string' | 'unknown';
 
+export type RouteIntrinsicV1 =
+  'location' | 'navigate' | 'params' | 'search-params' | 'set-search-params';
+
 export type LiteralValueV1 = boolean | number | string;
 
 export type ConstantValueV1 =
@@ -266,6 +269,8 @@ export interface PlatformCapabilityNodeV1 extends NodeBaseV1 {
   readonly kind: 'platform-capability';
   readonly parameters: readonly PrimitiveTypeV1[];
   readonly path: readonly string[];
+  /** Compiler-owned application input rather than a host-defined capability. */
+  readonly routeIntrinsic?: RouteIntrinsicV1;
   readonly returns?: PrimitiveTypeV1;
   readonly target: 'client' | 'server' | 'universal';
   /** Stable host target used to reject competing persistent writers. */

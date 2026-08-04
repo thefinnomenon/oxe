@@ -1,0 +1,4 @@
+export Page():
+  <section>
+    <h2>About routing
+    <p>This page swaps while the root layout and its local state persist.

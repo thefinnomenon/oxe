@@ -206,7 +206,16 @@ replacement and recover safely from deliberate mismatches.
 
 ## Milestone 7: application framework integration
 
-- [ ] Add routing and navigation as graph inputs.
+- [x] Define filesystem route discovery, deterministic matching, URL policy, and
+      a serializable manifest.
+- [x] Implement atomic browser navigation with persistent layout owners,
+      independently loaded segment artifacts, cancellation, history, scroll, and
+      focus behavior.
+- [x] Add compiler route-segment mode for prop-free pages and layouts whose sole
+      input is the implicit children outlet.
+- [x] Lower route snapshots and navigation operations into explicit graph inputs.
+- [x] Compose matched layout/page server plans and adopt the serialized route
+      snapshot during hydration.
 - [ ] Add typed server functions and serialization boundaries.
 - [ ] Reintroduce the schema graph around OXE's final type system.
 - [ ] Generate validated and authorized database/storage clients.

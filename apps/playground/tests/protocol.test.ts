@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createFileRouteManifest } from '@oxe/router';
 
 import {
   OXE_PLAYGROUND_PROTOCOL_VERSION,
@@ -56,6 +57,54 @@ describe('playground message protocol', () => {
     expect(isCompileRequest({ ...request, files: [...request.files, request.files[0]] })).toBe(
       false,
     );
+    expect(isCompileRequest({ ...request, routeInitialHref: '/projects/alpha' })).toBe(true);
+  });
+
+  it('validates independently compiled filesystem route bundles', () => {
+    const manifest = createFileRouteManifest([
+      'src/routes/layout.oxe',
+      'src/routes/page.oxe',
+      'src/routes/projects/[projectId]/page.oxe',
+    ]);
+    const routeBundle = {
+      initialHref: '/projects/alpha',
+      manifest,
+      segments: manifest.routes
+        .flatMap((route) => route.segments)
+        .filter(
+          (segment, index, segments) =>
+            segments.findIndex((candidate) => candidate.id === segment.id) === index,
+        )
+        .map((segment) => ({
+          id: segment.id,
+          factorySource: '() => ({})',
+          routeSegmentExport:
+            segment.kind === 'layout' ? 'buildLayoutRouteSegment' : 'buildPageRouteSegment',
+        })),
+    };
+
+    const command = {
+      type: 'preview:mount',
+      version: OXE_PLAYGROUND_PROTOCOL_VERSION,
+      runId: 8,
+      routeBundle,
+    };
+    expect(isPreviewCommand(command)).toBe(true);
+    expect(
+      isPreviewCommand({
+        ...command,
+        routeBundle: { ...routeBundle, segments: routeBundle.segments.slice(1) },
+      }),
+    ).toBe(false);
+    expect(
+      isPreviewCommand({
+        ...command,
+        routeBundle: {
+          ...routeBundle,
+          manifest: { ...routeBundle.manifest, trailingSlash: 'always' },
+        },
+      }),
+    ).toBe(false);
   });
 
   it('validates both directions of preview messages', () => {

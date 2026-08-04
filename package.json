@@ -11,7 +11,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "tsc -b --pretty false",
     "playground": "pnpm --filter @oxe/playground dev",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

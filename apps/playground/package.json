@@ -14,6 +14,7 @@
   "dependencies": {
     "@oxe/compiler": "workspace:*",
     "@oxe/graph": "workspace:*",
+    "@oxe/router": "workspace:*",
     "@oxe/runtime": "workspace:*",
     "@oxe/runtime-dom": "workspace:*"
   },

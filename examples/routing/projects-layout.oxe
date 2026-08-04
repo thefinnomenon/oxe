@@ -1,0 +1,10 @@
+export Layout():
+  changes = 0
+
+  changed():
+    changes = changes + 1
+
+  <section>
+    <h2>Persistent projects layout
+    <button onClick={changed}>Project layout state: {changes}
+    {children}

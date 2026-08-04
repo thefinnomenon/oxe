@@ -483,6 +483,7 @@ export const createServerRenderPlan = (graph: UiGraphV1): ServerRenderPlanV1 => 
       target: capability.target,
       capabilityKind: capability.capabilityKind,
       parameters: capability.parameters,
+      ...(capability.routeIntrinsic ? { routeIntrinsic: capability.routeIntrinsic } : {}),
       ...(capability.returns ? { returns: capability.returns } : {}),
     }));
 
