@@ -19,6 +19,8 @@ import {
   type LocalizedMessageV1,
   type PrimitiveTypeV1,
   type RouteIntrinsicV1,
+  type ServerValueSchemaV1,
+  type UiServerFunctionDefinitionV1,
   type ProcedureStepV1,
   type ProcedureNodeV1,
   type TextPartV1,
@@ -46,6 +48,7 @@ import type {
   MarkupChildNode,
   MemberExpressionNode,
   ModuleNode,
+  ServerFunctionDeclarationNode,
   SpreadAttributeNode,
 } from './ast.js';
 import type { Diagnostic, DiagnosticCode, RelatedDiagnostic } from './diagnostics.js';
@@ -74,7 +77,11 @@ export interface PlatformCapabilityContract {
   /** Dot-separated host path, for example analytics.identify. */
   readonly name: string;
   readonly parameters: readonly PrimitiveTypeV1[];
+  /** Exact serializable parameter schemas when primitive kinds are insufficient. */
+  readonly parameterSchemas?: readonly ServerValueSchemaV1[];
   readonly returns?: PrimitiveTypeV1;
+  /** Exact serializable result schema used by authored server functions. */
+  readonly returnSchema?: ServerValueSchemaV1;
   /** Stable id in an oxe.server-function-manifest.v1 manifest. */
   readonly serverFunctionId?: string;
   readonly target?: 'client' | 'server' | 'universal';
@@ -116,12 +123,20 @@ interface BindingInfo {
 }
 
 interface ValueSymbol {
+  readonly callable?: PlatformCapabilityInfo;
   readonly id: string;
   readonly expression?: ValueExpressionV1 | undefined;
   /** Inline expression used for callback-scoped locals that do not become graph nodes. */
   readonly substitution?: ValueExpressionV1;
   type: PrimitiveTypeV1;
   itemType?: PrimitiveTypeV1;
+}
+
+interface AuthoredServerFunctionInfo {
+  readonly capability: PlatformCapabilityInfo;
+  readonly declaration: ServerFunctionDeclarationNode;
+  readonly definition: UiServerFunctionDefinitionV1;
+  readonly moduleId: string;
 }
 
 type ParameterKind = 'children' | 'procedure' | 'rest' | 'value';
@@ -191,6 +206,7 @@ interface AnalysisState {
   readonly diagnostics: Diagnostic[];
   readonly diagnosticKeys: Set<string>;
   readonly platformCapabilities: ReadonlyMap<string, PlatformCapabilityInfo>;
+  readonly serverFunctions: Map<string, AuthoredServerFunctionInfo>;
   readonly localization: boolean;
   readonly target: 'client' | 'server';
 }
@@ -323,6 +339,7 @@ const createAnalysisState = (
     diagnosticKeys: new Set(),
     localization: options?.localization === true,
     platformCapabilities: new Map(),
+    serverFunctions: new Map(),
     target: options?.target ?? 'client',
   };
   const capabilities = state.platformCapabilities as Map<string, PlatformCapabilityInfo>;
@@ -604,7 +621,12 @@ const lowerExpression = (
     }
     case 'CallExpression': {
       const path = expressionPath(expression.callee);
-      const platform = path ? state.platformCapabilities.get(path.join('.')) : undefined;
+      const callable =
+        expression.callee.kind === 'Identifier'
+          ? values.get(expression.callee.name)?.callable
+          : undefined;
+      const platform =
+        callable ?? (path ? state.platformCapabilities.get(path.join('.')) : undefined);
       if (platform) {
         platform.used = true;
         platform.span ??= expression.callee.span;
@@ -3039,6 +3061,7 @@ const lowerInvocationValueProps = (
 };
 
 const retainValueSymbols = (component: ComponentSymbols): void => {
+  const callableValues = [...component.values].filter(([, value]) => value.callable !== undefined);
   component.values.clear();
   for (const [name, parameter] of component.parameters) {
     if (parameter.parameterKind === 'value') {
@@ -3050,6 +3073,9 @@ const retainValueSymbols = (component: ComponentSymbols): void => {
   }
   for (const [name, ref] of component.refs) {
     component.values.set(name, ref);
+  }
+  for (const [name, value] of callableValues) {
+    component.values.set(name, value);
   }
 };
 
@@ -5565,11 +5591,660 @@ const edgeKey = (edge: UiEdgeV1): string => {
   }
 };
 
+const serverSchemaKind = (schema: ServerValueSchemaV1): PrimitiveTypeV1 => schema.kind;
+
+const scalarServerSchema = (type: PrimitiveTypeV1 | undefined): ServerValueSchemaV1 | undefined =>
+  type === 'boolean' || type === 'number' || type === 'string' ? { kind: type } : undefined;
+
+const sameServerSchema = (
+  left: ServerValueSchemaV1 | undefined,
+  right: ServerValueSchemaV1 | undefined,
+): boolean =>
+  left !== undefined && right !== undefined && JSON.stringify(left) === JSON.stringify(right);
+
+const serverFunctionHash = (value: string): string => {
+  let hash = 0x811c9dc5;
+  for (const character of value) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
+const authoredCapabilityForCall = (
+  expression: ExpressionNode,
+  state: AnalysisState,
+): PlatformCapabilityInfo | undefined => {
+  if (expression.kind !== 'CallExpression') return undefined;
+  const path = expressionPath(expression.callee);
+  return path ? state.platformCapabilities.get(path.join('.')) : undefined;
+};
+
+const constrainServerParameters = (
+  expression: ExpressionNode,
+  parameters: Map<string, ServerValueSchemaV1 | undefined>,
+  state: AnalysisState,
+  expected?: ServerValueSchemaV1,
+): void => {
+  const constrain = (candidate: ExpressionNode, schema: ServerValueSchemaV1 | undefined): void => {
+    if (!schema) return;
+    if (candidate.kind === 'Identifier' && parameters.has(candidate.name)) {
+      const current = parameters.get(candidate.name);
+      if (current === undefined) {
+        parameters.set(candidate.name, schema);
+      } else if (
+        current.kind === schema.kind &&
+        (current.kind === 'boolean' || current.kind === 'number' || current.kind === 'string') &&
+        Object.keys(current).length === 1
+      ) {
+        parameters.set(candidate.name, schema);
+      } else if (!sameServerSchema(current, schema)) {
+        report(
+          state,
+          'OXE2009',
+          `Server function parameter "${candidate.name}" is used with incompatible serializable types.`,
+          candidate.span,
+        );
+      }
+    }
+  };
+
+  constrain(expression, expected);
+  switch (expression.kind) {
+    case 'ArrayLiteral':
+      expression.elements.forEach((item) =>
+        constrainServerParameters(
+          item,
+          parameters,
+          state,
+          expected?.kind === 'array' ? expected.items : undefined,
+        ),
+      );
+      return;
+    case 'BinaryExpression': {
+      if (expression.operator === 'and' || expression.operator === 'or') {
+        const booleanSchema = { kind: 'boolean' } as const;
+        constrainServerParameters(expression.left, parameters, state, booleanSchema);
+        constrainServerParameters(expression.right, parameters, state, booleanSchema);
+        return;
+      }
+      if (expression.operator === '==' || expression.operator === '!=') {
+        const left = inferAuthoredServerSchema(expression.left, parameters, state);
+        const right = inferAuthoredServerSchema(expression.right, parameters, state);
+        constrainServerParameters(expression.left, parameters, state, right);
+        constrainServerParameters(expression.right, parameters, state, left);
+        return;
+      }
+      const knownLeft = inferAuthoredServerSchema(expression.left, parameters, state);
+      const knownRight = inferAuthoredServerSchema(expression.right, parameters, state);
+      const operandSchema =
+        expression.operator === '+' &&
+        (knownLeft?.kind === 'string' || knownRight?.kind === 'string')
+          ? ({ kind: 'string' } as const)
+          : ({ kind: 'number' } as const);
+      constrainServerParameters(expression.left, parameters, state, operandSchema);
+      constrainServerParameters(expression.right, parameters, state, operandSchema);
+      return;
+    }
+    case 'CallExpression': {
+      const capability = authoredCapabilityForCall(expression, state);
+      expression.arguments.forEach((argument, index) => {
+        const schema =
+          capability?.contract.parameterSchemas?.[index] ??
+          scalarServerSchema(capability?.contract.parameters[index]);
+        constrainServerParameters(argument, parameters, state, schema);
+      });
+      return;
+    }
+    case 'CollectionExpression':
+      constrainServerParameters(expression.collection, parameters, state);
+      expression.callback.assignments.forEach((assignment) =>
+        constrainServerParameters(assignment.value, parameters, state),
+      );
+      if (expression.callback.result.kind !== 'Element') {
+        constrainServerParameters(expression.callback.result, parameters, state);
+      }
+      if (expression.initial) constrainServerParameters(expression.initial, parameters, state);
+      if (expression.options) constrainServerParameters(expression.options, parameters, state);
+      return;
+    case 'ConditionalValueExpression':
+      expression.branches.forEach((branch) => {
+        if (branch.condition) {
+          constrainServerParameters(branch.condition, parameters, state, { kind: 'boolean' });
+        }
+        const result =
+          branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+        if (result.kind !== 'Element') {
+          constrainServerParameters(result, parameters, state, expected);
+        }
+      });
+      return;
+    case 'MapExpression':
+      constrainServerParameters(expression.collection, parameters, state);
+      expression.assignments.forEach((assignment) =>
+        constrainServerParameters(assignment.value, parameters, state),
+      );
+      return;
+    case 'MemberExpression':
+      constrainServerParameters(expression.object, parameters, state);
+      return;
+    case 'ParenthesizedExpression':
+    case 'UntrackExpression':
+      constrainServerParameters(expression.expression, parameters, state, expected);
+      return;
+    case 'RecordLiteral': {
+      const fields =
+        expected?.kind === 'record'
+          ? new Map(expected.fields.map((field) => [field.name, field.schema]))
+          : undefined;
+      expression.entries.forEach((entry) =>
+        constrainServerParameters(entry.value, parameters, state, fields?.get(entry.name.name)),
+      );
+      return;
+    }
+    case 'BooleanLiteral':
+    case 'Identifier':
+    case 'NumberLiteral':
+    case 'StringLiteral':
+      return;
+  }
+};
+
+const inferAuthoredServerSchema = (
+  expression: ExpressionNode,
+  values: ReadonlyMap<string, ServerValueSchemaV1 | undefined>,
+  state: AnalysisState,
+): ServerValueSchemaV1 | undefined => {
+  switch (expression.kind) {
+    case 'BooleanLiteral':
+      return { kind: 'boolean' };
+    case 'NumberLiteral':
+      return { kind: 'number' };
+    case 'StringLiteral':
+      return { kind: 'string' };
+    case 'Identifier':
+      return values.get(expression.name);
+    case 'ParenthesizedExpression':
+    case 'UntrackExpression':
+      return inferAuthoredServerSchema(expression.expression, values, state);
+    case 'ArrayLiteral': {
+      const schemas = expression.elements.map((item) =>
+        inferAuthoredServerSchema(item, values, state),
+      );
+      const first = schemas[0];
+      return first && schemas.every((schema) => sameServerSchema(first, schema))
+        ? { items: first, kind: 'array' }
+        : undefined;
+    }
+    case 'RecordLiteral': {
+      const fields = expression.entries.map((entry) => ({
+        name: entry.name.name,
+        schema: inferAuthoredServerSchema(entry.value, values, state),
+      }));
+      if (fields.some((field) => field.schema === undefined)) return undefined;
+      return {
+        fields: fields
+          .map((field) => ({ name: field.name, schema: field.schema as ServerValueSchemaV1 }))
+          .sort((left, right) => compareText(left.name, right.name)),
+        kind: 'record',
+      };
+    }
+    case 'MemberExpression': {
+      const object = inferAuthoredServerSchema(expression.object, values, state);
+      return object?.kind === 'record'
+        ? object.fields.find((field) => field.name === expression.property.name)?.schema
+        : undefined;
+    }
+    case 'BinaryExpression':
+      if (
+        expression.operator === '==' ||
+        expression.operator === '!=' ||
+        expression.operator === 'and' ||
+        expression.operator === 'or'
+      ) {
+        return { kind: 'boolean' };
+      }
+      if (expression.operator === '+') {
+        const left = inferAuthoredServerSchema(expression.left, values, state);
+        const right = inferAuthoredServerSchema(expression.right, values, state);
+        if (left?.kind === 'string' || right?.kind === 'string') return { kind: 'string' };
+      }
+      return { kind: 'number' };
+    case 'CallExpression': {
+      const capability = authoredCapabilityForCall(expression, state);
+      return capability?.contract.returnSchema ?? scalarServerSchema(capability?.contract.returns);
+    }
+    case 'ConditionalValueExpression': {
+      const schemas = expression.branches.map((branch) => {
+        const result =
+          branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+        return result.kind === 'Element'
+          ? undefined
+          : inferAuthoredServerSchema(result, values, state);
+      });
+      const first = schemas[0];
+      return first && schemas.every((schema) => sameServerSchema(first, schema))
+        ? first
+        : undefined;
+    }
+    case 'CollectionExpression':
+    case 'MapExpression':
+      return undefined;
+  }
+};
+
+const validateAuthoredServerExpression = (
+  expression: ExpressionNode,
+  values: ReadonlyMap<string, ServerValueSchemaV1 | undefined>,
+  state: AnalysisState,
+): void => {
+  const validate = (candidate: ExpressionNode, scope = values): void =>
+    validateAuthoredServerExpression(candidate, scope, state);
+  switch (expression.kind) {
+    case 'ArrayLiteral':
+      expression.elements.forEach((item) => validate(item));
+      return;
+    case 'BinaryExpression': {
+      validate(expression.left);
+      validate(expression.right);
+      const left = inferAuthoredServerSchema(expression.left, values, state);
+      const right = inferAuthoredServerSchema(expression.right, values, state);
+      if (
+        (expression.operator === 'and' || expression.operator === 'or') &&
+        (left?.kind !== 'boolean' || right?.kind !== 'boolean')
+      ) {
+        report(
+          state,
+          'OXE2009',
+          `Server operator "${expression.operator}" requires Boolean operands.`,
+          expression.span,
+        );
+      }
+      if (
+        expression.operator !== 'and' &&
+        expression.operator !== 'or' &&
+        expression.operator !== '==' &&
+        expression.operator !== '!=' &&
+        expression.operator !== '+' &&
+        (left?.kind !== 'number' || right?.kind !== 'number')
+      ) {
+        report(
+          state,
+          'OXE2009',
+          `Server operator "${expression.operator}" requires Number operands.`,
+          expression.span,
+        );
+      }
+      return;
+    }
+    case 'CallExpression': {
+      const path = expressionPath(expression.callee);
+      const capability = authoredCapabilityForCall(expression, state);
+      if (!path || !capability) {
+        report(
+          state,
+          'OXE2002',
+          'A server function may call only a configured server or universal capability.',
+          expression.callee.span,
+        );
+      } else {
+        if ((capability.contract.target ?? 'universal') === 'client') {
+          report(
+            state,
+            'OXE2008',
+            `Client-only capability "${path.join('.')}" cannot run in a server function.`,
+            expression.callee.span,
+          );
+        }
+        if (capability.contract.kind === 'resource') {
+          report(
+            state,
+            'OXE2008',
+            `Disposable resource capability "${path.join('.')}" cannot run in an ordinary server function body.`,
+            expression.callee.span,
+          );
+        }
+        if (expression.arguments.length !== capability.contract.parameters.length) {
+          report(
+            state,
+            'OXE2009',
+            `Server capability "${path.join('.')}" expects ${capability.contract.parameters.length} arguments, but received ${expression.arguments.length}.`,
+            expression.span,
+          );
+        }
+      }
+      expression.arguments.forEach((argument, index) => {
+        validate(argument);
+        const expected =
+          capability?.contract.parameterSchemas?.[index] ??
+          scalarServerSchema(capability?.contract.parameters[index]);
+        const actual = inferAuthoredServerSchema(argument, values, state);
+        if (expected && actual && !sameServerSchema(expected, actual)) {
+          report(
+            state,
+            'OXE2009',
+            `Server capability argument ${index + 1} expects ${expected.kind}, but received ${actual.kind}.`,
+            argument.span,
+          );
+        }
+      });
+      return;
+    }
+    case 'CollectionExpression':
+    case 'MapExpression':
+      report(
+        state,
+        'OXE2008',
+        'Collection callbacks are not supported in server function bodies yet.',
+        expression.span,
+      );
+      return;
+    case 'ConditionalValueExpression': {
+      let resultSchema: ServerValueSchemaV1 | undefined;
+      for (const branch of expression.branches) {
+        if (branch.condition) {
+          validate(branch.condition);
+          const condition = inferAuthoredServerSchema(branch.condition, values, state);
+          if (condition?.kind !== 'boolean') {
+            report(
+              state,
+              'OXE2009',
+              'A server conditional condition must be Boolean.',
+              branch.condition.span,
+            );
+          }
+        }
+        const branchValues = new Map(values);
+        const result =
+          branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+        if (branch.result.kind === 'ConditionalResultBlock') {
+          for (const statement of branch.result.statements) {
+            const statementExpression =
+              statement.kind === 'AssignmentStatement' ? statement.value : statement.expression;
+            validateAuthoredServerExpression(statementExpression, branchValues, state);
+            if (statement.kind === 'AssignmentStatement') {
+              const schema = inferAuthoredServerSchema(statement.value, branchValues, state);
+              if (schema) branchValues.set(statement.target.name, schema);
+            }
+          }
+        }
+        if (result.kind === 'Element') {
+          report(
+            state,
+            'OXE2008',
+            'Server function conditionals cannot produce markup.',
+            result.span,
+          );
+          continue;
+        }
+        validateAuthoredServerExpression(result, branchValues, state);
+        const schema = inferAuthoredServerSchema(result, branchValues, state);
+        if (resultSchema && schema && !sameServerSchema(resultSchema, schema)) {
+          report(
+            state,
+            'OXE2009',
+            'Server conditional branches must produce the same serializable type.',
+            result.span,
+          );
+        }
+        resultSchema ??= schema;
+      }
+      return;
+    }
+    case 'Identifier':
+      if (!values.has(expression.name)) {
+        report(state, 'OXE2002', `Unresolved server value "${expression.name}".`, expression.span);
+      }
+      return;
+    case 'MemberExpression': {
+      validate(expression.object);
+      const object = inferAuthoredServerSchema(expression.object, values, state);
+      if (
+        object?.kind !== 'record' ||
+        !object.fields.some((field) => field.name === expression.property.name)
+      ) {
+        report(
+          state,
+          'OXE2002',
+          `Server value has no known field "${expression.property.name}".`,
+          expression.property.span,
+        );
+      }
+      return;
+    }
+    case 'ParenthesizedExpression':
+    case 'UntrackExpression':
+      validate(expression.expression);
+      return;
+    case 'RecordLiteral':
+      expression.entries.forEach((entry) => validate(entry.value));
+      return;
+    case 'BooleanLiteral':
+    case 'NumberLiteral':
+    case 'StringLiteral':
+      return;
+  }
+};
+
+const expressionUsesServerMutation = (
+  expression: ExpressionNode,
+  state: AnalysisState,
+): boolean => {
+  const capability = authoredCapabilityForCall(expression, state);
+  if (capability && (capability.contract.kind === 'effect' || capability.contract.writes)) {
+    return true;
+  }
+  switch (expression.kind) {
+    case 'ArrayLiteral':
+      return expression.elements.some((item) => expressionUsesServerMutation(item, state));
+    case 'BinaryExpression':
+      return (
+        expressionUsesServerMutation(expression.left, state) ||
+        expressionUsesServerMutation(expression.right, state)
+      );
+    case 'CallExpression':
+      return expression.arguments.some((argument) => expressionUsesServerMutation(argument, state));
+    case 'CollectionExpression':
+      return (
+        expressionUsesServerMutation(expression.collection, state) ||
+        expression.callback.assignments.some((assignment) =>
+          expressionUsesServerMutation(assignment.value, state),
+        ) ||
+        (expression.callback.result.kind !== 'Element' &&
+          expressionUsesServerMutation(expression.callback.result, state)) ||
+        (expression.initial ? expressionUsesServerMutation(expression.initial, state) : false) ||
+        (expression.options ? expressionUsesServerMutation(expression.options, state) : false)
+      );
+    case 'ConditionalValueExpression':
+      return expression.branches.some((branch) => {
+        const result =
+          branch.result.kind === 'ConditionalResultBlock' ? branch.result.result : branch.result;
+        return (
+          (branch.condition ? expressionUsesServerMutation(branch.condition, state) : false) ||
+          (result.kind !== 'Element' && expressionUsesServerMutation(result, state))
+        );
+      });
+    case 'MapExpression':
+      return (
+        expressionUsesServerMutation(expression.collection, state) ||
+        expression.assignments.some((assignment) =>
+          expressionUsesServerMutation(assignment.value, state),
+        )
+      );
+    case 'MemberExpression':
+      return expressionUsesServerMutation(expression.object, state);
+    case 'ParenthesizedExpression':
+    case 'UntrackExpression':
+      return expressionUsesServerMutation(expression.expression, state);
+    case 'RecordLiteral':
+      return expression.entries.some((entry) => expressionUsesServerMutation(entry.value, state));
+    case 'BooleanLiteral':
+    case 'Identifier':
+    case 'NumberLiteral':
+    case 'StringLiteral':
+      return false;
+  }
+};
+
+const registerAuthoredServerFunctions = (
+  modules: readonly AnalyzedProjectModule[],
+  state: AnalysisState,
+): ReadonlyMap<string, ReadonlyMap<string, AuthoredServerFunctionInfo>> => {
+  const byModule = new Map<string, ReadonlyMap<string, AuthoredServerFunctionInfo>>();
+  const capabilities = state.platformCapabilities as Map<string, PlatformCapabilityInfo>;
+  for (const module of modules) {
+    const entries = new Map<string, AuthoredServerFunctionInfo>();
+    for (const declaration of module.ast.serverFunctions) {
+      const diagnosticCount = state.diagnostics.length;
+      if (entries.has(declaration.name.name)) {
+        report(
+          state,
+          'OXE2001',
+          `Duplicate server function "${declaration.name.name}".`,
+          declaration.name.span,
+        );
+        continue;
+      }
+      if (declaration.body.length === 0) {
+        report(
+          state,
+          'OXE2008',
+          `Server function "${declaration.name.name}" must produce a result.`,
+          declaration.span,
+        );
+        continue;
+      }
+      const final = declaration.body.at(-1);
+      if (!final || final.kind !== 'ExpressionStatement') {
+        report(
+          state,
+          'OXE2008',
+          `Server function "${declaration.name.name}" must end with its result expression.`,
+          final?.span ?? declaration.span,
+        );
+        continue;
+      }
+      const parameterSchemas = new Map<string, ServerValueSchemaV1 | undefined>(
+        declaration.parameters.map((parameter) => [
+          parameter.name.name,
+          parameter.type ? { kind: parameter.type } : undefined,
+        ]),
+      );
+      for (const statement of declaration.body) {
+        const expression =
+          statement.kind === 'AssignmentStatement' ? statement.value : statement.expression;
+        constrainServerParameters(expression, parameterSchemas, state);
+      }
+      for (const parameter of declaration.parameters) {
+        if (!parameterSchemas.get(parameter.name.name)) {
+          report(
+            state,
+            'OXE2008',
+            `Cannot infer a serializable type for server function parameter "${parameter.name.name}". Add a boolean, number, or string annotation.`,
+            parameter.span,
+          );
+        }
+      }
+      if (state.diagnostics.length > diagnosticCount) continue;
+
+      const values = new Map(parameterSchemas);
+      for (const statement of declaration.body.slice(0, -1)) {
+        const statementExpression =
+          statement.kind === 'AssignmentStatement' ? statement.value : statement.expression;
+        validateAuthoredServerExpression(statementExpression, values, state);
+        if (statement.kind !== 'AssignmentStatement') continue;
+        if (values.has(statement.target.name)) {
+          report(
+            state,
+            'OXE2001',
+            `Server function local "${statement.target.name}" is declared more than once.`,
+            statement.target.span,
+          );
+          continue;
+        }
+        const schema = inferAuthoredServerSchema(statement.value, values, state);
+        if (!schema) {
+          report(
+            state,
+            'OXE2008',
+            `Cannot infer a serializable type for server function local "${statement.target.name}".`,
+            statement.value.span,
+          );
+          continue;
+        }
+        values.set(statement.target.name, schema);
+      }
+      validateAuthoredServerExpression(final.expression, values, state);
+      const returns = inferAuthoredServerSchema(final.expression, values, state);
+      if (!returns) {
+        report(
+          state,
+          'OXE2008',
+          `Cannot infer an exact serializable result for server function "${declaration.name.name}".`,
+          final.expression.span,
+        );
+        continue;
+      }
+      const resolvedParameters = declaration.parameters.map((parameter) => ({
+        name: parameter.name.name,
+        schema: parameterSchemas.get(parameter.name.name) as ServerValueSchemaV1,
+      }));
+      const signature = JSON.stringify({
+        moduleId: module.moduleId,
+        name: declaration.name.name,
+        parameters: resolvedParameters,
+        returns,
+      });
+      const hash = serverFunctionHash(signature);
+      const definition: UiServerFunctionDefinitionV1 = {
+        id: `oxe.server.${hash}`,
+        mode: declaration.body.some((statement) =>
+          expressionUsesServerMutation(
+            statement.kind === 'AssignmentStatement' ? statement.value : statement.expression,
+            state,
+          ),
+        )
+          ? 'mutation'
+          : 'query',
+        moduleId: module.moduleId,
+        name: declaration.name.name,
+        parameters: resolvedParameters,
+        path: ['oxe', `f${hash}`, declaration.name.name],
+        returns,
+        schemaVersion: 'oxe.server-function.v1',
+      };
+      const capability: PlatformCapabilityInfo = {
+        contract: {
+          kind: 'async',
+          name: definition.path.join('.'),
+          parameters: definition.parameters.map((parameter) => serverSchemaKind(parameter.schema)),
+          parameterSchemas: definition.parameters.map((parameter) => parameter.schema),
+          returns: serverSchemaKind(definition.returns),
+          returnSchema: definition.returns,
+          serverFunctionId: definition.id,
+          target: 'universal',
+        },
+        id: platformCapabilityId(module.moduleId, `server.${declaration.name.name}`),
+        path: definition.path,
+        span: declaration.name.span,
+        used: false,
+      };
+      const info = { capability, declaration, definition, moduleId: module.moduleId };
+      entries.set(declaration.name.name, info);
+      state.serverFunctions.set(definition.id, info);
+      capabilities.set(`\0server:${definition.id}`, capability);
+    }
+    byModule.set(module.moduleId, entries);
+  }
+  return byModule;
+};
+
 interface SemanticModule {
   readonly ast: ModuleNode;
   readonly components: ReadonlyMap<string, ComponentSymbols>;
   readonly contexts: ReadonlyMap<string, ContextInfo>;
   readonly moduleId: string;
+  readonly serverFunctions: ReadonlyMap<string, AuthoredServerFunctionInfo>;
 }
 
 interface ComponentSetAnalysis {
@@ -5590,6 +6265,7 @@ const registerSemanticModule = (
   ast: ModuleNode,
   moduleId: string,
   state: AnalysisState,
+  serverFunctions: ReadonlyMap<string, AuthoredServerFunctionInfo> = new Map(),
 ): SemanticModule => {
   const componentNames = new Map<string, SourceSpan>();
   const components = new Map<string, ComponentSymbols>();
@@ -5610,11 +6286,27 @@ const registerSemanticModule = (
     });
   }
 
-  if (ast.declarations.length === 0) {
+  if (ast.declarations.length === 0 && ast.serverFunctions.length === 0) {
     report(state, 'OXE2008', 'An OXE UI module must declare at least one component.', ast.span);
   }
 
   for (const component of ast.declarations) {
+    const serverFunction = serverFunctions.get(component.name.name);
+    if (serverFunction) {
+      report(
+        state,
+        'OXE2001',
+        `Component "${component.name.name}" collides with a server function in the same module.`,
+        component.name.span,
+        [
+          {
+            message: 'The server function is declared here.',
+            span: serverFunction.declaration.name.span,
+          },
+        ],
+      );
+      continue;
+    }
     const previous = componentNames.get(component.name.name);
     if (previous) {
       report(
@@ -5633,7 +6325,37 @@ const registerSemanticModule = (
     );
   }
 
-  return { ast, components, contexts, moduleId };
+  for (const component of components.values()) {
+    for (const [name, serverFunction] of serverFunctions) {
+      if (component.values.has(name) || component.procedures.has(name)) {
+        report(
+          state,
+          'OXE2001',
+          `Server function "${name}" collides with a component-local declaration.`,
+          component.component.name.span,
+          [
+            {
+              message: 'The server function is declared here.',
+              span: serverFunction.declaration.name.span,
+            },
+          ],
+        );
+        continue;
+      }
+      component.values.set(name, {
+        callable: serverFunction.capability,
+        id: serverFunction.capability.id,
+        substitution: {
+          kind: 'capability-read',
+          span: graphSpan(serverFunction.declaration.name.span),
+          targetId: serverFunction.capability.id,
+        },
+        type: serverSchemaKind(serverFunction.definition.returns),
+      });
+    }
+  }
+
+  return { ast, components, contexts, moduleId, serverFunctions };
 };
 
 const analyzeComponentSet = (
@@ -5810,12 +6532,17 @@ const analyzeComponentSet = (
           .filter((id) => !invokedComponentIds.has(id));
       })();
 
+  const usedServerFunctions = [...state.serverFunctions.values()]
+    .filter((serverFunction) => serverFunction.capability.used)
+    .map((serverFunction) => serverFunction.definition)
+    .sort((left, right) => compareText(left.id, right.id));
   const graph: UiGraphV1 = {
     schemaVersion: 'oxe.ui-graph.v1',
     moduleId: graphModuleId,
     entryComponents: entryComponents.sort(compareText),
     nodes: nodes.sort((left, right) => compareText(left.id, right.id)),
     edges: edges.sort((left, right) => compareText(edgeKey(left), edgeKey(right))),
+    ...(usedServerFunctions.length > 0 ? { serverFunctions: usedServerFunctions } : {}),
   };
   const graphDiagnostics = validateUiGraph(graph);
   if (graphDiagnostics.length > 0) {
@@ -5849,7 +6576,8 @@ export const analyzeSource = (
       declaration.span,
     );
   }
-  const module = registerSemanticModule(parsed.ast, moduleId, state);
+  const serverFunctions = registerAuthoredServerFunctions([{ ast: parsed.ast, moduleId }], state);
+  const module = registerSemanticModule(parsed.ast, moduleId, state, serverFunctions.get(moduleId));
   const scopes = new Map<string, ReadonlyMap<string, ComponentSymbols>>();
   for (const component of module.components.values()) {
     scopes.set(component.componentId, module.components);
@@ -6055,17 +6783,29 @@ export const analyzeProject = async (
     };
   }
 
+  const serverFunctionsByModule = registerAuthoredServerFunctions(projectModules, state);
   const semanticModules = projectModules.map((module) =>
-    registerSemanticModule(module.ast, module.moduleId, state),
+    registerSemanticModule(
+      module.ast,
+      module.moduleId,
+      state,
+      serverFunctionsByModule.get(module.moduleId),
+    ),
   );
   const semanticById = new Map(semanticModules.map((module) => [module.moduleId, module] as const));
   const scopes = new Map<string, ReadonlyMap<string, ComponentSymbols>>();
 
   for (const module of semanticModules) {
     const scope = new Map(module.components);
-    const origins = new Map<string, SourceSpan>(
-      [...module.components].map(([name, component]) => [name, component.component.name.span]),
-    );
+    const serverScope = new Map(module.serverFunctions);
+    const origins = new Map<string, SourceSpan>([
+      ...[...module.components].map(
+        ([name, component]) => [name, component.component.name.span] as const,
+      ),
+      ...[...module.serverFunctions].map(
+        ([name, serverFunction]) => [name, serverFunction.declaration.name.span] as const,
+      ),
+    ]);
     for (const declaration of module.ast.imports) {
       const importedModuleId = resolvedImports.get(declaration);
       const importedModule = importedModuleId ? semanticById.get(importedModuleId) : undefined;
@@ -6074,32 +6814,60 @@ export const analyzeProject = async (
       }
       for (const specifier of declaration.specifiers) {
         const name = specifier.name.name;
+        const importedKind = importedModule.serverFunctions.has(name)
+          ? 'server function'
+          : 'component';
         const previous = origins.get(name);
         if (previous) {
           report(
             state,
             'OXE2016',
-            `Imported component "${name}" collides with another name in module "${module.moduleId}".`,
+            `Imported ${importedKind} "${name}" collides with another name in module "${module.moduleId}".`,
             specifier.name.span,
             [{ message: 'The existing name is declared or imported here.', span: previous }],
           );
           continue;
         }
-        const target = importedModule.components.get(name);
-        if (!target || !target.component.exported) {
+        const targetComponent = importedModule.components.get(name);
+        const targetServerFunction = importedModule.serverFunctions.get(name);
+        if (
+          (!targetComponent || !targetComponent.component.exported) &&
+          (!targetServerFunction || !targetServerFunction.declaration.exported)
+        ) {
+          const exportKind = targetComponent
+            ? 'component'
+            : targetServerFunction
+              ? 'server function'
+              : 'declaration';
           report(
             state,
             'OXE2010',
-            `Module "${importedModule.moduleId}" does not explicitly export component "${name}".`,
+            `Module "${importedModule.moduleId}" does not explicitly export ${exportKind} "${name}".`,
             specifier.name.span,
           );
           continue;
         }
-        scope.set(name, target);
+        if (targetComponent?.component.exported) {
+          scope.set(name, targetComponent);
+        } else if (targetServerFunction?.declaration.exported) {
+          serverScope.set(name, targetServerFunction);
+        }
         origins.set(name, specifier.name.span);
       }
     }
     for (const component of module.components.values()) {
+      for (const [name, serverFunction] of serverScope) {
+        component.values.set(name, {
+          callable: serverFunction.capability,
+          id: serverFunction.capability.id,
+          substitution: {
+            kind: 'capability-read',
+            span: graphSpan(serverFunction.declaration.name.span),
+            targetId: serverFunction.capability.id,
+          },
+          type: serverSchemaKind(serverFunction.definition.returns),
+        });
+      }
       scopes.set(component.componentId, scope);
     }
   }

@@ -112,11 +112,19 @@ fills the single layout content slot from leaf to root. Route capability reads
 resolve from the server match, so `location`, `params`, and search values produce
 the same initial HTML as the browser runtime.
 
-`renderRouteToString` renders that composed plan and returns the matched route.
-`serializeRouteSnapshotScript` emits the adoption payload. A browser router uses
-the serialized snapshot only when its schema, route id, matched URL, and current
-browser URL all agree; otherwise it rematches the browser URL rather than
-hydrating stale route state.
+`composeRouteDeferredServerPlan` preserves the same composition for streamed v2
+plans. `createFetchRouteHandler` is the application boundary: it matches the
+request, loads and composes segments, settles root status gates before creating
+the response, streams the shell and readiness patches with backpressure, writes
+hydration checkpoints and the route snapshot, and dispatches the generated
+server-function endpoint. `createNodeRouteHandler` adapts the same behavior to
+Node HTTP.
+
+`renderRouteToString` remains available for non-streaming consumers, and
+`serializeRouteSnapshotScript` exposes the adoption payload directly. A browser
+router uses the serialized snapshot only when its schema, route id, matched URL,
+and current browser URL all agree; otherwise it rematches the browser URL rather
+than hydrating stale route state.
 
 ## Playground
 

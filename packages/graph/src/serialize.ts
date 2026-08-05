@@ -1,4 +1,10 @@
-import type { GraphSpanV1, UiEdgeV1, UiGraphV1, ValueExpressionV1 } from './types.js';
+import type {
+  GraphSpanV1,
+  ServerValueSchemaV1,
+  UiEdgeV1,
+  UiGraphV1,
+  ValueExpressionV1,
+} from './types.js';
 
 type JsonValue = boolean | null | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -111,6 +117,24 @@ const normalizeEdge = (edge: UiEdgeV1): UiEdgeV1 => {
   return edge;
 };
 
+const normalizeServerSchema = (schema: ServerValueSchemaV1): ServerValueSchemaV1 => {
+  if (schema.kind === 'array') {
+    return { ...schema, items: normalizeServerSchema(schema.items) };
+  }
+  if (schema.kind === 'record') {
+    return {
+      ...schema,
+      fields: schema.fields
+        .map((field) => ({ ...field, schema: normalizeServerSchema(field.schema) }))
+        .sort((left, right) => compareText(left.name, right.name)),
+    };
+  }
+  if (schema.kind === 'string' && schema.enum) {
+    return { ...schema, enum: [...schema.enum].sort(compareText) };
+  }
+  return schema;
+};
+
 const normalizeGraph = (graph: UiGraphV1): UiGraphV1 => ({
   ...graph,
   edges: [...graph.edges]
@@ -118,6 +142,20 @@ const normalizeGraph = (graph: UiGraphV1): UiGraphV1 => ({
     .sort((left, right) => compareText(edgeKey(left), edgeKey(right))),
   entryComponents: [...graph.entryComponents].sort(compareText),
   nodes: [...graph.nodes].sort((left, right) => compareText(left.id, right.id)),
+  ...(graph.serverFunctions
+    ? {
+        serverFunctions: [...graph.serverFunctions]
+          .map((definition) => ({
+            ...definition,
+            parameters: definition.parameters.map((parameter) => ({
+              ...parameter,
+              schema: normalizeServerSchema(parameter.schema),
+            })),
+            returns: normalizeServerSchema(definition.returns),
+          }))
+          .sort((left, right) => compareText(left.id, right.id)),
+      }
+    : {}),
 });
 
 const canonicalize = (value: unknown): JsonValue => {

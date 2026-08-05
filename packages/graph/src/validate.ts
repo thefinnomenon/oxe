@@ -1378,6 +1378,66 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
   const nodes = new Map<string, UiNodeV1>();
   const fallback = fallbackSpan(graph);
 
+  const serverFunctionIds = new Set<string>();
+  const serverFunctionPaths = new Set<string>();
+  const validateServerSchema = (schema: unknown): boolean => {
+    if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return false;
+    const candidate = schema as {
+      readonly fields?: readonly { readonly name?: unknown; readonly schema?: unknown }[];
+      readonly items?: unknown;
+      readonly kind?: unknown;
+    };
+    if (
+      candidate.kind === 'boolean' ||
+      candidate.kind === 'number' ||
+      candidate.kind === 'string'
+    ) {
+      return true;
+    }
+    if (candidate.kind === 'array') return validateServerSchema(candidate.items);
+    if (candidate.kind !== 'record' || !Array.isArray(candidate.fields)) return false;
+    const names = new Set<string>();
+    return candidate.fields.every((field) => {
+      if (typeof field.name !== 'string' || names.has(field.name)) return false;
+      names.add(field.name);
+      return validateServerSchema(field.schema);
+    });
+  };
+  for (const definition of graph.serverFunctions ?? []) {
+    const path = definition.path.join('.');
+    const parameterNames = new Set<string>();
+    const valid =
+      definition.schemaVersion === 'oxe.server-function.v1' &&
+      (definition.mode === 'query' || definition.mode === 'mutation') &&
+      /^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(definition.id) &&
+      definition.moduleId.length > 0 &&
+      /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(definition.name) &&
+      definition.path.length > 0 &&
+      definition.path.every((segment) => /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment)) &&
+      !serverFunctionIds.has(definition.id) &&
+      !serverFunctionPaths.has(path) &&
+      definition.parameters.every((parameter) => {
+        if (
+          !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(parameter.name) ||
+          parameterNames.has(parameter.name)
+        ) {
+          return false;
+        }
+        parameterNames.add(parameter.name);
+        return validateServerSchema(parameter.schema);
+      }) &&
+      validateServerSchema(definition.returns);
+    if (!valid) {
+      diagnostics.push({
+        code: 'OXE3006',
+        message: `Server function definition "${definition.id}" has an invalid compiler-owned contract.`,
+        span: fallback,
+      });
+    }
+    serverFunctionIds.add(definition.id);
+    serverFunctionPaths.add(path);
+  }
+
   for (const node of [...graph.nodes].sort((left, right) => compareText(left.id, right.id))) {
     if (nodes.has(node.id)) {
       diagnostics.push({

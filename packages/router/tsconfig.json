@@ -11,6 +11,7 @@
   "references": [
     { "path": "../compiler" },
     { "path": "../runtime" },
-    { "path": "../runtime-server" }
+    { "path": "../runtime-server" },
+    { "path": "../server-functions" }
   ]
 }

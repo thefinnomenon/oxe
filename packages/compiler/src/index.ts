@@ -28,6 +28,11 @@ export {
   type DomCodegenOptions,
   type DomSourceMapV3,
 } from './codegen.js';
+export {
+  generateServerFunctionArtifact,
+  generateServerFunctionModuleSource,
+  type ServerFunctionCodeArtifact,
+} from './server-codegen.js';
 export type {
   ArithmeticOperator,
   AssignmentStatementNode,
@@ -68,6 +73,9 @@ export type {
   RecordLiteralNode,
   RequiredComponentParameterNode,
   RestComponentParameterNode,
+  ServerFunctionDeclarationNode,
+  ServerFunctionParameterNode,
+  ServerFunctionStatementNode,
   SpreadAttributeNode,
   StringLiteralNode,
   TextNode,

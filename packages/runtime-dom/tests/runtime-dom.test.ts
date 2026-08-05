@@ -841,6 +841,34 @@ describe('direct DOM primitives', () => {
     mounted.unmount();
   });
 
+  it('reports rejected asynchronous event procedures through listener policy', async () => {
+    const document = asDocument(new FakeDocument());
+    const container = new FakeElement('container');
+    const errors: unknown[] = [];
+    let button: FakeElement | undefined;
+
+    const mounted = mount(asNode(container), () => {
+      const element = createElement(document, 'button');
+      button = asFakeElement(element);
+      listen(
+        element,
+        'click',
+        async () => {
+          await Promise.resolve();
+          throw new Error('Server mutation failed.');
+        },
+        { onError: (error) => errors.push(error) },
+      );
+      return element;
+    });
+
+    button?.emit('click');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(errors).toEqual([expect.objectContaining({ message: 'Server mutation failed.' })]);
+    mounted.unmount();
+  });
+
   it('snapshots listener capture so mutable options cannot leak the listener', () => {
     const document = asDocument(new FakeDocument());
     const container = new FakeElement('container');

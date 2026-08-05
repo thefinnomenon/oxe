@@ -23,7 +23,8 @@
   },
   "dependencies": {
     "@oxe/runtime": "workspace:*",
-    "@oxe/runtime-server": "workspace:*"
+    "@oxe/runtime-server": "workspace:*",
+    "@oxe/server-functions": "workspace:*"
   },
   "devDependencies": {
     "@oxe/compiler": "workspace:*"

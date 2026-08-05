@@ -30,6 +30,65 @@ const sourceSpan = (
 });
 
 describe('OXE parser', () => {
+  it('parses exported and private server functions as sequential top-level declarations', () => {
+    const result = parseSource(`export server readProject(id: string):
+  project = database.projects.read(id)
+  { id: project.id, name: project.name }
+
+server audit(message):
+  logger.info(message)
+  true
+
+export App():
+  project = readProject("p1")
+  <h1>{project.name}
+`);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.ast.serverFunctions).toMatchObject([
+      {
+        body: [
+          { kind: 'AssignmentStatement', target: { name: 'project' } },
+          { kind: 'ExpressionStatement', expression: { kind: 'RecordLiteral' } },
+        ],
+        exported: true,
+        kind: 'ServerFunctionDeclaration',
+        name: { name: 'readProject' },
+        parameters: [{ kind: 'ServerFunctionParameter', name: { name: 'id' }, type: 'string' }],
+      },
+      {
+        exported: false,
+        name: { name: 'audit' },
+        parameters: [{ name: { name: 'message' } }],
+      },
+    ]);
+    expect(result.ast.declarations).toMatchObject([
+      { kind: 'ComponentDeclaration', exported: true, name: { name: 'App' } },
+    ]);
+    expect(Object.isFrozen(result.ast.serverFunctions)).toBe(true);
+    expect(Object.isFrozen(result.ast.serverFunctions[0]?.body)).toBe(true);
+  });
+
+  it('diagnoses malformed server parameters and a missing body', () => {
+    const result = parseSource(`server invalid(value: record, value):
+server empty():
+`);
+
+    expect(result.diagnostics).toMatchObject([
+      {
+        code: 'OXE1103',
+        message:
+          'Server function parameter annotations currently support boolean, number, or string.',
+      },
+      {
+        code: 'OXE1101',
+        message: 'Server function parameter "value" is declared more than once.',
+      },
+      { code: 'OXE1102', message: 'Expected an indented server function body.' },
+      { code: 'OXE1102', message: 'Expected an indented server function body.' },
+    ]);
+  });
+
   it('parses top-level context declarations as distinct module syntax', () => {
     const result = parseSource(`SessionContext = createContext()
 
@@ -1034,7 +1093,7 @@ import { Card } from "./Card.oxe"
     expect(result.diagnostics).toMatchObject([
       {
         code: 'OXE1103',
-        message: 'Imports must be declared before component declarations.',
+        message: 'Imports must be declared before component or server declarations.',
         span: { start: { line: 3, column: 1 } },
       },
     ]);
@@ -1067,11 +1126,13 @@ import { Card } from "./Card.oxe"
       },
       {
         source: 'export { Card } from "./Card.oxe"\n',
-        message: 'Exports must be written directly on a component declaration: export Component():',
+        message:
+          'Exports must be written directly on a component or server declaration: export Component(): or export server name():',
       },
       {
         source: 'export default App\n',
-        message: 'Exports must be written directly on a component declaration: export Component():',
+        message:
+          'Exports must be written directly on a component or server declaration: export Component(): or export server name():',
       },
     ] as const;
 

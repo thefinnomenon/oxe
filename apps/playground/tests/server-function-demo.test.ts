@@ -6,46 +6,56 @@ import { capabilitiesForPlayground } from '../src/demo-capabilities.js';
 import { findExample } from '../src/examples.js';
 import {
   createServerFunctionDemoCapability,
-  readDemoProject,
   serverFunctionDemoCompilerCapabilities,
 } from '../src/server-function-demo.js';
 
+const compileDemo = async () => {
+  const example = findExample('server-functions');
+  if (!example) throw new Error('Expected the server-function example.');
+  const sources = new Map(example.files.map((file) => [file.moduleId, file.source]));
+  return analyzeProject({
+    capabilities: capabilitiesForPlayground(example.capabilitySet),
+    entryExport: example.entryExport,
+    entryModuleId: example.entryModuleId,
+    loadModule: async (moduleId) => sources.get(moduleId),
+  });
+};
+
+const compileDemoDefinition = async () => {
+  const analyzed = await compileDemo();
+  const definition = analyzed.graph?.serverFunctions?.[0];
+  if (!definition) throw new Error(JSON.stringify(analyzed.diagnostics));
+  return definition;
+};
+
 describe('playground server-function demo', () => {
   it('compiles the authored playground example with its server-function identity', async () => {
-    const example = findExample('server-functions');
-    expect(example).toBeDefined();
-    if (!example) return;
-    const sources = new Map(example.files.map((file) => [file.moduleId, file.source]));
-    const analyzed = await analyzeProject({
-      capabilities: capabilitiesForPlayground(example.capabilitySet),
-      entryExport: example.entryExport,
-      entryModuleId: example.entryModuleId,
-      loadModule: async (moduleId) => sources.get(moduleId),
-    });
+    const analyzed = await compileDemo();
 
     expect(analyzed.diagnostics).toEqual([]);
+    const definition = analyzed.graph?.serverFunctions?.[0];
+    expect(definition).toMatchObject({ mode: 'query', name: 'readProject' });
     expect(analyzed.graph?.nodes).toContainEqual(
       expect.objectContaining({
         kind: 'platform-capability',
-        serverFunctionId: readDemoProject.id,
+        serverFunctionId: definition?.id,
       }),
     );
   });
 
-  it('uses the versioned definition as its compiler capability contract', () => {
+  it('exposes only the server-body host capability to analysis', () => {
     expect(serverFunctionDemoCompilerCapabilities).toEqual([
       expect.objectContaining({
         kind: 'async',
-        name: 'projects.read',
-        serverFunctionId: readDemoProject.id,
-        target: 'universal',
+        name: 'database.readDemoProject',
+        target: 'server',
       }),
     ]);
   });
 
   it('round-trips Fetch envelopes and keeps request context out of the arguments', async () => {
     const onExchange = vi.fn();
-    const read = createServerFunctionDemoCapability({
+    const read = createServerFunctionDemoCapability(await compileDemoDefinition(), {
       delayMilliseconds: 0,
       onExchange,
       origin: 'https://playground.example.test',
@@ -68,7 +78,7 @@ describe('playground server-function demo', () => {
 
   it('redacts private handler errors at the response boundary', async () => {
     const responses: string[] = [];
-    const read = createServerFunctionDemoCapability({
+    const read = createServerFunctionDemoCapability(await compileDemoDefinition(), {
       delayMilliseconds: 0,
       onExchange: (direction, payload) => {
         if (direction === 'response') responses.push(payload);

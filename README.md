@@ -107,8 +107,12 @@ hydration checkpoints. It now traces dependent identities through forwarded and
 mapped props, generates localized inert skeletons, routes failures through one
 global policy, gates root HTTP status work before headers, and recovers the
 smallest compiler-owned hydration range with source-linked build diagnostics.
-Authored nullable types and multiple roots remain on the task list. The JavaScript adapter expands compiler
-templates into request-local
+Top-level `server` declarations now generate their versioned RPC contract,
+browser proxy, and ordinary sequential server implementation. The standard Fetch
+host joins URL matching, nested plan composition, pre-header status gates,
+streamed SSR/hydration state, and server-function dispatch; the Node adapter
+bridges that same handler to native HTTP. Authored nullable types and multiple
+roots remain on the task list. The JavaScript adapter expands compiler templates into request-local
 component and keyed-row paths—including granular attributes, derived child props,
 structural choices, and keyed async collections. Deferred consumers inside a
 revealed structural branch resolve immediately when they share its ready resource
@@ -136,10 +140,11 @@ or dynamically register their additional resource and patch work when they do no
   performance metrics.
 - `@oxe/router`: serializable filesystem route manifests, strict URL matching,
   graph-backed route inputs, nested SSR composition, reactive browser
-  navigation, and persistent independently loaded DOM segments.
+  navigation, persistent independently loaded DOM segments, and Fetch/Node
+  application hosts.
 - `@oxe/server-functions`: versioned typed RPC contracts, deterministic manifests,
   exact request/result validation, safe error envelopes, cancellation, and
-  compiler capability metadata for host-provided transports.
+  Fetch/in-process transports for compiler-generated functions.
 - `@oxe/playground`: browser compiler lab with native examples, an isolated DOM
   preview, diagnostics, generated output, graph inspection, and payload sizing.
 - `docs/language-decisions.md`: settled authored-language decisions and open

@@ -391,6 +391,46 @@ const extendedCompositionGraph = (): UiGraphV1 => {
 };
 
 describe('UiGraphV1', () => {
+  it('validates and canonically orders compiler-owned server function definitions', () => {
+    const input = graph();
+    const first = {
+      id: 'oxe.server.a',
+      mode: 'query' as const,
+      moduleId: 'counter.oxe',
+      name: 'readProject',
+      parameters: [{ name: 'id', schema: { kind: 'string' as const } }],
+      path: ['oxe', 'readProject'],
+      returns: {
+        fields: [{ name: 'name', schema: { kind: 'string' as const } }],
+        kind: 'record' as const,
+      },
+      schemaVersion: 'oxe.server-function.v1' as const,
+    };
+    const second = {
+      ...first,
+      id: 'oxe.server.b',
+      name: 'saveProject',
+      path: ['oxe', 'saveProject'],
+    };
+    const withFunctions = { ...input, serverFunctions: [second, first] } satisfies UiGraphV1;
+
+    expect(validateUiGraph(withFunctions)).toEqual([]);
+    expect(serializeUiGraph(withFunctions)).toBe(
+      serializeUiGraph({ ...withFunctions, serverFunctions: [first, second] }),
+    );
+    expect(
+      validateUiGraph({
+        ...input,
+        serverFunctions: [first, { ...second, path: first.path }],
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        code: 'OXE3006',
+        message: expect.stringContaining('invalid compiler-owned contract'),
+      }),
+    ]);
+  });
+
   it('validates a closed graph and serializes nodes deterministically', () => {
     const input = graph();
     const serialized = serializeUiGraph(input);
