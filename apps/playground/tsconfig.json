@@ -12,7 +12,9 @@
       "@oxe/graph": ["../../packages/graph/src/index.ts"],
       "@oxe/router": ["../../packages/router/src/index.ts"],
       "@oxe/runtime": ["../../packages/runtime/src/index.ts"],
-      "@oxe/runtime-dom": ["../../packages/runtime-dom/src/index.ts"]
+      "@oxe/runtime-dom": ["../../packages/runtime-dom/src/index.ts"],
+      "@oxe/server-functions": ["../../packages/server-functions/src/index.ts"],
+      "@oxe/server-functions/compiler": ["../../packages/server-functions/src/compiler.ts"]
     },
     "rootDir": ".",
     "tsBuildInfoFile": "./dist-typecheck/.tsbuildinfo",
@@ -24,6 +26,7 @@
     { "path": "../../packages/graph" },
     { "path": "../../packages/router" },
     { "path": "../../packages/runtime" },
-    { "path": "../../packages/runtime-dom" }
+    { "path": "../../packages/runtime-dom" },
+    { "path": "../../packages/server-functions" }
   ]
 }

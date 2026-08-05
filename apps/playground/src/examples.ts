@@ -30,6 +30,7 @@ import routingLayoutSource from '../../../examples/routing/layout.oxe?raw';
 import routingPageSource from '../../../examples/routing/page.oxe?raw';
 import routingProjectPageSource from '../../../examples/routing/project-page.oxe?raw';
 import routingProjectsLayoutSource from '../../../examples/routing/projects-layout.oxe?raw';
+import serverFunctionsSource from '../../../examples/server-functions/App.oxe?raw';
 
 import type { PlaygroundCapabilitySet } from './demo-capabilities.js';
 
@@ -99,6 +100,16 @@ export const examples: readonly PlaygroundExample[] = [
       { moduleId: 'src/routes/about/page.oxe', source: routingAboutPageSource },
     ],
   },
+  singleFileExample({
+    id: 'server-functions',
+    label: 'Typed server functions',
+    group: 'Async data',
+    description:
+      'Versioned contracts, bidirectional validation, Fetch envelopes, cancellation, and safe errors.',
+    moduleId: 'examples/server-functions/App.oxe',
+    source: serverFunctionsSource,
+    capabilitySet: 'server-projects',
+  }),
   singleFileExample({
     id: 'async-structural',
     label: 'Localized loading skeleton',

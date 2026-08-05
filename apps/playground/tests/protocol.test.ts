@@ -50,6 +50,7 @@ describe('playground message protocol', () => {
 
     expect(isCompileRequest(request)).toBe(true);
     expect(isCompileRequest({ ...request, capabilitySet: 'async-users' })).toBe(true);
+    expect(isCompileRequest({ ...request, capabilitySet: 'server-projects' })).toBe(true);
     expect(isCompileRequest({ ...request, capabilitySet: 'unknown' })).toBe(false);
     expect(isCompileRequest({ ...request, runId: -1 })).toBe(false);
     expect(isCompileRequest({ ...request, entryModuleId: undefined })).toBe(false);
@@ -115,7 +116,7 @@ describe('playground message protocol', () => {
         runId: 7,
         factorySource: '() => ({})',
         mountExport: 'mountApp',
-        capabilitySet: 'async-users',
+        capabilitySet: 'server-projects',
       }),
     ).toBe(true);
     expect(
