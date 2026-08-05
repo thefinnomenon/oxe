@@ -2229,6 +2229,15 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
           );
         });
         writer.line('}');
+        writer.line('const localizationContext = readSerializedLocalizationContext(document);');
+        writer.line('if (!localizationContext) {');
+        writer.indented(() => {
+          writer.line(
+            `throw new Error(${JSON.stringify(`Cannot hydrate ${plan.entry.component.name}: serialized localization state is missing.`)});`,
+          );
+        });
+        writer.line('}');
+        writer.line('i18n.adoptContext(localizationContext);');
       }
       if (usesRoute) {
         writer.line('if (!options.route) {');
@@ -2389,6 +2398,9 @@ const emitFactorySource = (program: EmittedProgram): string => {
     ...(program.source.includes('readSerializedBuildFingerprint(')
       ? ['readSerializedBuildFingerprint']
       : []),
+    ...(program.source.includes('readSerializedLocalizationContext(')
+      ? ['readSerializedLocalizationContext']
+      : []),
     'setDomValue',
   ].join(', ');
   writer.line('(runtime, dom) => {');
@@ -2457,6 +2469,9 @@ const emitModuleSource = (program: EmittedProgram): string => {
       : []),
     ...(program.source.includes('readSerializedBuildFingerprint(')
       ? ['readSerializedBuildFingerprint']
+      : []),
+    ...(program.source.includes('readSerializedLocalizationContext(')
+      ? ['readSerializedLocalizationContext']
       : []),
     'setDomValue',
   ].join(', ');

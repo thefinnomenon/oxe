@@ -434,8 +434,11 @@ const mountPreview = async (
   installDemoCapabilities(command.capabilitySet);
   const i18n = command.localization
     ? createI18n({
+        calendar: 'gregory',
         catalogs: [enCatalog, esCatalog, frCatalog, itCatalog, ptCatalog] as LocaleCatalog[],
         locale: 'es',
+        numberingSystem: 'latn',
+        timeZone: 'UTC',
       })
     : undefined;
 

@@ -18,6 +18,7 @@ export {
   OxeHydrationBuildMismatch,
   readSerializedAsyncCheckpoints,
   readSerializedBuildFingerprint,
+  readSerializedLocalizationContext,
   setDomValue,
   type DomEventHandler,
   type DomErrorContext,

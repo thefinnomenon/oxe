@@ -225,7 +225,7 @@ replacement and recover safely from deliberate mismatches.
       instances rather than bundled locale algorithms.
 - [x] Generate machine-readable `datetime` and `value` attributes for semantic
       `time` and `data` formatting sites.
-- [ ] Make locale, time zone, calendar, and numbering system explicit SSR inputs
+- [x] Make locale, time zone, calendar, and numbering system explicit SSR inputs
       and serialize them into hydration state to prevent server/client drift.
 - [ ] Split locale catalogs into lazy chunks and prove through payload inspection
       that unused translation, plural, ordinal, and formatting capabilities are

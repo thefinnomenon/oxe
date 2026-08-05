@@ -6,6 +6,7 @@ import {
   type ComponentParameterNodeV1,
   type ContentValueNodeV1,
   type PlatformCapabilityNodeV1,
+  type TextNodeV1,
   type UiEdgeV1,
   type UiGraphV1,
   type UiNodeV1,
@@ -633,6 +634,23 @@ export const createDeferredServerRenderPlan = (graph: UiGraphV1): ServerRenderPl
     }
     return resources;
   };
+  const addExpressionResources = (
+    resources: Set<string>,
+    expressions: readonly ValueExpressionV1[],
+  ): void => {
+    for (const expression of expressions) {
+      for (const resourceId of resourcesForExpression(expression)) resources.add(resourceId);
+    }
+  };
+  const localizationExpressions = (
+    localization: NonNullable<TextNodeV1['localization']>,
+  ): readonly ValueExpressionV1[] => [
+    ...localization.values.map((value) => value.value),
+    ...(localization.selection ? [localization.selection.value] : []),
+    ...localization.markup.flatMap((markup) =>
+      markup.dynamicAttributes.map((attribute) => attribute.value),
+    ),
+  ];
 
   let changed = true;
   while (changed) {
@@ -695,20 +713,32 @@ export const createDeferredServerRenderPlan = (graph: UiGraphV1): ServerRenderPl
 
   for (const node of [...graph.nodes].sort(compareNodes)) {
     if (node.kind === 'text') {
-      node.parts.forEach((part, index) => {
-        if (part.kind === 'expression') {
-          addRegion(node.id, `text[${index}]`, 'text', resourcesForExpression(part.expression));
-        }
-      });
+      if (node.localization) {
+        const resources = new Set<string>();
+        addExpressionResources(resources, localizationExpressions(node.localization));
+        addRegion(node.id, 'localization', 'text', resources);
+      } else if (node.format) {
+        const resources = resourcesForExpression(node.format.value);
+        addExpressionResources(
+          resources,
+          node.format.options.map((option) => option.value),
+        );
+        addRegion(node.id, 'format', 'text', resources);
+      } else {
+        node.parts.forEach((part, index) => {
+          if (part.kind === 'expression') {
+            addRegion(node.id, `text[${index}]`, 'text', resourcesForExpression(part.expression));
+          }
+        });
+      }
     } else if (node.kind === 'element') {
-      (node.dynamicAttributes ?? []).forEach((attribute, index) =>
-        addRegion(
-          node.id,
-          `attribute[${index}]/${attribute.name}`,
-          'attribute',
-          resourcesForExpression(attribute.value),
-        ),
-      );
+      (node.dynamicAttributes ?? []).forEach((attribute, index) => {
+        const resources = resourcesForExpression(attribute.value);
+        if (attribute.localization) {
+          addExpressionResources(resources, localizationExpressions(attribute.localization));
+        }
+        addRegion(node.id, `attribute[${index}]/${attribute.name}`, 'attribute', resources);
+      });
     } else if (node.kind === 'conditional-region' || node.kind === 'content-value') {
       const resources = new Set<string>();
       for (const branch of node.branches) {

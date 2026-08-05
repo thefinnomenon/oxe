@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 import { analyzeSource } from '@oxe/compiler';
+import { resolveLocalizationContext } from '@oxe/runtime';
 
 import {
   extractProjectMessages,
@@ -300,16 +301,38 @@ describe('OXE localization tooling', () => {
         { locale: 'en-US', messages: {}, schemaVersion: I18N_CATALOG_SCHEMA },
         { locale: 'fr-FR', messages: {}, schemaVersion: I18N_CATALOG_SCHEMA },
       ],
+      calendar: 'gregory',
       locale: 'en-US',
+      numberingSystem: 'latn',
+      timeZone: 'America/New_York',
     });
-    const date = new Date('2026-08-04T15:30:00.000Z');
+    const date = new Date('2026-08-04T01:30:00.000Z');
 
+    expect(runtime.context).toEqual(
+      resolveLocalizationContext({
+        calendar: 'gregory',
+        locale: 'en-US',
+        numberingSystem: 'latn',
+        timeZone: 'America/New_York',
+      }),
+    );
     expect(runtime.formatValue(10, { currency: 'USD', type: 'currency' })).toBe('$10.00');
+    expect(runtime.formatValue(date, { dateStyle: 'long', type: 'date' })).toBe('August 3, 2026');
     expect(runtime.formatValue(date, { dateStyle: 'long', timeZone: 'UTC', type: 'date' })).toBe(
       'August 4, 2026',
     );
-    expect(runtime.machineValue(date, 'datetime')).toBe('2026-08-04T15:30:00.000Z');
-    runtime.setLocale('fr-FR');
+    expect(runtime.machineValue(date, 'datetime')).toBe('2026-08-04T01:30:00.000Z');
+    const initialRevision = runtime.revision.read();
+    runtime.adoptContext(
+      resolveLocalizationContext({
+        calendar: 'gregory',
+        locale: 'fr-FR',
+        numberingSystem: 'latn',
+        timeZone: 'UTC',
+      }),
+    );
+    expect(runtime.revision.read()).toBe(initialRevision + 1);
+    expect(runtime.context).toMatchObject({ locale: 'fr-FR', timeZone: 'UTC' });
     expect(runtime.formatValue(10, { currency: 'EUR', type: 'currency' })).toMatch(/10,00\s€/u);
   });
 

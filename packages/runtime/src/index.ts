@@ -1,5 +1,13 @@
 export { OxeRuntimeError, type RuntimeErrorCode } from './errors.js';
 export {
+  localizationContextsEqual,
+  OXE_LOCALIZATION_CONTEXT_SCHEMA,
+  parseLocalizationContext,
+  resolveLocalizationContext,
+  type LocalizationContextInput,
+  type LocalizationContextV1,
+} from './localization.js';
+export {
   batch,
   addCollection,
   asyncResourceIdentity,

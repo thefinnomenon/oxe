@@ -13,6 +13,6 @@ export App():
     <p i18n={{ key: "home.inline", purpose: "inline-markup localization example" }}>Built with:
       <strong> OXE
     <data i18n={{ format: { type: "currency", currency: "USD" } }}>{total}
-    <time i18n={{ format: { type: "date", dateStyle: "long", timeZone: "UTC" } }}>{publishedAt}
+    <time i18n={{ format: { type: "date", dateStyle: "long" } }}>{publishedAt}
     <p i18n={{ key: "home.powered-by", purpose: "small product attribution" }}>Powered by OXE
     <code i18n={false}>pnpm oxe i18n sync

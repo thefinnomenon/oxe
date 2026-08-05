@@ -1,4 +1,11 @@
-import { createCell, type Readable } from '@oxe/runtime';
+import {
+  createCell,
+  localizationContextsEqual,
+  resolveLocalizationContext,
+  type LocalizationContextInput,
+  type LocalizationContextV1,
+  type Readable,
+} from '@oxe/runtime';
 
 import type {
   CatalogMessage,
@@ -251,6 +258,8 @@ export const formatCatalogParts = (
 
 export interface I18nRuntime {
   addCatalog(catalog: LocaleCatalog): void;
+  adoptContext(context: LocalizationContextV1): void;
+  readonly context: LocalizationContextV1;
   format(id: string, options?: FormatCatalogMessageOptions): string;
   formatToParts(id: string, options?: FormatCatalogPartsOptions): readonly LocalizedContentPart[];
   formatValue(value: unknown, options: FormatValueOptions): string;
@@ -261,42 +270,71 @@ export interface I18nRuntime {
   readonly supportedLocales: readonly string[];
 }
 
-export interface CreateI18nOptions {
+export interface CreateI18nOptions extends LocalizationContextInput {
   readonly catalogs: readonly LocaleCatalog[];
-  readonly locale: string;
 }
 
 export const createI18n = (options: CreateI18nOptions): I18nRuntime => {
-  const catalogs = new Map(options.catalogs.map((catalog) => [catalog.locale, catalog]));
-  let locale = Intl.getCanonicalLocales(options.locale)[0] ?? options.locale;
+  const catalogs = new Map(
+    options.catalogs.map((catalog) => [
+      Intl.getCanonicalLocales(catalog.locale)[0] ?? catalog.locale,
+      catalog,
+    ]),
+  );
+  let context = resolveLocalizationContext(options);
   const revision = createCell(0, { name: 'i18n locale and catalogs' });
-  if (!catalogs.has(locale)) {
-    throw new RangeError(`No localization catalog is loaded for ${locale}.`);
+  if (!catalogs.has(context.locale)) {
+    throw new RangeError(`No localization catalog is loaded for ${context.locale}.`);
   }
   return {
     addCatalog(catalog): void {
-      catalogs.set(catalog.locale, catalog);
+      const canonical = Intl.getCanonicalLocales(catalog.locale)[0] ?? catalog.locale;
+      catalogs.set(canonical, catalog);
       revision.write(revision.read() + 1);
     },
+    adoptContext(nextContext): void {
+      const resolved = resolveLocalizationContext(nextContext);
+      if (!catalogs.has(resolved.locale)) {
+        throw new RangeError(`No localization catalog is loaded for ${resolved.locale}.`);
+      }
+      if (localizationContextsEqual(context, resolved)) return;
+      context = resolved;
+      revision.write(revision.read() + 1);
+    },
+    get context(): LocalizationContextV1 {
+      return context;
+    },
     format(id, formatOptions = {}): string {
-      const catalog = catalogs.get(locale);
+      const catalog = catalogs.get(context.locale);
       if (!catalog) {
-        throw new RangeError(`No localization catalog is loaded for ${locale}.`);
+        throw new RangeError(`No localization catalog is loaded for ${context.locale}.`);
       }
       return formatCatalogMessage(catalog, id, formatOptions);
     },
     formatToParts(id, formatOptions = {}): readonly LocalizedContentPart[] {
-      const catalog = catalogs.get(locale);
+      const catalog = catalogs.get(context.locale);
       if (!catalog) {
-        throw new RangeError(`No localization catalog is loaded for ${locale}.`);
+        throw new RangeError(`No localization catalog is loaded for ${context.locale}.`);
       }
       return formatCatalogParts(catalog, id, formatOptions);
     },
     formatValue(value, formatOptions): string {
-      return formatIntlValue(locale, value, formatOptions);
+      const contextualOptions: FormatValueOptions =
+        formatOptions.type === 'currency'
+          ? {
+              numberingSystem: context.numberingSystem,
+              ...formatOptions,
+            }
+          : {
+              calendar: context.calendar,
+              numberingSystem: context.numberingSystem,
+              timeZone: context.timeZone,
+              ...formatOptions,
+            };
+      return formatIntlValue(context.locale, value, contextualOptions);
     },
     get locale(): string {
-      return locale;
+      return context.locale;
     },
     revision,
     machineValue(value, type): string {
@@ -307,7 +345,7 @@ export const createI18n = (options: CreateI18nOptions): I18nRuntime => {
       if (!catalogs.has(canonical)) {
         throw new RangeError(`No localization catalog is loaded for ${canonical}.`);
       }
-      locale = canonical;
+      context = resolveLocalizationContext({ ...context, locale: canonical });
       revision.write(revision.read() + 1);
     },
     get supportedLocales(): readonly string[] {

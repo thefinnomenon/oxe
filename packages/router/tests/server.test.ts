@@ -1,4 +1,5 @@
 import { analyzeProject } from '@oxe/compiler';
+import { resolveLocalizationContext } from '@oxe/runtime';
 import { createServerRenderPlan } from '@oxe/runtime-server';
 import { describe, expect, it } from 'vitest';
 
@@ -6,6 +7,7 @@ import { createFileRouteManifest, matchRoute } from '../src/index.js';
 import {
   composeRouteServerPlan,
   renderRouteToString,
+  renderRouteToStringWithHydrationState,
   serializeRouteSnapshotScript,
 } from '../src/server.js';
 import type { RouteSegmentDefinitionV1 } from '../src/types.js';
@@ -117,6 +119,7 @@ describe('route server rendering', () => {
     });
     const html = renderRouteToString(plan, match, {
       i18n: {
+        context: resolveLocalizationContext({ locale: 'fr', timeZone: 'UTC' }),
         format(id, options): string {
           if (id === 'navigation.title') return 'Projets';
           return `Projet ${String(options?.values?.projectId)}`;
@@ -134,5 +137,26 @@ describe('route server rendering', () => {
     });
 
     expect(html).toBe('<main><header>Projets</header><h1>Projet alpha</h1></main>');
+    const hydratable = renderRouteToStringWithHydrationState(plan, match, {
+      i18n: {
+        context: resolveLocalizationContext({ locale: 'fr', timeZone: 'UTC' }),
+        format(id, options): string {
+          if (id === 'navigation.title') return 'Projets';
+          return `Projet ${String(options?.values?.projectId)}`;
+        },
+        formatToParts(): readonly string[] {
+          return [];
+        },
+        formatValue(value): string {
+          return String(value);
+        },
+        machineValue(value): string {
+          return String(value);
+        },
+      },
+    });
+    expect(hydratable).toContain(html);
+    expect(hydratable).toContain('"schemaVersion":"oxe.hydration-state.v1"');
+    expect(hydratable).toContain('"locale":"fr"');
   });
 });

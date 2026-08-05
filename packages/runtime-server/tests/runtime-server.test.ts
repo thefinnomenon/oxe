@@ -18,8 +18,10 @@ import {
   renderServerStreamToString,
   renderToSink,
   renderToString,
+  renderToStringWithHydrationState,
   renderToStringWithMetrics,
   serializeAsyncCheckpoints,
+  serializeHydrationState,
   serializeServerStreamPatch,
   streamServerRenderPlan,
   type ServerDeferredRegionOutput,
@@ -239,6 +241,21 @@ describe('inert streaming transport', () => {
     expect(serializeAsyncCheckpoints([{ identity: '</script>', value: '<Admin>' }])).toContain(
       '\\u003c/script\\u003e',
     );
+    const localization = runtime.resolveLocalizationContext({
+      calendar: 'gregory',
+      locale: 'fr-FR',
+      numberingSystem: 'latn',
+      timeZone: 'UTC',
+    });
+    const state = serializeHydrationState({
+      buildFingerprint: 'build<&>',
+      checkpoints: [{ identity: '</script>', value: '<Admin>' }],
+      localization,
+    });
+    expect(state).toContain('data-oxe-build="build&lt;&amp;&gt;"');
+    expect(state).toContain('"schemaVersion":"oxe.hydration-state.v1"');
+    expect(state).toContain('"timeZone":"UTC"');
+    expect(state).toContain('\\u003c/script\\u003e');
   });
 });
 
@@ -650,6 +667,69 @@ describe('JavaScript v2 readiness adapter', () => {
     });
   });
 
+  it('uses one localization context for the streamed shell, deferred patches, and hydration', async () => {
+    const analyzed = analyzeSource(
+      `export App():
+  user = users.load(1)
+  team = users.load(2)
+  <main>
+    <p i18n={{ key: "intro" }}>Loading your profile
+    <h1 i18n={{ key: "greeting" }}>Hello {user.name} from {team.name}
+    <time i18n={{ format: { type: "date" } }}>{user.joined}
+`,
+      'localized-stream.oxe',
+      'localized-stream.oxe',
+      {
+        capabilities: [
+          { kind: 'async', name: 'users.load', parameters: ['number'], returns: 'record' },
+        ],
+        localization: true,
+        target: 'server',
+      },
+    );
+    if (!analyzed.graph) throw new Error(JSON.stringify(analyzed.diagnostics));
+    const plan = createDeferredServerRenderPlan(analyzed.graph);
+    const i18n = {
+      context: runtime.resolveLocalizationContext({
+        calendar: 'gregory',
+        locale: 'fr',
+        numberingSystem: 'latn',
+        timeZone: 'UTC',
+      }),
+      format(
+        id: string,
+        options?: { readonly values?: Readonly<Record<string, unknown>> },
+      ): string {
+        return id === 'intro'
+          ? 'Chargement de votre profil'
+          : `Bonjour ${String(options?.values?.name)} de ${String(options?.values?.name2)}`;
+      },
+      formatToParts(): readonly string[] {
+        return [];
+      },
+      formatValue(value: unknown): string {
+        return `4 août 2026 (${String(value)})`;
+      },
+      machineValue(value: unknown): string {
+        return String(value);
+      },
+    };
+    const adapter = createJavaScriptReadinessAdapter({
+      callCapability: (_capability, arguments_) =>
+        arguments_[0] === 1 ? { joined: '2026-08-04T00:00:00.000Z', name: 'Ada' } : { name: 'OXE' },
+      i18n,
+    });
+
+    const result = await renderServerStreamToString(plan, adapter, { includeBootstrap: false });
+
+    expect(result.html).toContain('Chargement de votre profil');
+    expect(result.html).toContain('>Bonjour Ada de OXE</template>');
+    expect(result.html).toContain('>4 août 2026 (2026-08-04T00:00:00.000Z)</template>');
+    expect(result.html).toContain('"schemaVersion":"oxe.hydration-state.v1"');
+    expect(result.html).toContain('"locale":"fr"');
+    expect(result.html).toContain('"timeZone":"UTC"');
+  });
+
   it('waits to compute a dependent async request identity until its argument resource is ready', async () => {
     const plan = requireDeferredPlan(`export App():
   user = users.load(1)
@@ -964,6 +1044,7 @@ describe('synchronous JavaScript SSR', () => {
     );
     const html = renderToString(plan, {
       i18n: {
+        context: runtime.resolveLocalizationContext({ locale: 'fr', timeZone: 'UTC' }),
         format(id, options): string {
           if (id === 'greeting') return `Bonjour ${String(options?.values?.name)}`;
           if (id === 'stories') return `${String(options?.count)} histoires`;
@@ -991,6 +1072,30 @@ describe('synchronous JavaScript SSR', () => {
     );
     expect(html).toContain('<input placeholder="Rechercher des histoires">');
     expect(html).toContain('<data value="10">10,00 €</data>');
+    const hydratable = renderToStringWithHydrationState(plan, {
+      i18n: {
+        context: runtime.resolveLocalizationContext({ locale: 'fr', timeZone: 'UTC' }),
+        format(id, options): string {
+          if (id === 'greeting') return `Bonjour ${String(options?.values?.name)}`;
+          if (id === 'stories') return `${String(options?.count)} histoires`;
+          return 'Rechercher des histoires';
+        },
+        formatToParts(_id, options) {
+          return [
+            { children: [String(options?.values?.name)], kind: 'markup', name: 'strong' },
+            ', bienvenue',
+          ];
+        },
+        formatValue(value): string {
+          return `${String(value)},00 €`;
+        },
+        machineValue(value): string {
+          return String(value);
+        },
+      },
+    });
+    expect(hydratable).toContain('"locale":"fr"');
+    expect(hydratable).toContain(`data-oxe-build="${plan.source.buildFingerprint}"`);
   });
 
   it('matches the browser backend for the same semantic graph and initial state', () => {

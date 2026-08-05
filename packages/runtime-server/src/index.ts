@@ -8,6 +8,7 @@ export {
   OxeServerRenderError,
   renderToSink,
   renderToString,
+  renderToStringWithHydrationState,
   renderToStringWithMetrics,
   type ServerRenderErrorCode,
 } from './render.js';
@@ -28,10 +29,13 @@ export {
 export {
   OXE_STREAM_BOOTSTRAP_CSP_HASH,
   OXE_STREAM_BOOTSTRAP_SOURCE,
+  OXE_HYDRATION_STATE_SCHEMA,
   serializeAsyncCheckpoints,
+  serializeHydrationState,
   serializeServerRegionMarker,
   serializeServerStreamPatch,
   type ServerStreamPatch,
+  type SerializeHydrationStateOptions,
 } from './stream-protocol.js';
 export type {
   ServerBindingV1,
@@ -48,6 +52,7 @@ export type {
   ServerDeferredResourceV2,
   ServerExpressionV1,
   ServerFormatValueOptions,
+  ServerI18nRuntime,
   ServerFormattedValueV1,
   ServerLiteralV1,
   ServerLocalizedContentPart,

@@ -1,4 +1,5 @@
 import type { BinaryOperatorV1, ConstantValueV1, PrimitiveTypeV1 } from '@oxe/graph';
+import type { LocalizationContextV1 } from '@oxe/runtime';
 
 import type { ServerStreamPatch } from './stream-protocol.js';
 
@@ -245,6 +246,7 @@ export type ServerViewV1 =
       /** Reference-backend-only view used while instantiating deferred values. */
       readonly id: string;
       readonly kind: 'value-capture';
+      readonly localization?: ServerLocalizedMessageV1;
       readonly value: ServerExpressionV1;
     };
 
@@ -419,6 +421,7 @@ export interface ServerPreparedRegionV2 {
 }
 
 export interface ServerReadinessPreparation {
+  readonly localization?: LocalizationContextV1;
   readonly regions: readonly ServerPreparedRegionV2[];
   readonly resources: readonly ServerDeferredResourceV2[];
   readonly shell: string;
@@ -488,6 +491,32 @@ export type ServerFormatValueOptions =
     >)
   | ({ readonly type: 'date' | 'datetime' | 'time' } & Intl.DateTimeFormatOptions);
 
+export interface ServerI18nRuntime {
+  readonly context: LocalizationContextV1;
+  readonly format: (
+    id: string,
+    options?: {
+      readonly count?: number;
+      readonly ordinal?: number;
+      readonly values?: Readonly<Record<string, boolean | number | string>>;
+    },
+  ) => string;
+  readonly formatToParts: (
+    id: string,
+    options?: {
+      readonly count?: number;
+      readonly markup?: readonly string[];
+      readonly ordinal?: number;
+      readonly values?: Readonly<Record<string, boolean | number | string>>;
+    },
+  ) => readonly ServerLocalizedContentPart[];
+  readonly formatValue: (value: unknown, options: ServerFormatValueOptions) => string;
+  readonly machineValue: (
+    value: unknown,
+    type: 'currency' | 'date' | 'datetime' | 'time',
+  ) => string;
+}
+
 export interface ServerRenderOptions {
   /** Captures request-local async arguments without executing the async capability. */
   readonly captureAsyncResource?: (
@@ -502,30 +531,7 @@ export interface ServerRenderOptions {
     arguments_: readonly unknown[],
   ) => unknown;
   /** Request-local localization runtime used by compiler-lowered messages. */
-  readonly i18n?: {
-    readonly format: (
-      id: string,
-      options?: {
-        readonly count?: number;
-        readonly ordinal?: number;
-        readonly values?: Readonly<Record<string, boolean | number | string>>;
-      },
-    ) => string;
-    readonly formatToParts: (
-      id: string,
-      options?: {
-        readonly count?: number;
-        readonly markup?: readonly string[];
-        readonly ordinal?: number;
-        readonly values?: Readonly<Record<string, boolean | number | string>>;
-      },
-    ) => readonly ServerLocalizedContentPart[];
-    readonly formatValue: (value: unknown, options: ServerFormatValueOptions) => string;
-    readonly machineValue: (
-      value: unknown,
-      type: 'currency' | 'date' | 'datetime' | 'time',
-    ) => string;
-  };
+  readonly i18n?: ServerI18nRuntime;
   /** Reports each component occurrence before its boundary renders. */
   readonly onComponentInstance?: (location: ServerRenderLocation) => void;
   /** Resolved async binding values keyed by compiler-level binding id. */

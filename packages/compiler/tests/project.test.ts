@@ -397,5 +397,11 @@ export App():
       'Cannot build Page route segment: i18n is required by localized messages.',
     );
     expect(artifact.factorySource).toContain('return Page(document, i18n, route);');
+    expect(artifact.hydrateExport).toBe('hydratePage');
+    expect(artifact.factorySource).toContain(
+      'const localizationContext = readSerializedLocalizationContext(document);',
+    );
+    expect(artifact.factorySource).toContain('i18n.adoptContext(localizationContext);');
+    expect(artifact.factorySource).toContain('serialized localization state is missing');
   });
 });

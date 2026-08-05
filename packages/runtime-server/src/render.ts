@@ -18,6 +18,7 @@ import type {
   ServerRenderSink,
   ServerViewV1,
 } from './types.js';
+import { serializeHydrationState } from './stream-protocol.js';
 
 export type ServerRenderErrorCode =
   'OXE_SERVER_RENDER_CAPABILITY' | 'OXE_SERVER_RENDER_INVALID_PLAN' | 'OXE_SERVER_RENDER_VALUE';
@@ -607,11 +608,14 @@ const renderView = (
       if (!state.options.captureValue) {
         return invalidPlan(`Value capture "${view.id}" requires a server capture hook.`);
       }
-      state.options.captureValue(
-        view.id,
-        evaluate(view.value, environment, contexts, locals, state),
-        renderLocation(environment, instancePath),
-      );
+      const value = view.localization
+        ? (state.options.i18n?.format(
+            view.localization.key,
+            localizedOptions(view.localization, environment, contexts, locals, state),
+          ) ??
+          invalidPlan(`Localized value capture "${view.localization.key}" requires options.i18n.`))
+        : evaluate(view.value, environment, contexts, locals, state);
+      state.options.captureValue(view.id, value, renderLocation(environment, instancePath));
       return;
     }
     case 'element': {
@@ -1016,3 +1020,13 @@ export const renderToString = (
   plan: ServerRenderPlanV1,
   options: ServerRenderOptions = {},
 ): string => renderToStringWithMetrics(plan, options).html;
+
+/** Renders blocking HTML followed by the exact build and Intl inputs required for hydration. */
+export const renderToStringWithHydrationState = (
+  plan: ServerRenderPlanV1,
+  options: ServerRenderOptions = {},
+): string =>
+  `${renderToString(plan, options)}${serializeHydrationState({
+    buildFingerprint: plan.source.buildFingerprint,
+    ...(options.i18n ? { localization: options.i18n.context } : {}),
+  })}`;

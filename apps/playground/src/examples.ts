@@ -109,7 +109,7 @@ export const examples: readonly PlaygroundExample[] = [
     label: 'Localization and Intl',
     group: 'Localization',
     description:
-      'Translated prose, plurals, ordinals, inline markup, attributes, currency, and dates.',
+      'Translated prose, plurals, ordinals, inline markup, attributes, and request-stable Intl formatting.',
     moduleId: 'examples/localization/App.oxe',
     source: localizationSource,
     localization: true,
