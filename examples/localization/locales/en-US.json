@@ -1,0 +1,27 @@
+{
+  "locale": "en-US",
+  "messages": {
+    "home.greeting": "Welcome back, {name}",
+    "home.inline": "Built with:<strong> OXE</strong>",
+    "home.powered-by": "Powered by OXE",
+    "home.rank": {
+      "cases": {
+        "few": "You finished in {rank}rd place this week",
+        "one": "You finished in {rank}st place this week",
+        "other": "You finished in {rank}th place this week",
+        "two": "You finished in {rank}nd place this week"
+      },
+      "kind": "ordinal"
+    },
+    "home.ready": "Your reading list is ready.",
+    "home.story-count": {
+      "cases": {
+        "one": "{stories} story saved to your reading list",
+        "other": "{stories} stories saved to your reading list"
+      },
+      "kind": "cardinal"
+    },
+    "m_43b4415e3dfc1b4a": "Search your stories"
+  },
+  "schemaVersion": "oxe.i18n.catalog.v2"
+}

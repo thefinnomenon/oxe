@@ -1,0 +1,25 @@
+{
+  "locale": "es",
+  "messages": {
+    "home.greeting": "Te damos la bienvenida, {name}",
+    "home.inline": "Creado con:<strong> OXE</strong>",
+    "home.powered-by": "Con tecnología de OXE",
+    "home.rank": {
+      "cases": {
+        "other": "Terminaste en {rank}.º lugar esta semana"
+      },
+      "kind": "ordinal"
+    },
+    "home.ready": "Tu lista de lectura está lista.",
+    "home.story-count": {
+      "cases": {
+        "many": "{stories} historias guardadas en tu lista de lectura",
+        "one": "{stories} historia guardada en tu lista de lectura",
+        "other": "{stories} historias guardadas en tu lista de lectura"
+      },
+      "kind": "cardinal"
+    },
+    "m_43b4415e3dfc1b4a": "Busca en tu lista de lectura"
+  },
+  "schemaVersion": "oxe.i18n.catalog.v2"
+}

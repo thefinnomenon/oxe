@@ -216,6 +216,35 @@ replacement and recover safely from deliberate mismatches.
 - [x] Lower route snapshots and navigation operations into explicit graph inputs.
 - [x] Compose matched layout/page server plans and adopt the serialized route
       snapshot during hydration.
+- [x] Extract authored visible prose into stable messages while preserving dynamic
+      values and inline markup as reorderable placeholders.
+- [x] Lower strict compiler-only `i18n` records for message keys, plural/ordinal
+      counts, named selectors, and inherited `i18n={false}` opt-outs.
+- [x] Format currency, date, time, and datetime values through the platform
+      `Intl` implementations, using native option names and cached formatter
+      instances rather than bundled locale algorithms.
+- [x] Generate machine-readable `datetime` and `value` attributes for semantic
+      `time` and `data` formatting sites.
+- [x] Make locale, time zone, calendar, and numbering system explicit SSR inputs
+      and serialize them into hydration state to prevent server/client drift.
+- [ ] Split locale catalogs into lazy chunks and prove through payload inspection
+      that unused translation, plural, ordinal, and formatting capabilities are
+      absent.
+- [x] Extract and hash messages during development without translating, then add
+      explicit incremental OpenAI-backed `oxe i18n sync` generation with
+      environment-only credentials, generated/reviewed provenance, and protection
+      for human edits.
+- [x] Add deterministic `i18n check` and build-preparation validation that performs
+      no model, provider, network, or catalog writes.
+- [x] Generate complete platform-derived cardinal and ordinal catalogs with
+      purpose/context guidance, glossary invalidation, bounded locale concurrency,
+      and a tree-shakable browser selection runtime.
+- [ ] Invoke localization preparation from the eventual `oxe build` pipeline and
+      provide an explicit `--sync-i18n` composition for developer-controlled
+      generation before build.
+- [ ] Add optional design-system locale and currency pickers driven by configured
+      supported values while keeping locale selection and currency conversion
+      separate.
 - [ ] Add typed server functions and serialization boundaries.
 - [ ] Reintroduce the schema graph around OXE's final type system.
 - [ ] Generate validated and authorized database/storage clients.

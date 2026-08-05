@@ -11,9 +11,12 @@ import {
   type CollectionCallbackV1,
   type DynamicAttributeV1,
   type EffectNodeV1,
+  type FormattedValueV1,
   type GraphSpanV1,
   type KeyedCollectionNodeV1,
   type LiteralValueV1,
+  type LocalizedMarkupV1,
+  type LocalizedMessageV1,
   type PrimitiveTypeV1,
   type RouteIntrinsicV1,
   type ProcedureStepV1,
@@ -38,14 +41,12 @@ import type {
   ExpressionNode,
   HandlerDeclarationNode,
   IdentifierNode,
-  InterpolationNode,
   ExpressionStatementNode,
   MapExpressionNode,
   MarkupChildNode,
   MemberExpressionNode,
   ModuleNode,
   SpreadAttributeNode,
-  TextNode,
 } from './ast.js';
 import type { Diagnostic, DiagnosticCode, RelatedDiagnostic } from './diagnostics.js';
 import {
@@ -81,6 +82,7 @@ export interface PlatformCapabilityContract {
 
 export interface AnalyzeOptions {
   readonly capabilities?: readonly PlatformCapabilityContract[];
+  readonly localization?: boolean;
   readonly routeSegment?: 'layout' | 'page';
   readonly target?: 'client' | 'server';
 }
@@ -187,6 +189,7 @@ interface AnalysisState {
   readonly diagnostics: Diagnostic[];
   readonly diagnosticKeys: Set<string>;
   readonly platformCapabilities: ReadonlyMap<string, PlatformCapabilityInfo>;
+  readonly localization: boolean;
   readonly target: 'client' | 'server';
 }
 
@@ -203,6 +206,7 @@ export interface AnalyzeProjectOptions {
   readonly entryModuleId: string;
   readonly entryExport: string;
   readonly loadModule: LoadOxeModule;
+  readonly localization?: boolean;
   /** Route layouts may consume only the compiler-reserved children slot. */
   readonly routeSegment?: 'layout' | 'page';
   readonly target?: 'client' | 'server';
@@ -315,6 +319,7 @@ const createAnalysisState = (
   const state: AnalysisState = {
     diagnostics: [],
     diagnosticKeys: new Set(),
+    localization: options?.localization === true,
     platformCapabilities: new Map(),
     target: options?.target ?? 'client',
   };
@@ -2445,11 +2450,110 @@ const collectComponentInvocations = (
 ): readonly ComponentInvocation[] => {
   const invocations: ComponentInvocation[] = [];
 
+  const validateI18nMetadata = (element: ElementNode): void => {
+    const attributes = element.attributes.filter(
+      (attribute): attribute is AttributeNode =>
+        attribute.kind === 'Attribute' && attribute.name.name === 'i18n',
+    );
+    const attribute = attributes[0];
+    if (!attribute) {
+      return;
+    }
+    if (attributes.length > 1) {
+      report(
+        state,
+        'OXE2001',
+        'Localization metadata is declared more than once.',
+        attributes[1]?.span ?? attribute.span,
+        [{ message: 'The first declaration is here.', span: attribute.span }],
+      );
+    }
+    if (attribute.value.kind === 'BooleanLiteral' && attribute.value.value === false) {
+      return;
+    }
+    if (attribute.value.kind !== 'RecordLiteral') {
+      report(
+        state,
+        'OXE2008',
+        'i18n must be false or an inline metadata record.',
+        attribute.value.span,
+      );
+      return;
+    }
+    const fields = new Map<string, SourceSpan>();
+    const allowed = new Set(['context', 'count', 'format', 'key', 'ordinal', 'purpose']);
+    for (const entry of attribute.value.entries) {
+      const previous = fields.get(entry.name.name);
+      if (previous) {
+        report(state, 'OXE2001', `Duplicate i18n field "${entry.name.name}".`, entry.name.span, [
+          { message: 'The first field is here.', span: previous },
+        ]);
+        continue;
+      }
+      fields.set(entry.name.name, entry.name.span);
+      if (!allowed.has(entry.name.name)) {
+        report(state, 'OXE2008', `Unknown i18n field "${entry.name.name}".`, entry.name.span);
+      } else if (entry.name.name === 'key' && entry.value.kind !== 'StringLiteral') {
+        report(state, 'OXE2008', 'i18n.key must be a static string.', entry.value.span);
+      } else if (entry.name.name === 'purpose' && entry.value.kind !== 'StringLiteral') {
+        report(state, 'OXE2008', 'i18n.purpose must be a static string.', entry.value.span);
+      } else if (entry.name.name === 'context' && entry.value.kind !== 'RecordLiteral') {
+        report(state, 'OXE2008', 'i18n.context must be an inline record.', entry.value.span);
+      } else if (entry.name.name === 'format') {
+        if (entry.value.kind !== 'RecordLiteral') {
+          report(state, 'OXE2008', 'i18n.format must be an inline record.', entry.value.span);
+          continue;
+        }
+        const type = entry.value.entries.find((option) => option.name.name === 'type');
+        if (!type || type.value.kind !== 'StringLiteral') {
+          report(
+            state,
+            'OXE2008',
+            'i18n.format.type must be a static string.',
+            type?.value.span ?? entry.value.span,
+          );
+          continue;
+        }
+        if (!['currency', 'date', 'datetime', 'time'].includes(type.value.value)) {
+          report(
+            state,
+            'OXE2008',
+            'i18n.format.type must be currency, date, datetime, or time.',
+            type.value.span,
+          );
+        }
+        if (
+          type.value.value === 'currency' &&
+          !entry.value.entries.some((option) => option.name.name === 'currency')
+        ) {
+          report(
+            state,
+            'OXE2008',
+            'Currency formatting requires i18n.format.currency.',
+            entry.value.span,
+          );
+        }
+      }
+    }
+    const count = attribute.value.entries.find((entry) => entry.name.name === 'count');
+    const ordinal = attribute.value.entries.find((entry) => entry.name.name === 'ordinal');
+    if (count && ordinal) {
+      report(
+        state,
+        'OXE2008',
+        'i18n.count and i18n.ordinal cannot be used together.',
+        ordinal.name.span,
+        [{ message: 'The cardinal count is declared here.', span: count.name.span }],
+      );
+    }
+  };
+
   const visitElement = (
     element: ElementNode,
     owner: ComponentSymbols,
     deferredValueProps = false,
   ): void => {
+    validateI18nMetadata(element);
     if (owner.contexts.has(element.name.name)) {
       const valueAttributes = element.attributes.filter(
         (attribute): attribute is AttributeNode =>
@@ -2458,7 +2562,9 @@ const collectComponentInvocations = (
       const invalidAttributes = element.attributes.filter(
         (attribute) =>
           attribute.kind === 'SpreadAttribute' ||
-          (attribute.kind === 'Attribute' && attribute.name.name !== 'value'),
+          (attribute.kind === 'Attribute' &&
+            attribute.name.name !== 'value' &&
+            attribute.name.name !== 'i18n'),
       );
       if (valueAttributes.length === 0) {
         report(
@@ -2541,6 +2647,9 @@ const collectComponentInvocations = (
               );
             }
           }
+          continue;
+        }
+        if (attribute.name.name === 'i18n') {
           continue;
         }
         const previous = argumentsByName.get(attribute.name.name);
@@ -2860,7 +2969,7 @@ const lowerInvocationValueProps = (
       (parameter) => parameter.parameterKind === 'rest',
     );
     for (const attribute of invocation.element.attributes) {
-      if (attribute.kind !== 'Attribute') {
+      if (attribute.kind !== 'Attribute' || attribute.name.name === 'i18n') {
         continue;
       }
       const declared = invocation.target.parameters.get(attribute.name.name);
@@ -3162,6 +3271,7 @@ interface RenderContext {
   readonly constantValues: ReadonlyMap<string, LiteralValue>;
   readonly edges: UiEdgeV1[];
   readonly invocations: ReadonlyMap<ElementNode, ComponentInvocation>;
+  readonly localizationEnabled: boolean;
   readonly contextProviders: ReadonlyMap<ElementNode, LoweredContextProvider>;
   readonly nodes: UiNodeV1[];
   readonly props: ReadonlyMap<ComponentInvocation, ReadonlyMap<AttributeNode, LoweredValueProp>>;
@@ -3171,6 +3281,197 @@ interface RenderContext {
   readonly valuesById: ReadonlyMap<string, ValueSymbol>;
   readonly collectionKeys: ReadonlySet<AttributeNode>;
 }
+
+const localizationSkippedElements = new Set([
+  'code',
+  'kbd',
+  'math',
+  'pre',
+  'samp',
+  'script',
+  'style',
+  'svg',
+  'template',
+  'textarea',
+  'var',
+]);
+
+const localizationInlineElements = new Set([
+  'a',
+  'abbr',
+  'b',
+  'bdi',
+  'bdo',
+  'br',
+  'cite',
+  'data',
+  'del',
+  'em',
+  'i',
+  'ins',
+  'mark',
+  'q',
+  's',
+  'small',
+  'span',
+  'strong',
+  'sub',
+  'sup',
+  'time',
+  'u',
+  'wbr',
+]);
+
+const localizedAttributes = new Set([
+  'alt',
+  'aria-description',
+  'aria-label',
+  'aria-valuetext',
+  'placeholder',
+  'title',
+]);
+
+interface ElementLocalizationMetadata {
+  readonly explicit: boolean;
+  readonly format?: {
+    readonly options: readonly { readonly expression: ExpressionNode; readonly name: string }[];
+    readonly type: FormattedValueV1['type'];
+  };
+  readonly key?: string;
+  readonly mode: 'inherit' | 'off' | 'on';
+  readonly selection?: {
+    readonly expression: ExpressionNode;
+    readonly kind: 'cardinal' | 'ordinal';
+  };
+}
+
+const elementLocalizationMetadata = (
+  element: ElementNode,
+  state?: AnalysisState,
+): ElementLocalizationMetadata => {
+  const attribute = element.attributes.find(
+    (candidate): candidate is AttributeNode =>
+      candidate.kind === 'Attribute' && candidate.name.name === 'i18n',
+  );
+  if (!attribute) {
+    return { explicit: false, mode: 'inherit' };
+  }
+  if (attribute.value.kind === 'BooleanLiteral' && attribute.value.value === false) {
+    return { explicit: true, mode: 'off' };
+  }
+  if (attribute.value.kind !== 'RecordLiteral') {
+    return { explicit: true, mode: 'off' };
+  }
+  const field = (name: string): ExpressionNode | undefined =>
+    attribute.value.kind === 'RecordLiteral'
+      ? attribute.value.entries.find((entry) => entry.name.name === name)?.value
+      : undefined;
+  const key = field('key');
+  const count = field('count');
+  const ordinal = field('ordinal');
+  const formatExpression = field('format');
+  let format: ElementLocalizationMetadata['format'];
+  if (formatExpression?.kind === 'RecordLiteral') {
+    const type = formatExpression.entries.find((entry) => entry.name.name === 'type')?.value;
+    if (
+      type?.kind === 'StringLiteral' &&
+      ['currency', 'date', 'datetime', 'time'].includes(type.value)
+    ) {
+      format = {
+        type: type.value as FormattedValueV1['type'],
+        options: formatExpression.entries
+          .filter((entry) => entry.name.name !== 'type')
+          .map((entry) => ({ expression: entry.value, name: entry.name.name })),
+      };
+      if (
+        type.value === 'currency' &&
+        !formatExpression.entries.some((entry) => entry.name.name === 'currency') &&
+        state
+      ) {
+        report(
+          state,
+          'OXE2008',
+          'Currency formatting requires i18n.format.currency.',
+          formatExpression.span,
+        );
+      }
+    } else if (state) {
+      report(
+        state,
+        'OXE2008',
+        'i18n.format.type must be currency, date, datetime, or time.',
+        type?.span ?? formatExpression.span,
+      );
+    }
+  } else if (formatExpression && state) {
+    report(state, 'OXE2008', 'i18n.format must be an inline record.', formatExpression.span);
+  }
+  return {
+    explicit: true,
+    ...(format ? { format } : {}),
+    ...(key?.kind === 'StringLiteral' ? { key: key.value } : {}),
+    mode: 'on',
+    ...(count
+      ? { selection: { expression: count, kind: 'cardinal' as const } }
+      : ordinal
+        ? { selection: { expression: ordinal, kind: 'ordinal' as const } }
+        : {}),
+  };
+};
+
+const isAutomaticallyLocalizationSkipped = (element: ElementNode): boolean => {
+  if (localizationSkippedElements.has(element.name.name)) return true;
+  const attribute = (name: string): AttributeNode | undefined =>
+    element.attributes.find(
+      (candidate): candidate is AttributeNode =>
+        candidate.kind === 'Attribute' && candidate.name.name === name,
+    );
+  const editable = attribute('contenteditable')?.value;
+  if (editable && (editable.kind !== 'BooleanLiteral' || editable.value)) return true;
+  const translate = attribute('translate')?.value;
+  return translate?.kind === 'StringLiteral' && translate.value.toLowerCase() === 'no';
+};
+
+const normalizeLocalizedMessage = (value: string): string =>
+  value
+    .replace(/\s+/gu, ' ')
+    .replace(/\s+([,.;:!?])/gu, '$1')
+    .trim();
+
+const localizedExpressionBaseName = (expression: ExpressionNode): string => {
+  switch (expression.kind) {
+    case 'Identifier':
+      return expression.name;
+    case 'MemberExpression':
+      return expression.property.name;
+    case 'ParenthesizedExpression':
+    case 'UntrackExpression':
+      return localizedExpressionBaseName(expression.expression);
+    case 'CallExpression':
+      return localizedExpressionBaseName(expression.callee);
+    default:
+      return 'value';
+  }
+};
+
+const uniqueLocalizedName = (base: string, counts: Map<string, number>): string => {
+  const normalized = base.replace(/[^A-Za-z0-9_]/gu, '') || 'value';
+  const next = (counts.get(normalized) ?? 0) + 1;
+  counts.set(normalized, next);
+  return next === 1 ? normalized : `${normalized}${next}`;
+};
+
+const localizedMessageHash = (value: string): string => {
+  let hash = 0xcbf29ce484222325n;
+  for (const character of value) {
+    hash ^= BigInt(character.codePointAt(0) ?? 0);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+};
+
+const implicitLocalizedKey = (source: string, placeholders: readonly string[]): string =>
+  `m_${localizedMessageHash(`${source}\0${placeholders.join('\0')}`)}`;
 
 const lowerContentValue = (content: ContentInfo, context: RenderContext): void => {
   const choice = content.declaration.value;
@@ -3284,11 +3585,12 @@ const lowerContentValue = (content: ContentInfo, context: RenderContext): void =
 };
 
 const lowerTextGroup = (
-  children: readonly (InterpolationNode | TextNode)[],
+  children: readonly MarkupChildNode[],
   id: string,
   parentId: string,
   childIndex: number,
   context: RenderContext,
+  metadata?: ElementLocalizationMetadata,
 ): void => {
   const parts: TextPartV1[] = [];
   const expressions: ValueExpressionV1[] = [];
@@ -3296,7 +3598,7 @@ const lowerTextGroup = (
   for (const child of children) {
     if (child.kind === 'Text') {
       parts.push({ kind: 'static', value: child.value, span: graphSpan(child.span) });
-    } else {
+    } else if (child.kind === 'Interpolation') {
       const expression = lowerExpression(
         child.expression,
         context.values,
@@ -3326,9 +3628,199 @@ const lowerTextGroup = (
   if (!first || !last) {
     return;
   }
+  let localization: LocalizedMessageV1 | undefined;
+  if (metadata?.format) {
+    const valuePart = parts.filter(
+      (part): part is Extract<TextPartV1, { readonly kind: 'expression' }> =>
+        part.kind === 'expression',
+    );
+    const hasVisibleStaticText = parts.some(
+      (part) => part.kind === 'static' && part.value.trim().length > 0,
+    );
+    if (
+      valuePart.length !== 1 ||
+      hasVisibleStaticText ||
+      children.some((child) => child.kind === 'Element')
+    ) {
+      report(
+        context.state,
+        'OXE2008',
+        'A formatted element must contain exactly one interpolated value and no prose or nested markup.',
+        spanFrom(first.span, last.span),
+      );
+    } else {
+      const options = metadata.format.options.flatMap((option) => {
+        const value = lowerExpression(
+          option.expression,
+          context.values,
+          `${context.scopeName} localization format option`,
+          context.state,
+        );
+        if (!value) return [];
+        inferStandaloneExpression(value, context.valuesById, context.state);
+        return [{ name: option.name, value }];
+      });
+      context.nodes.push({
+        format: {
+          options,
+          type: metadata.format.type,
+          value: valuePart[0]?.expression ?? {
+            kind: 'literal',
+            span: graphSpan(first.span),
+            value: '',
+          },
+        },
+        id,
+        kind: 'text',
+        parts,
+        span: spanFrom(first.span, last.span),
+      });
+      context.edges.push({ kind: 'child', from: parentId, to: id, index: childIndex });
+      addReadEdges(
+        context.edges,
+        id,
+        [valuePart[0]?.expression, ...options.map((option) => option.value)].filter(
+          (value): value is ValueExpressionV1 => value !== undefined,
+        ),
+        'reactive',
+      );
+      return;
+    }
+  }
+  if (metadata && !metadata.format) {
+    const counts = new Map<string, number>();
+    const placeholders: string[] = [];
+    const values: LocalizedMessageV1['values'][number][] = [];
+    const markup: LocalizedMarkupV1[] = [];
+    const serialize = (items: readonly MarkupChildNode[]): string => {
+      let source = '';
+      for (const item of items) {
+        if (item.kind === 'Text') {
+          source += item.value;
+          continue;
+        }
+        if (item.kind === 'Interpolation') {
+          const expression = lowerExpression(
+            item.expression,
+            context.values,
+            context.scopeName,
+            context.state,
+          );
+          if (!expression) continue;
+          inferStandaloneExpression(expression, context.valuesById, context.state);
+          const name = uniqueLocalizedName(localizedExpressionBaseName(item.expression), counts);
+          const token = `{${name}}`;
+          placeholders.push(token);
+          values.push({ name, value: expression });
+          source += token;
+          continue;
+        }
+        if (item.kind !== 'Element') continue;
+        const name = uniqueLocalizedName(item.name.name, counts);
+        const open = `<${name}>`;
+        const close = `</${name}>`;
+        const staticAttributes: LocalizedMarkupV1['staticAttributes'][number][] = [];
+        const dynamicAttributes: DynamicAttributeV1[] = [];
+        for (const attribute of item.attributes) {
+          if (attribute.kind === 'SpreadAttribute') {
+            report(
+              context.state,
+              'OXE2008',
+              'Inline localized markup does not support spread attributes.',
+              attribute.span,
+            );
+            continue;
+          }
+          if (['i18n', 'key', 'ref'].includes(attribute.name.name)) continue;
+          if (attribute.name.name.startsWith('on')) {
+            report(
+              context.state,
+              'OXE2008',
+              'Inline localized markup cannot own event handlers; move the control outside the translated sentence.',
+              attribute.span,
+            );
+            continue;
+          }
+          const expression = lowerExpression(
+            attribute.value,
+            context.values,
+            context.scopeName,
+            context.state,
+          );
+          if (!expression) continue;
+          inferStandaloneExpression(expression, context.valuesById, context.state);
+          const resolved = evaluateResolvedConstant(expression, context.constantValues);
+          if (resolved === undefined) {
+            dynamicAttributes.push({
+              mode: ['checked', 'disabled', 'selected', 'value'].includes(attribute.name.name)
+                ? 'property'
+                : 'attribute',
+              name: attribute.name.name,
+              span: graphSpan(attribute.span),
+              value: expression,
+            });
+          } else if (isLiteralScalar(resolved)) {
+            staticAttributes.push({
+              name: attribute.name.name,
+              span: graphSpan(attribute.span),
+              value: resolved,
+            });
+          } else {
+            report(
+              context.state,
+              'OXE2008',
+              `Inline attribute "${attribute.name.name}" must produce a scalar value.`,
+              attribute.span,
+            );
+          }
+        }
+        placeholders.push(open);
+        source += open;
+        source += serialize(item.children);
+        placeholders.push(close);
+        source += close;
+        markup.push({
+          dynamicAttributes,
+          name,
+          staticAttributes,
+          tag: item.name.name,
+        });
+      }
+      return source;
+    };
+    const source = normalizeLocalizedMessage(serialize(children));
+    if (source.length > 0 && /[\p{L}\p{N}]/u.test(source.replace(/\{[^}]+\}/gu, ''))) {
+      const selection = metadata.selection
+        ? lowerExpression(
+            metadata.selection.expression,
+            context.values,
+            `${context.scopeName} localization selection`,
+            context.state,
+          )
+        : undefined;
+      if (selection) {
+        inferStandaloneExpression(selection, context.valuesById, context.state);
+      }
+      localization = {
+        key: metadata.key ?? implicitLocalizedKey(`content\0${source}`, placeholders),
+        markup,
+        ...(selection && metadata.selection
+          ? { selection: { kind: metadata.selection.kind, value: selection } }
+          : {}),
+        source,
+        values,
+      };
+      expressions.push(
+        ...values.map((value) => value.value),
+        ...(selection ? [selection] : []),
+        ...markup.flatMap((entry) => entry.dynamicAttributes.map((attribute) => attribute.value)),
+      );
+    }
+  }
   context.nodes.push({
     id,
     kind: 'text',
+    ...(localization ? { localization } : {}),
     parts,
     span: spanFrom(first.span, last.span),
   });
@@ -3340,6 +3832,7 @@ const lowerMarkupChildren = (
   children: readonly MarkupChildNode[],
   parentId: string,
   context: RenderContext,
+  metadata?: ElementLocalizationMetadata,
 ): void => {
   let semanticChildIndex = 0;
   let elementIndex = 0;
@@ -3348,7 +3841,7 @@ const lowerMarkupChildren = (
   let slotIndex = 0;
   let contentReferenceIndex = 0;
   let textIndex = 0;
-  let textGroup: (InterpolationNode | TextNode)[] = [];
+  let textGroup: MarkupChildNode[] = [];
 
   const flushText = (): void => {
     if (textGroup.length === 0) {
@@ -3360,6 +3853,7 @@ const lowerMarkupChildren = (
       parentId,
       semanticChildIndex,
       context,
+      metadata,
     );
     textGroup = [];
     textIndex += 1;
@@ -3368,6 +3862,16 @@ const lowerMarkupChildren = (
 
   for (const child of children) {
     if (child.kind === 'Element') {
+      const childMetadata = elementLocalizationMetadata(child, context.state);
+      if (
+        context.localizationEnabled &&
+        localizationInlineElements.has(child.name.name) &&
+        !localizationSkippedElements.has(child.name.name) &&
+        childMetadata.mode === 'inherit'
+      ) {
+        textGroup.push(child);
+        continue;
+      }
       flushText();
       const childKind = /^[A-Z]/u.test(child.name.name) ? 'instance' : 'element';
       lowerView(
@@ -3690,6 +4194,13 @@ const lowerPlatformElement = (
   childIndex: number,
   context: RenderContext,
 ): void => {
+  const localizationMetadata = elementLocalizationMetadata(element, context.state);
+  const localizationEnabled =
+    localizationMetadata.mode === 'on'
+      ? true
+      : localizationMetadata.mode === 'off'
+        ? false
+        : context.localizationEnabled && !isAutomaticallyLocalizationSkipped(element);
   const staticAttributes: {
     name: string;
     span: GraphSpanV1;
@@ -3735,6 +4246,10 @@ const lowerPlatformElement = (
       continue;
     }
     attributeNames.set(attribute.name.name, attribute.name.span);
+
+    if (attribute.name.name === 'i18n') {
+      continue;
+    }
 
     if (attribute.name.name === 'onClick') {
       if (attribute.value.kind !== 'Identifier') {
@@ -3790,6 +4305,30 @@ const lowerPlatformElement = (
       continue;
     }
     inferStandaloneExpression(expression, context.valuesById, context.state);
+    if (
+      localizationEnabled &&
+      localizedAttributes.has(attribute.name.name) &&
+      attribute.value.kind === 'StringLiteral'
+    ) {
+      const source = normalizeLocalizedMessage(attribute.value.value);
+      if (source.length > 0 && /[\p{L}\p{N}]/u.test(source)) {
+        dynamicAttributes.push({
+          localization: {
+            key: implicitLocalizedKey(`attribute:${attribute.name.name}\0${source}`, []),
+            markup: [],
+            source,
+            values: [],
+          },
+          mode: ['checked', 'disabled', 'selected', 'value'].includes(attribute.name.name)
+            ? 'property'
+            : 'attribute',
+          name: attribute.name.name,
+          span: graphSpan(attribute.span),
+          value: expression,
+        });
+        continue;
+      }
+    }
     const value = evaluateResolvedConstant(expression, context.constantValues);
     if (typeof value === 'number' && !Number.isFinite(value)) {
       report(
@@ -3861,7 +4400,13 @@ const lowerPlatformElement = (
     dynamicAttributes.map((attribute) => attribute.value),
     'reactive',
   );
-  lowerMarkupChildren(element.children, id, context);
+  const nestedContext: RenderContext = { ...context, localizationEnabled };
+  lowerMarkupChildren(
+    element.children,
+    id,
+    nestedContext,
+    localizationEnabled ? localizationMetadata : undefined,
+  );
 };
 
 const lowerContextProvider = (
@@ -3940,6 +4485,9 @@ const lowerComponentInstance = (
           sites: [graphSpan(attribute.value.span)],
         });
       }
+      continue;
+    }
+    if (attribute.name.name === 'i18n') {
       continue;
     }
 
@@ -4723,6 +5271,7 @@ const analyzeComponent = (
     constantValues,
     edges,
     invocations,
+    localizationEnabled: state.localization,
     contextProviders,
     nodes,
     props,

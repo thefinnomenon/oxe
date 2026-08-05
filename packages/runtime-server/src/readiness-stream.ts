@@ -671,7 +671,11 @@ export const streamServerRenderPlan = async (
       const checkpoints = [...requestsByIdentity.values()]
         .map((request) => ({ identity: request.identity, value: request.value }))
         .sort((left, right) => left.identity.localeCompare(right.identity));
-      const serialized = serializeAsyncCheckpoints(checkpoints, plan.source.buildFingerprint);
+      const serialized = serializeAsyncCheckpoints(
+        checkpoints,
+        plan.source.buildFingerprint,
+        preparation.localization,
+      );
       metrics.checkpointBytes = utf8ByteLength(serialized);
       metrics.checkpointsWritten = checkpoints.length;
       await write(serialized);

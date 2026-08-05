@@ -2,8 +2,10 @@
   "files": [],
   "references": [
     { "path": "./apps/playground" },
+    { "path": "./packages/cli" },
     { "path": "./packages/compiler" },
     { "path": "./packages/graph" },
+    { "path": "./packages/i18n" },
     { "path": "./packages/router" },
     { "path": "./packages/runtime" },
     { "path": "./packages/runtime-dom" },

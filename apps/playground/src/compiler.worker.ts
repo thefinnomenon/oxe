@@ -43,6 +43,7 @@ const compile = async (request: {
   readonly entryExport: string;
   readonly entryModuleId: string;
   readonly files: readonly CompileFile[];
+  readonly localization?: boolean;
   readonly runId: number;
   readonly routeInitialHref?: string;
 }): Promise<CompileResult> => {
@@ -71,6 +72,7 @@ const compile = async (request: {
           entryExport: segment.exportName,
           entryModuleId: segment.moduleId,
           loadModule: async (moduleId) => sources.get(moduleId),
+          ...(request.localization === undefined ? {} : { localization: request.localization }),
           routeSegment: segment.kind,
         });
         return { analyzed, segment };
@@ -139,6 +141,7 @@ const compile = async (request: {
     capabilities: capabilitiesForPlayground(request.capabilitySet),
     entryModuleId: request.entryModuleId,
     entryExport: request.entryExport,
+    ...(request.localization === undefined ? {} : { localization: request.localization }),
     loadModule: async (moduleId) => sources.get(moduleId),
   });
   const common = {

@@ -6,12 +6,14 @@ import {
   createRoot,
   createRootIn,
   registerCleanup,
+  parseLocalizationContext,
   type AsyncReadable,
   type AsyncResourceCheckpoint,
   type Cell,
   type Disposable,
   type Readable,
   type Root,
+  type LocalizationContextV1,
 } from '@oxe/runtime';
 
 export type TextValue = bigint | boolean | number | string | null | undefined;
@@ -19,6 +21,16 @@ export type DomValue = boolean | number | string | null | undefined;
 export type DomValueMode = 'attribute' | 'property';
 export type DomEventHandler<EventType extends Event = Event> = (event: EventType) => void;
 export type MountContent = ChildNode | readonly ChildNode[];
+
+export type StructuredContentPart =
+  | string
+  | {
+      readonly children: readonly StructuredContentPart[];
+      readonly kind: 'markup';
+      readonly name: string;
+    };
+
+export type StructuredContentFactory = (children: readonly ChildNode[]) => ChildNode;
 
 export interface DomListenerOptions extends AddEventListenerOptions {
   readonly replayId?: string;
@@ -218,6 +230,20 @@ export const createText = (document: Document, value?: TextValue): Text => {
   }
   return document.createTextNode(renderText(value));
 };
+
+export const createStructuredContent = (
+  document: Document,
+  parts: readonly StructuredContentPart[],
+  factories: Readonly<Record<string, StructuredContentFactory>>,
+): readonly ChildNode[] =>
+  parts.map((part) => {
+    if (typeof part === 'string') return createText(document, part);
+    const factory = factories[part.name];
+    if (!factory) {
+      throw new TypeError(`Missing localized markup factory for ${part.name}.`);
+    }
+    return factory(createStructuredContent(document, part.children, factories));
+  });
 
 type RegionEdge = 'end' | 'start';
 
@@ -1091,14 +1117,28 @@ export const hydrate = (
   return mount(container, build, options);
 };
 
-export const readSerializedAsyncCheckpoints = (
-  document: Document,
-): readonly AsyncResourceCheckpoint[] => {
+interface SerializedHydrationState {
+  readonly checkpoints: readonly AsyncResourceCheckpoint[];
+  readonly localization?: LocalizationContextV1;
+}
+
+const readSerializedHydrationState = (document: Document): SerializedHydrationState => {
   const element = document.querySelector('script[type="application/json"][data-oxe-state]');
-  if (!element?.textContent) return [];
+  if (!element?.textContent) return { checkpoints: [] };
   const value: unknown = JSON.parse(element.textContent);
-  if (!Array.isArray(value)) throw new TypeError('Serialized OXE async state must be an array.');
-  return value.map((checkpoint) => {
+  const objectState =
+    !Array.isArray(value) && typeof value === 'object' && value !== null ? value : undefined;
+  const checkpoints = Array.isArray(value)
+    ? value
+    : objectState &&
+        'schemaVersion' in objectState &&
+        objectState.schemaVersion === 'oxe.hydration-state.v1' &&
+        'checkpoints' in objectState &&
+        Array.isArray(objectState.checkpoints)
+      ? objectState.checkpoints
+      : undefined;
+  if (!checkpoints) throw new TypeError('Serialized OXE hydration state is invalid.');
+  const parsedCheckpoints = checkpoints.map((checkpoint) => {
     if (
       typeof checkpoint !== 'object' ||
       checkpoint === null ||
@@ -1110,7 +1150,23 @@ export const readSerializedAsyncCheckpoints = (
     }
     return { identity: checkpoint.identity, value: checkpoint.value };
   });
+  const localization =
+    objectState && 'localization' in objectState && objectState.localization !== undefined
+      ? parseLocalizationContext(objectState.localization)
+      : undefined;
+  return {
+    checkpoints: parsedCheckpoints,
+    ...(localization ? { localization } : {}),
+  };
 };
+
+export const readSerializedAsyncCheckpoints = (
+  document: Document,
+): readonly AsyncResourceCheckpoint[] => readSerializedHydrationState(document).checkpoints;
+
+export const readSerializedLocalizationContext = (
+  document: Document,
+): LocalizationContextV1 | undefined => readSerializedHydrationState(document).localization;
 
 export const readSerializedBuildFingerprint = (document: Document): string | undefined => {
   const element = document.querySelector('script[type="application/json"][data-oxe-state]');

@@ -371,4 +371,37 @@ export App():
       'const buildPageRouteSegment = ({ document, route }) => {',
     );
   });
+
+  it('threads localization and route inputs through the same generated segment', async () => {
+    const source = `export Page():
+  params = useParams()
+
+  <h1 i18n={{ key: "project.title" }}>Project {params.projectId}
+`;
+    const result = await analyzeProject({
+      entryExport: 'Page',
+      entryModuleId: 'src/routes/projects/[projectId]/page.oxe',
+      loadModule: async () => source,
+      localization: true,
+      routeSegment: 'page',
+    });
+    const graph = requireGraph(result);
+    const artifact = generateDomArtifact(graph, { routeSegment: 'page' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(artifact.factorySource).toContain('const Page = (document, i18n, route) => {');
+    expect(artifact.factorySource).toContain(
+      'const buildPageRouteSegment = ({ document, i18n, route }) => {',
+    );
+    expect(artifact.factorySource).toContain(
+      'Cannot build Page route segment: i18n is required by localized messages.',
+    );
+    expect(artifact.factorySource).toContain('return Page(document, i18n, route);');
+    expect(artifact.hydrateExport).toBe('hydratePage');
+    expect(artifact.factorySource).toContain(
+      'const localizationContext = readSerializedLocalizationContext(document);',
+    );
+    expect(artifact.factorySource).toContain('i18n.adoptContext(localizationContext);');
+    expect(artifact.factorySource).toContain('serialized localization state is missing');
+  });
 });

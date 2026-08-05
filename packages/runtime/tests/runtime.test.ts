@@ -14,8 +14,10 @@ import {
   createReaction,
   createRoot,
   readContext,
+  parseLocalizationContext,
   removeCollection,
   registerCleanup,
+  resolveLocalizationContext,
   selectPath,
   selectAsyncPath,
   sortCollection,
@@ -956,5 +958,29 @@ describe('ownership-scoped context', () => {
         code: 'OXE_RUNTIME_MISSING_OWNER',
       }),
     );
+  });
+
+  it('resolves and validates concrete localization inputs for hydration', () => {
+    const context = resolveLocalizationContext({
+      calendar: 'gregory',
+      locale: 'en-us',
+      numberingSystem: 'latn',
+      timeZone: 'UTC',
+    });
+
+    expect(context).toEqual({
+      calendar: 'gregory',
+      locale: 'en-US',
+      numberingSystem: 'latn',
+      schemaVersion: 'oxe.localization-context.v1',
+      timeZone: 'UTC',
+    });
+    expect(parseLocalizationContext(JSON.parse(JSON.stringify(context)))).toEqual(context);
+    expect(() => parseLocalizationContext({ locale: 'en-US' })).toThrow(
+      'Serialized OXE localization context is invalid.',
+    );
+    expect(() =>
+      resolveLocalizationContext({ locale: 'en-US', numberingSystem: 'not-a-system' }),
+    ).toThrow();
   });
 });

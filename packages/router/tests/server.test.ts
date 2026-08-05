@@ -1,4 +1,5 @@
 import { analyzeProject } from '@oxe/compiler';
+import { resolveLocalizationContext } from '@oxe/runtime';
 import { createServerRenderPlan } from '@oxe/runtime-server';
 import { describe, expect, it } from 'vitest';
 
@@ -6,6 +7,7 @@ import { createFileRouteManifest, matchRoute } from '../src/index.js';
 import {
   composeRouteServerPlan,
   renderRouteToString,
+  renderRouteToStringWithHydrationState,
   serializeRouteSnapshotScript,
 } from '../src/server.js';
 import type { RouteSegmentDefinitionV1 } from '../src/types.js';
@@ -84,5 +86,77 @@ describe('route server rendering', () => {
         return createServerRenderPlan(analyzed.graph);
       }),
     ).rejects.toMatchObject({ code: 'OXE_ROUTE_INVALID_SERVER_PLAN' });
+  });
+
+  it('preserves request-local localization while resolving route inputs', async () => {
+    const localizedFiles: Readonly<Record<string, string>> = {
+      'src/routes/layout.oxe': `export Layout():
+  <main>
+    <header i18n={{ key: "navigation.title" }}>Projects
+    {children}
+`,
+      'src/routes/projects/[projectId]/page.oxe': `export Page():
+  params = useParams()
+
+  <h1 i18n={{ key: "project.title" }}>Project {params.projectId}
+`,
+    };
+    const manifest = createFileRouteManifest(Object.keys(localizedFiles));
+    const match = matchRoute(manifest, '/projects/alpha');
+    if (!match) throw new Error('Expected the localized project route to match.');
+
+    const plan = await composeRouteServerPlan(match, async (segment) => {
+      const analyzed = await analyzeProject({
+        entryExport: segment.exportName,
+        entryModuleId: segment.moduleId,
+        loadModule: async (moduleId) => localizedFiles[moduleId],
+        localization: true,
+        routeSegment: segment.kind,
+        target: 'server',
+      });
+      if (!analyzed.graph) throw new Error(JSON.stringify(analyzed.diagnostics));
+      return createServerRenderPlan(analyzed.graph);
+    });
+    const html = renderRouteToString(plan, match, {
+      i18n: {
+        context: resolveLocalizationContext({ locale: 'fr', timeZone: 'UTC' }),
+        format(id, options): string {
+          if (id === 'navigation.title') return 'Projets';
+          return `Projet ${String(options?.values?.projectId)}`;
+        },
+        formatToParts(): readonly string[] {
+          return [];
+        },
+        formatValue(value): string {
+          return String(value);
+        },
+        machineValue(value): string {
+          return String(value);
+        },
+      },
+    });
+
+    expect(html).toBe('<main><header>Projets</header><h1>Projet alpha</h1></main>');
+    const hydratable = renderRouteToStringWithHydrationState(plan, match, {
+      i18n: {
+        context: resolveLocalizationContext({ locale: 'fr', timeZone: 'UTC' }),
+        format(id, options): string {
+          if (id === 'navigation.title') return 'Projets';
+          return `Projet ${String(options?.values?.projectId)}`;
+        },
+        formatToParts(): readonly string[] {
+          return [];
+        },
+        formatValue(value): string {
+          return String(value);
+        },
+        machineValue(value): string {
+          return String(value);
+        },
+      },
+    });
+    expect(hydratable).toContain(html);
+    expect(hydratable).toContain('"schemaVersion":"oxe.hydration-state.v1"');
+    expect(hydratable).toContain('"locale":"fr"');
   });
 });

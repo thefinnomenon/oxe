@@ -1,3 +1,7 @@
+import type { AsyncResourceCheckpoint, LocalizationContextV1 } from '@oxe/runtime';
+
+export const OXE_HYDRATION_STATE_SCHEMA = 'oxe.hydration-state.v1' as const;
+
 export type ServerStreamPatch =
   | {
       readonly html: string;
@@ -60,16 +64,45 @@ export const serializeServerRegionMarker = (
   return `<template ${marker}></template>`;
 };
 
-export const serializeAsyncCheckpoints = (
-  checkpoints: readonly { readonly identity: string; readonly value: unknown }[],
-  buildFingerprint?: string,
-): string => {
-  const json = JSON.stringify(checkpoints)
+const safeJson = (value: unknown): string =>
+  JSON.stringify(value)
     .replaceAll('&', '\\u0026')
     .replaceAll('<', '\\u003c')
     .replaceAll('>', '\\u003e')
     .replaceAll('\u2028', '\\u2028')
     .replaceAll('\u2029', '\\u2029');
+
+export interface SerializeHydrationStateOptions {
+  readonly buildFingerprint?: string;
+  readonly checkpoints?: readonly AsyncResourceCheckpoint[];
+  readonly localization?: LocalizationContextV1;
+}
+
+export const serializeHydrationState = (options: SerializeHydrationStateOptions): string => {
+  const json = safeJson({
+    checkpoints: options.checkpoints ?? [],
+    ...(options.localization ? { localization: options.localization } : {}),
+    schemaVersion: OXE_HYDRATION_STATE_SCHEMA,
+  });
+  const build = options.buildFingerprint
+    ? ` data-oxe-build="${escapeAttribute(options.buildFingerprint)}"`
+    : '';
+  return `<script type="application/json" data-oxe-state${build}>${json}</script>`;
+};
+
+export const serializeAsyncCheckpoints = (
+  checkpoints: readonly AsyncResourceCheckpoint[],
+  buildFingerprint?: string,
+  localization?: LocalizationContextV1,
+): string => {
+  if (localization) {
+    return serializeHydrationState({
+      ...(buildFingerprint ? { buildFingerprint } : {}),
+      checkpoints,
+      localization,
+    });
+  }
+  const json = safeJson(checkpoints);
   const build = buildFingerprint ? ` data-oxe-build="${escapeAttribute(buildFingerprint)}"` : '';
   return `<script type="application/json" data-oxe-state${build}>${json}</script>`;
 };

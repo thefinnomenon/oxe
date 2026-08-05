@@ -12,6 +12,7 @@ export interface OxeSizeRequest {
   readonly entryExport: string;
   readonly entryModuleId: string;
   readonly files: readonly OxeSizeProjectFile[];
+  readonly localization?: boolean;
 }
 
 export interface OxeSizeBytes {

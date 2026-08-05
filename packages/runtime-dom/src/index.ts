@@ -9,6 +9,7 @@ export {
   createKeyedRegion,
   createSkeleton,
   createStaticTemplate,
+  createStructuredContent,
   createText,
   listen,
   hydrate,
@@ -17,6 +18,7 @@ export {
   OxeHydrationBuildMismatch,
   readSerializedAsyncCheckpoints,
   readSerializedBuildFingerprint,
+  readSerializedLocalizationContext,
   setDomValue,
   type DomEventHandler,
   type DomErrorContext,
@@ -31,5 +33,7 @@ export {
   type StaticTemplateAttribute,
   type StaticTemplateElement,
   type StaticTemplateFactory,
+  type StructuredContentFactory,
+  type StructuredContentPart,
   type TextValue,
 } from './runtime-dom.js';
