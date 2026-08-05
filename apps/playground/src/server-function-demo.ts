@@ -5,11 +5,11 @@ import {
   createServerFunctionCapability,
   createServerFunctionFetchHandler,
   createServerFunctionRegistry,
-  defineServerFunction,
-  implementServerFunction,
   type ServerFunctionCapability,
+  type ServerFunctionDefinitionV1,
+  type ServerFunctionImplementation,
+  type ServerFunctionTransport,
 } from '@oxe/server-functions';
-import { serverFunctionCompilerCapability } from '@oxe/server-functions/compiler';
 
 const projectSchema = {
   kind: 'record',
@@ -22,21 +22,17 @@ const projectSchema = {
   ],
 } as const;
 
-export const readDemoProject = defineServerFunction({
-  id: 'projects.read.v1',
-  mode: 'query',
-  parameters: [
-    {
-      name: 'id',
-      schema: { kind: 'number', integer: true, minimum: 1, maximum: 404 },
-    },
-  ],
-  path: ['projects', 'read'],
-  returns: projectSchema,
-});
-
+/** The host capability used inside the authored `server readProject` body. */
 export const serverFunctionDemoCompilerCapabilities = Object.freeze([
-  serverFunctionCompilerCapability(readDemoProject),
+  {
+    kind: 'async',
+    name: 'database.readDemoProject',
+    parameters: ['number'],
+    parameterSchemas: [{ kind: 'number', integer: true, minimum: 1, maximum: 404 }],
+    returns: 'record',
+    returnSchema: projectSchema,
+    target: 'server',
+  },
 ]) satisfies readonly PlatformCapabilityContract[];
 
 interface DemoRequestContext {
@@ -84,35 +80,47 @@ const waitForDemoResponse = (milliseconds: number, signal: AbortSignal): Promise
     );
   });
 
-export const createServerFunctionDemoCapability = (
+const demoDefinition = (
+  definitions: readonly ServerFunctionDefinitionV1[],
+): ServerFunctionDefinitionV1 => {
+  const definition = definitions[0];
+  if (!definition || definitions.length !== 1) {
+    throw new Error('The server-function playground expects one compiler-generated definition.');
+  }
+  return definition;
+};
+
+export const createServerFunctionDemoTransport = (
+  definitions: readonly ServerFunctionDefinitionV1[],
   options: ServerFunctionDemoOptions,
-): ServerFunctionCapability<typeof readDemoProject> => {
+): ServerFunctionTransport => {
+  const definition = demoDefinition(definitions);
   let requestSequence = 0;
-  const registry = createServerFunctionRegistry<DemoRequestContext>([
-    implementServerFunction<typeof readDemoProject, DemoRequestContext>(
-      readDemoProject,
-      async ([id], context, signal) => {
-        const request = ++requestSequence;
-        await waitForDemoResponse(options.delayMilliseconds ?? 700, signal);
-        if (id === 404) {
-          throw new OxeAsyncFailure(
-            'not-found',
-            'Private demo-store detail: project row 404 is absent.',
-            { status: 404 },
-          );
-        }
-        const project = demoProjects[(id - 1) % demoProjects.length] ?? demoProjects[0];
-        return { ...project, request, viewer: context.actorId };
-      },
-    ),
-  ]);
+  const implementation: ServerFunctionImplementation<DemoRequestContext> = {
+    definition,
+    async invoke(arguments_, context, signal) {
+      const id = Number(arguments_[0]);
+      const request = ++requestSequence;
+      await waitForDemoResponse(options.delayMilliseconds ?? 700, signal);
+      if (id === 404) {
+        throw new OxeAsyncFailure(
+          'not-found',
+          'Private demo-store detail: project row 404 is absent.',
+          { status: 404 },
+        );
+      }
+      const project = demoProjects[(id - 1) % demoProjects.length] ?? demoProjects[0];
+      return { ...project, request, viewer: context.actorId };
+    },
+  };
+  const registry = createServerFunctionRegistry([implementation]);
   const handler = createServerFunctionFetchHandler(registry, {
     allowedOrigins: [options.origin],
     createContext: (request) => ({
       actorId: request.headers.get('x-demo-actor') ?? 'anonymous',
     }),
   });
-  const transport = createFetchServerFunctionTransport({
+  return createFetchServerFunctionTransport({
     endpoint: new URL('/__oxe/functions', options.origin),
     headers: { origin: options.origin, 'x-demo-actor': 'Ada' },
     fetch: async (input, init) => {
@@ -123,5 +131,13 @@ export const createServerFunctionDemoCapability = (
       return response;
     },
   });
-  return createServerFunctionCapability(readDemoProject, transport);
 };
+
+export const createServerFunctionDemoCapability = (
+  definition: ServerFunctionDefinitionV1,
+  options: ServerFunctionDemoOptions,
+): ServerFunctionCapability<ServerFunctionDefinitionV1> =>
+  createServerFunctionCapability(
+    definition,
+    createServerFunctionDemoTransport([definition], options),
+  );

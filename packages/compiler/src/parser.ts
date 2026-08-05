@@ -43,6 +43,9 @@ import type {
   RecordEntryNode,
   RecordLiteralNode,
   RestComponentParameterNode,
+  ServerFunctionDeclarationNode,
+  ServerFunctionParameterNode,
+  ServerFunctionStatementNode,
   SpreadAttributeNode,
   StringLiteralNode,
   TextNode,
@@ -121,6 +124,7 @@ class Parser {
     const imports: ImportDeclarationNode[] = [];
     const contexts: ContextDeclarationNode[] = [];
     const declarations: ComponentDeclarationNode[] = [];
+    const serverFunctions: ServerFunctionDeclarationNode[] = [];
     let sawDeclaration = false;
 
     this.#skipNewlines();
@@ -129,7 +133,7 @@ class Parser {
         if (sawDeclaration) {
           this.#addDiagnostic(
             'OXE1103',
-            'Imports must be declared before component declarations.',
+            'Imports must be declared before component or server declarations.',
             this.#current().span,
           );
         }
@@ -140,19 +144,32 @@ class Parser {
       } else if (this.#check('export')) {
         sawDeclaration = true;
         const exportToken = this.#advance();
-        if (!this.#check('identifier') || !this.#checkNext('leftParen')) {
+        if (this.#match('server')) {
+          const declaration = this.#parseServerFunctionDeclaration(exportToken);
+          if (declaration) {
+            serverFunctions.push(declaration);
+          }
+        } else if (!this.#check('identifier') || !this.#checkNext('leftParen')) {
           this.#addDiagnostic(
             'OXE1103',
-            'Exports must be written directly on a component declaration: export Component():',
+            'Exports must be written directly on a component or server declaration: export Component(): or export server name():',
             exportToken.span,
           );
           this.#synchronizeLine();
           this.#skipNewlines();
           continue;
+        } else {
+          const declaration = this.#parseComponentDeclaration(exportToken);
+          if (declaration) {
+            declarations.push(declaration);
+          }
         }
-        const declaration = this.#parseComponentDeclaration(exportToken);
+      } else if (this.#check('server')) {
+        sawDeclaration = true;
+        this.#advance();
+        const declaration = this.#parseServerFunctionDeclaration();
         if (declaration) {
-          declarations.push(declaration);
+          serverFunctions.push(declaration);
         }
       } else if (this.#check('identifier') && this.#checkNext('equal')) {
         sawDeclaration = true;
@@ -169,7 +186,7 @@ class Parser {
       } else {
         this.#addDiagnostic(
           'OXE1103',
-          'Expected a component declaration at the top level.',
+          'Expected a component or server declaration at the top level.',
           this.#current().span,
         );
         if (!this.#match('dedent')) {
@@ -179,7 +196,7 @@ class Parser {
       this.#skipNewlines();
     }
 
-    const firstTopLevelSpan = [...imports, ...contexts, ...declarations].sort(
+    const firstTopLevelSpan = [...imports, ...contexts, ...declarations, ...serverFunctions].sort(
       (left, right) => left.span.start.offset - right.span.start.offset,
     )[0]?.span;
     const start = firstTopLevelSpan?.start ?? this.#current().span.start;
@@ -189,9 +206,131 @@ class Parser {
       imports: freezeNodes(imports),
       contexts: freezeNodes(contexts),
       declarations: freezeNodes(declarations),
+      serverFunctions: freezeNodes(serverFunctions),
       schemaVersion: 'oxe.syntax.v1',
       span: moduleSpan,
     });
+  }
+
+  #parseServerFunctionDeclaration(exportToken?: Token): ServerFunctionDeclarationNode | undefined {
+    const name = this.#parseIdentifier();
+    if (!name) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    const parameters = this.#parseServerFunctionParameters();
+    if (!parameters) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+    const colon = this.#consume('colon', 'OXE1101', 'Expected : after the server declaration.');
+    if (!colon || !this.#consumeDeclarationLineEnd('server declaration')) {
+      this.#synchronizeLine();
+      return undefined;
+    }
+
+    this.#skipNewlines();
+    if (!this.#match('indent')) {
+      this.#addDiagnostic(
+        'OXE1102',
+        'Expected an indented server function body.',
+        pointSpan(this.#current().span.start, this.#fileName),
+      );
+      return freezeNode({
+        body: freezeNodes([]),
+        exported: exportToken !== undefined,
+        kind: 'ServerFunctionDeclaration',
+        name,
+        parameters,
+        span: spanFrom(exportToken?.span ?? name.span, colon.span),
+      });
+    }
+
+    const body: ServerFunctionStatementNode[] = [];
+    this.#skipNewlines();
+    while (!this.#check('dedent') && !this.#check('endOfFile')) {
+      if (this.#check('identifier') && this.#checkNext('equal')) {
+        const statement = this.#parseAssignment();
+        if (statement) body.push(statement);
+      } else if (this.#canStartExpression()) {
+        const statement = this.#parseExpressionStatement();
+        if (statement) body.push(statement);
+      } else {
+        this.#addDiagnostic(
+          'OXE1104',
+          'Expected a local assignment or expression in the server function body.',
+          this.#current().span,
+        );
+        this.#synchronizeLine();
+      }
+      this.#skipNewlines();
+    }
+    this.#match('dedent');
+
+    const endSpan = body.at(-1)?.span ?? colon.span;
+    return freezeNode({
+      body: freezeNodes(body),
+      exported: exportToken !== undefined,
+      kind: 'ServerFunctionDeclaration',
+      name,
+      parameters,
+      span: spanFrom(exportToken?.span ?? name.span, endSpan),
+    });
+  }
+
+  #parseServerFunctionParameters(): readonly ServerFunctionParameterNode[] | undefined {
+    if (!this.#consume('leftParen', 'OXE1101', 'Expected ( after the server function name.')) {
+      return undefined;
+    }
+    const parameters: ServerFunctionParameterNode[] = [];
+    const names = new Set<string>();
+    if (this.#match('rightParen')) return freezeNodes(parameters);
+
+    while (!this.#check('endOfFile')) {
+      const name = this.#parseIdentifier();
+      if (!name) return undefined;
+      if (names.has(name.name)) {
+        this.#addDiagnostic(
+          'OXE1101',
+          `Server function parameter "${name.name}" is declared more than once.`,
+          name.span,
+        );
+      }
+      names.add(name.name);
+      let type: ServerFunctionParameterNode['type'];
+      let end = name.span;
+      if (this.#match('colon')) {
+        const annotation = this.#parseIdentifier();
+        if (!annotation) return undefined;
+        if (
+          annotation.name !== 'boolean' &&
+          annotation.name !== 'number' &&
+          annotation.name !== 'string'
+        ) {
+          this.#addDiagnostic(
+            'OXE1103',
+            'Server function parameter annotations currently support boolean, number, or string.',
+            annotation.span,
+          );
+        } else {
+          type = annotation.name;
+        }
+        end = annotation.span;
+      }
+      parameters.push(
+        freezeNode({
+          kind: 'ServerFunctionParameter',
+          name,
+          ...(type ? { type } : {}),
+          span: spanFrom(name.span, end),
+        }),
+      );
+      if (this.#match('rightParen')) return freezeNodes(parameters);
+      if (!this.#consume('comma', 'OXE1101', 'Expected , or ) after the server parameter.')) {
+        return undefined;
+      }
+    }
+    return undefined;
   }
 
   #parseContextDeclaration(): ContextDeclarationNode | undefined {

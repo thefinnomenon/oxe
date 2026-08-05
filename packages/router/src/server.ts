@@ -1,20 +1,45 @@
 import {
+  createJavaScriptReadinessAdapter,
+  defaultServerErrorResponse,
   renderToString,
   renderToStringWithHydrationState,
+  streamServerRenderPlan,
   type ServerCapabilityPlanV1,
+  type ServerErrorResponse,
+  type ServerI18nRuntime,
+  type ServerJavaScriptReadinessOptions,
+  type ServerReadinessErrorContext,
   type ServerRenderOptions,
   type ServerRenderPlanV1,
+  type ServerRenderPlanV2,
   type ServerViewV1,
 } from '@oxe/runtime-server';
+import {
+  createInProcessServerFunctionTransport,
+  createServerFunctionCapabilityMap,
+  createServerFunctionFetchHandler,
+  type ServerFunctionFetchHandlerOptions,
+  type ServerFunctionRegistry,
+  type ServerFunctionSerializationLimits,
+} from '@oxe/server-functions';
 
 import { OxeRouterError } from './errors.js';
-import { createRouteSearchRecord } from './match.js';
+import { createRouteSearchRecord, matchRoute } from './match.js';
 import { serializeRouteSnapshotData } from './snapshot.js';
-import type { RouteMatch, RouteSegmentDefinitionV1, RouteSnapshot } from './types.js';
+import type {
+  RouteManifestV1,
+  RouteMatch,
+  RouteSegmentDefinitionV1,
+  RouteSnapshot,
+} from './types.js';
 
 export type LoadRouteServerPlan = (
   segment: RouteSegmentDefinitionV1,
 ) => Promise<ServerRenderPlanV1>;
+
+export type LoadRouteDeferredServerPlan = (
+  segment: RouteSegmentDefinitionV1,
+) => Promise<ServerRenderPlanV2>;
 
 const invalidPlan = (message: string): never => {
   throw new OxeRouterError('OXE_ROUTE_INVALID_SERVER_PLAN', message);
@@ -84,10 +109,10 @@ const uniqueById = <Value extends { readonly id: string }>(
   return [...result.values()];
 };
 
-export const composeRouteServerPlan = async (
+const composeRoutePlan = async <Plan extends ServerRenderPlanV1 | ServerRenderPlanV2>(
   match: RouteMatch,
-  load: LoadRouteServerPlan,
-): Promise<ServerRenderPlanV1> => {
+  load: (segment: RouteSegmentDefinitionV1) => Promise<Plan>,
+): Promise<Plan> => {
   const loaded = await Promise.all(
     match.route.segments.map(async (segment) => ({ plan: await load(segment), segment })),
   );
@@ -121,7 +146,10 @@ export const composeRouteServerPlan = async (
       );
     }
     const entryWithChild = { ...entry, boundary: { ...entry.boundary, root } };
-    composed = {
+    if (plan.schemaVersion !== composed.schemaVersion) {
+      return invalidPlan('All route segments must use the same server render plan version.');
+    }
+    const shared = {
       ...plan,
       capabilities: uniqueById([...plan.capabilities, ...composed.capabilities], 'capability'),
       components: uniqueById(
@@ -145,9 +173,29 @@ export const composeRouteServerPlan = async (
         moduleId: `route:${match.route.id}`,
       },
     };
+    // The generic is narrowed by the compiler-owned schema discriminator at this boundary.
+    composed = (
+      plan.schemaVersion === 'oxe.server-render-plan.v2' &&
+      composed.schemaVersion === 'oxe.server-render-plan.v2'
+        ? {
+            ...shared,
+            regions: uniqueById([...plan.regions, ...composed.regions], 'deferred region'),
+          }
+        : shared
+    ) as Plan;
   }
   return composed;
 };
+
+export const composeRouteServerPlan = (
+  match: RouteMatch,
+  load: LoadRouteServerPlan,
+): Promise<ServerRenderPlanV1> => composeRoutePlan(match, load);
+
+export const composeRouteDeferredServerPlan = (
+  match: RouteMatch,
+  load: LoadRouteDeferredServerPlan,
+): Promise<ServerRenderPlanV2> => composeRoutePlan(match, load);
 
 const routeCapabilityValue = (capability: ServerCapabilityPlanV1, match: RouteMatch): unknown => {
   if (capability.routeIntrinsic === 'location') return match.location;
@@ -196,3 +244,395 @@ export const serializeRouteSnapshotScript = (match: RouteMatch): string => {
   const snapshot: RouteSnapshot = { ...match, navigationId: 0 };
   return `<script type="application/json" data-oxe-route-snapshot>${serializeRouteSnapshotData(snapshot)}</script>`;
 };
+
+export interface FetchRouteServerFunctionsOptions<Context> {
+  readonly allowedOrigins?: readonly string[];
+  createContext(request: Request, signal: AbortSignal): Context | PromiseLike<Context>;
+  /** Defaults to /__oxe/functions. */
+  readonly endpoint?: string;
+  readonly limits?: ServerFunctionSerializationLimits;
+  readonly onError?: (error: unknown, functionId: string | undefined) => void;
+  readonly registry: ServerFunctionRegistry<Context>;
+}
+
+export interface FetchRouteHandlerOptions<Context = never> {
+  readonly batchWindowMilliseconds?: number;
+  callCapability?(
+    capability: ServerCapabilityPlanV1,
+    arguments_: readonly unknown[],
+    signal: AbortSignal,
+    request: Request,
+    match: RouteMatch,
+  ): unknown | PromiseLike<unknown>;
+  createI18n?(
+    request: Request,
+    match: RouteMatch,
+  ): ServerI18nRuntime | PromiseLike<ServerI18nRuntime | undefined> | undefined;
+  readonly headers?: HeadersInit | ((request: Request, match: RouteMatch) => HeadersInit);
+  readonly includeBootstrap?: boolean;
+  readonly includeCheckpoints?: boolean;
+  loadPlan(
+    segment: RouteSegmentDefinitionV1,
+    request: Request,
+    signal: AbortSignal,
+  ): Promise<ServerRenderPlanV2>;
+  readonly manifest: RouteManifestV1;
+  onError?(
+    error: unknown,
+    context: ServerReadinessErrorContext & {
+      readonly match?: RouteMatch;
+      readonly request: Request;
+    },
+  ): ServerErrorResponse | void | PromiseLike<ServerErrorResponse | void>;
+  readonly scope?: string | ((request: Request, match: RouteMatch) => string);
+  readonly serverFunctions?: FetchRouteServerFunctionsOptions<Context>;
+  readonly statusGate?: ServerJavaScriptReadinessOptions['statusGate'];
+}
+
+export type FetchRouteHandler = (request: Request) => Promise<Response>;
+
+export interface NodeHandlerOptions {
+  /** Public request origin when Host/socket inference is not appropriate. */
+  readonly origin?:
+    string | URL | ((request: IncomingMessage) => string | URL | PromiseLike<string | URL>);
+}
+
+export type NodeRouteHandler = (
+  request: IncomingMessage,
+  response: ServerResponse,
+) => Promise<void>;
+
+const plainResponse = (status: number, body: string, headers?: HeadersInit): Response =>
+  new Response(body, {
+    headers: {
+      'content-type': 'text/plain; charset=utf-8',
+      'x-content-type-options': 'nosniff',
+      ...Object.fromEntries(new Headers(headers)),
+    },
+    status,
+  });
+
+const validEndpoint = (value: string): string => {
+  if (!value.startsWith('/') || value.includes('?') || value.includes('#')) {
+    return invalidPlan('The server-function endpoint must be an absolute URL pathname.');
+  }
+  return value.length > 1 ? value.replace(/\/+$/u, '') : value;
+};
+
+const routeErrorResponse = async (
+  error: unknown,
+  request: Request,
+  options: FetchRouteHandlerOptions<unknown>,
+  match?: RouteMatch,
+): Promise<Response> => {
+  let resolution: ServerErrorResponse | void;
+  try {
+    resolution = await options.onError?.(error, {
+      headersCommitted: false,
+      phase: 'shell',
+      request,
+      ...(match ? { match } : {}),
+    });
+  } catch {
+    resolution = undefined;
+  }
+  const response = resolution ?? defaultServerErrorResponse(error);
+  return new Response(request.method === 'HEAD' ? null : response.body, {
+    ...(response.headers ? { headers: response.headers } : {}),
+    status: response.status,
+  });
+};
+
+/**
+ * Standard Fetch host for matched route SSR and compiler-generated server functions.
+ * A Node adapter only needs to translate its request/response objects to web standards.
+ */
+export const createFetchRouteHandler = <Context = never>(
+  options: FetchRouteHandlerOptions<Context>,
+): FetchRouteHandler => {
+  const serverFunctionOptions = options.serverFunctions;
+  const endpoint = serverFunctionOptions
+    ? validEndpoint(serverFunctionOptions.endpoint ?? '/__oxe/functions')
+    : undefined;
+  const functionHandler = serverFunctionOptions
+    ? createServerFunctionFetchHandler(serverFunctionOptions.registry, {
+        createContext: serverFunctionOptions.createContext,
+        ...(serverFunctionOptions.allowedOrigins
+          ? { allowedOrigins: serverFunctionOptions.allowedOrigins }
+          : {}),
+        ...(serverFunctionOptions.limits ? { limits: serverFunctionOptions.limits } : {}),
+        ...(serverFunctionOptions.onError ? { onError: serverFunctionOptions.onError } : {}),
+      } satisfies ServerFunctionFetchHandlerOptions<Context>)
+    : undefined;
+
+  return async (request): Promise<Response> => {
+    const url = new URL(request.url);
+    if (functionHandler && url.pathname === endpoint) {
+      return functionHandler(request);
+    }
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return plainResponse(405, 'Method not allowed', { allow: 'GET, HEAD' });
+    }
+    const match = matchRoute(options.manifest, url);
+    if (!match) return plainResponse(404, 'Not found');
+
+    try {
+      const plan = await composeRouteDeferredServerPlan(match, (segment) =>
+        options.loadPlan(segment, request, request.signal),
+      );
+      const i18n = await options.createI18n?.(request, match);
+      let serverCapabilities:
+        Promise<ReturnType<typeof createServerFunctionCapabilityMap>> | undefined;
+      const resolveServerCapabilities = (): Promise<
+        ReturnType<typeof createServerFunctionCapabilityMap>
+      > => {
+        if (!serverFunctionOptions) {
+          return Promise.reject(
+            new OxeRouterError(
+              'OXE_ROUTE_INVALID_SERVER_PLAN',
+              'The route uses a server function, but the Fetch host has no serverFunctions registry.',
+            ),
+          );
+        }
+        serverCapabilities ??= Promise.resolve(
+          serverFunctionOptions.createContext(request, request.signal),
+        ).then((context) =>
+          createServerFunctionCapabilityMap(
+            serverFunctionOptions.registry.manifest.functions,
+            createInProcessServerFunctionTransport(serverFunctionOptions.registry, () => context),
+            serverFunctionOptions.limits,
+          ),
+        );
+        return serverCapabilities;
+      };
+      const adapter = createJavaScriptReadinessAdapter({
+        callCapability: (capability, arguments_, signal) => {
+          if (capability.routeIntrinsic) {
+            const value = routeCapabilityValue(capability, match);
+            if (value !== undefined) return value;
+            return invalidPlan(
+              `Route mutation ${JSON.stringify(capability.routeIntrinsic)} cannot execute during SSR.`,
+            );
+          }
+          if (capability.serverFunctionId) {
+            return resolveServerCapabilities().then((capabilities) => {
+              const serverFunction = capabilities.get(capability.path.join('.'));
+              if (!serverFunction) {
+                return invalidPlan(
+                  `Server function ${JSON.stringify(capability.serverFunctionId)} is missing from the host registry.`,
+                );
+              }
+              // The compiler plan and registry validate the values on their respective sides.
+              const invoke = serverFunction as (
+                ...argumentsAndSignal: readonly unknown[]
+              ) => Promise<unknown>;
+              return invoke(...arguments_, signal);
+            });
+          }
+          if (!options.callCapability) {
+            return invalidPlan(
+              `SSR requires a host resolver for capability ${JSON.stringify(capability.path.join('.'))}.`,
+            );
+          }
+          return options.callCapability(capability, arguments_, signal, request, match);
+        },
+        ...(i18n ? { i18n } : {}),
+        ...(options.scope
+          ? {
+              scope:
+                typeof options.scope === 'function' ? options.scope(request, match) : options.scope,
+            }
+          : {}),
+        ...(options.statusGate ? { statusGate: options.statusGate } : {}),
+      });
+
+      const encoder = new TextEncoder();
+      let responseStarted = false;
+      let responseStatus = 200;
+      let responseHeaders: HeadersInit | undefined;
+      let resolveStart!: () => void;
+      let rejectStart!: (error: unknown) => void;
+      const started = new Promise<void>((resolve, reject) => {
+        resolveStart = resolve;
+        rejectStart = reject;
+      });
+      const head = request.method === 'HEAD';
+      let appendRouteSnapshot = true;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          void streamServerRenderPlan(
+            plan,
+            adapter,
+            {
+              start(metadata) {
+                responseStarted = true;
+                responseStatus = metadata.status;
+                responseHeaders = metadata.headers;
+                appendRouteSnapshot = metadata.status === 200;
+                resolveStart();
+              },
+              write(chunk) {
+                const output = appendRouteSnapshot
+                  ? `${chunk}${serializeRouteSnapshotScript(match)}`
+                  : chunk;
+                appendRouteSnapshot = false;
+                if (!head) controller.enqueue(encoder.encode(output));
+              },
+            },
+            {
+              ...(options.batchWindowMilliseconds !== undefined
+                ? { batchWindowMilliseconds: options.batchWindowMilliseconds }
+                : {}),
+              ...(options.includeBootstrap !== undefined
+                ? { includeBootstrap: options.includeBootstrap }
+                : {}),
+              ...(options.includeCheckpoints !== undefined
+                ? { includeCheckpoints: options.includeCheckpoints }
+                : {}),
+              onError: async (error, context) =>
+                (await options.onError?.(error, { ...context, match, request })) ??
+                defaultServerErrorResponse(error),
+              signal: request.signal,
+            },
+          ).then(
+            () => controller.close(),
+            (error: unknown) => {
+              if (!responseStarted) rejectStart(error);
+              if (head) controller.close();
+              else controller.error(error);
+            },
+          );
+        },
+      });
+      await started;
+
+      const headers = new Headers(
+        typeof options.headers === 'function' ? options.headers(request, match) : options.headers,
+      );
+      if (!headers.has('content-type')) headers.set('content-type', 'text/html; charset=utf-8');
+      if (!headers.has('cache-control')) headers.set('cache-control', 'no-store');
+      if (!headers.has('x-content-type-options')) headers.set('x-content-type-options', 'nosniff');
+      for (const [name, value] of new Headers(responseHeaders)) headers.set(name, value);
+      return new Response(head ? null : stream, { headers, status: responseStatus });
+    } catch (error) {
+      return routeErrorResponse(
+        error,
+        request,
+        options as FetchRouteHandlerOptions<unknown>,
+        match,
+      );
+    }
+  };
+};
+
+const nodeRequestOrigin = async (
+  request: IncomingMessage,
+  configured: NodeHandlerOptions['origin'],
+): Promise<string | URL> => {
+  if (typeof configured === 'function') return configured(request);
+  if (configured) return configured;
+  const host = request.headers.host;
+  if (!host) return invalidPlan('A Node request requires a Host header or explicit origin.');
+  const encrypted = 'encrypted' in request.socket && request.socket.encrypted === true;
+  return `${encrypted ? 'https' : 'http'}://${host}`;
+};
+
+const nodeRequestHeaders = (request: IncomingMessage): Headers => {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
+    else if (value !== undefined) headers.set(name, value);
+  }
+  return headers;
+};
+
+const writeNodeResponse = async (response: Response, target: ServerResponse): Promise<void> => {
+  target.statusCode = response.status;
+  target.statusMessage = response.statusText;
+  const getSetCookie = (
+    response.headers as Headers & { readonly getSetCookie?: () => readonly string[] }
+  ).getSetCookie;
+  for (const [name, value] of response.headers) {
+    if (name !== 'set-cookie') target.setHeader(name, value);
+  }
+  const cookies = getSetCookie?.call(response.headers) ?? [];
+  if (cookies.length > 0) target.setHeader('set-cookie', cookies);
+  if (!response.body) {
+    target.end();
+    return;
+  }
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (!target.write(chunk.value)) {
+        await new Promise<void>((resolve, reject) => {
+          const onDrain = (): void => {
+            target.removeListener('error', onError);
+            resolve();
+          };
+          const onError = (error: Error): void => {
+            target.removeListener('drain', onDrain);
+            reject(error);
+          };
+          target.once('drain', onDrain);
+          target.once('error', onError);
+        });
+      }
+    }
+    target.end();
+  } finally {
+    reader.releaseLock();
+  }
+};
+
+/** Adapts any OXE Fetch handler to Node's IncomingMessage/ServerResponse boundary. */
+export const createNodeHandler =
+  (fetchHandler: FetchRouteHandler, options: NodeHandlerOptions = {}): NodeRouteHandler =>
+  async (incoming, outgoing): Promise<void> => {
+    const controller = new AbortController();
+    const abort = (): void => controller.abort();
+    const abortIfIncomplete = (): void => {
+      if (!outgoing.writableEnded) abort();
+    };
+    incoming.once('aborted', abort);
+    outgoing.once('close', abortIfIncomplete);
+    try {
+      const origin = await nodeRequestOrigin(incoming, options.origin);
+      const url = new URL(incoming.url ?? '/', origin);
+      const method = incoming.method ?? 'GET';
+      const hasBody = method !== 'GET' && method !== 'HEAD';
+      const init: RequestInit & { duplex?: 'half' } = {
+        headers: nodeRequestHeaders(incoming),
+        method,
+        signal: controller.signal,
+        ...(hasBody
+          ? {
+              body: Readable.toWeb(incoming) as ReadableStream<Uint8Array>,
+              duplex: 'half' as const,
+            }
+          : {}),
+      };
+      await writeNodeResponse(await fetchHandler(new Request(url, init)), outgoing);
+    } catch (error) {
+      if (!outgoing.headersSent) {
+        outgoing.statusCode = 500;
+        outgoing.setHeader('content-type', 'text/plain; charset=utf-8');
+        outgoing.end('Internal server error');
+      } else {
+        outgoing.destroy(error instanceof Error ? error : new Error(String(error)));
+      }
+    } finally {
+      incoming.removeListener('aborted', abort);
+      outgoing.removeListener('close', abortIfIncomplete);
+    }
+  };
+
+/** Creates the complete Node route host around the same Fetch implementation. */
+export const createNodeRouteHandler = <Context = never>(
+  options: FetchRouteHandlerOptions<Context>,
+  nodeOptions: NodeHandlerOptions = {},
+): NodeRouteHandler => createNodeHandler(createFetchRouteHandler(options), nodeOptions);
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';

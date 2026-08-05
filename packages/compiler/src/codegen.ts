@@ -29,6 +29,7 @@ import {
   type UiEdgeV1,
   type UiGraphV1,
   type UiNodeV1,
+  type UiServerFunctionDefinitionV1,
   type ValueExpressionV1,
 } from '@oxe/graph';
 
@@ -43,6 +44,7 @@ export interface DomCodeArtifact {
   readonly mountExport: string;
   readonly hydrateExport?: string;
   readonly routeSegmentExport?: string;
+  readonly serverFunctionDefinitionsExport?: string;
 }
 
 export interface DomCodegenOptions {
@@ -105,6 +107,7 @@ interface GenerationPlan {
   readonly eventsByElement: ReadonlyMap<string, readonly EventEdgeV1[]>;
   readonly nodesById: ReadonlyMap<string, UiNodeV1>;
   readonly propsByInstance: ReadonlyMap<string, readonly PropEdgeV1[]>;
+  readonly serverFunctions: readonly UiServerFunctionDefinitionV1[];
   readonly spreadsByInstance: ReadonlyMap<string, readonly SpreadPropEdgeV1[]>;
 }
 
@@ -114,6 +117,7 @@ interface EmittedProgram {
   readonly mountName: string;
   readonly mappings: readonly GeneratedMapping[];
   readonly routeSegmentName?: string;
+  readonly serverFunctions: readonly UiServerFunctionDefinitionV1[];
   readonly source: string;
 }
 
@@ -553,6 +557,7 @@ const buildPlan = (graph: UiGraphV1, options: DomCodegenOptions): GenerationPlan
     eventsByElement,
     nodesById,
     propsByInstance,
+    serverFunctions: graph.serverFunctions ?? [],
     spreadsByInstance,
   };
 };
@@ -576,6 +581,7 @@ const reservedIdentifiers = new Set([
   'mount',
   'readContext',
   'route',
+  'serverFunctionDefinitions',
   'props',
   'removeCollection',
   'runtime',
@@ -740,6 +746,27 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
   const usesRoute = [...plan.nodesById.values()].some(
     (node) => node.kind === 'platform-capability' && node.routeIntrinsic !== undefined,
   );
+  const usesServerFunctions = plan.serverFunctions.length > 0;
+  const asyncCapabilityIds = new Set(
+    [...plan.nodesById.values()]
+      .filter((node) => node.kind === 'platform-capability' && node.capabilityKind === 'async')
+      .map((node) => node.id),
+  );
+  const asyncProcedureIds = new Set(
+    plan.components.flatMap((component) =>
+      component.procedures
+        .filter((procedure) =>
+          procedure.steps.some(
+            (step) =>
+              step.kind === 'call' &&
+              step.expression.callee.kind === 'capability-read' &&
+              asyncCapabilityIds.has(step.expression.callee.targetId),
+          ),
+        )
+        .map((procedure) => procedure.id),
+    ),
+  );
+  const usesAsyncProcedures = asyncProcedureIds.size > 0;
   const componentNames = new Map<string, string>();
   const contextNames = new Map<string, string>();
   const bindingNames = new Map<string, string>();
@@ -957,6 +984,9 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
           if (target.routeIntrinsic === 'search-params') return 'route.search.read';
           if (target.routeIntrinsic === 'navigate') return 'route.navigate';
           if (target.routeIntrinsic === 'set-search-params') return 'route.setSearchParams';
+          if (target.serverFunctionId) {
+            return `requireServerFunction(serverFunctions, ${JSON.stringify(target.path.join('.'))})`;
+          }
           return target.path.reduce(
             (source, segment) => `${source}[${JSON.stringify(segment)}]`,
             'globalThis',
@@ -1151,9 +1181,22 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
       '/** Builds this component inside an active OXE owner. Prefer the mount helper at an application boundary. */',
     );
     writer.line(
-      `const ${generatedComponentName} = (document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}${component.parameters.length > 0 ? ', props' : ''}) => {`,
+      `const ${generatedComponentName} = (document${usesServerFunctions ? ', serverFunctions' : ''}${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}${usesAsyncProcedures ? ', onError' : ''}${component.parameters.length > 0 ? ', props' : ''}) => {`,
     );
     writer.indented(() => {
+      const hasAsyncProcedure = component.procedures.some((procedure) =>
+        asyncProcedureIds.has(procedure.id),
+      );
+      const procedureControllerName = hasAsyncProcedure
+        ? names.allocate(`${component.component.name}ProcedureController`)
+        : undefined;
+      if (procedureControllerName) {
+        writer.line(`const ${procedureControllerName} = new AbortController();`);
+        writer.line(
+          `registerCleanup(() => ${procedureControllerName}.abort(), { kind: 'resource', name: ${JSON.stringify(`${component.component.name} async procedures`)} });`,
+        );
+        if (component.parameters.length > 0 || component.bindings.length > 0) writer.line();
+      }
       for (const parameter of component.parameters) {
         writer.source(parameter.span);
         const name =
@@ -1269,14 +1312,37 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
           procedureOverrides.set(parameter.name, parameterSource);
           return parameterSource;
         });
-        writer.line(`const ${name} = (${parameterSources.join(', ')}) =>`);
+        const asyncProcedure = asyncProcedureIds.has(procedure.id);
+        writer.line(
+          `const ${name} = ${asyncProcedure ? 'async ' : ''}(${parameterSources.join(', ')}) =>`,
+        );
         writer.indented(() => {
-          writer.line('batch(() => {');
+          writer.line(`batch(${asyncProcedure ? 'async ' : ''}() => {`);
           writer.indented(() => {
             for (const step of procedure.steps) {
               writer.source(step.span);
               if (step.kind === 'call') {
-                writer.line(`${expressionSource(step.expression, procedureOverrides)};`);
+                const asyncCapability =
+                  step.expression.callee.kind === 'capability-read'
+                    ? plan.nodesById.get(step.expression.callee.targetId)
+                    : undefined;
+                if (
+                  asyncCapability?.kind === 'platform-capability' &&
+                  asyncCapability.capabilityKind === 'async'
+                ) {
+                  if (!procedureControllerName) {
+                    invalidGraph(`Async procedure "${procedure.name}" has no cancellation owner.`);
+                  }
+                  const callee = expressionSource(step.expression.callee, procedureOverrides);
+                  const argumentsSource = step.expression.arguments
+                    .map((argument) => expressionSource(argument, procedureOverrides))
+                    .join(', ');
+                  writer.line(
+                    `await ${callee}(${argumentsSource}${argumentsSource ? ', ' : ''}${procedureControllerName}.signal);`,
+                  );
+                } else {
+                  writer.line(`${expressionSource(step.expression, procedureOverrides)};`);
+                }
                 continue;
               }
               if (step.kind === 'refresh') {
@@ -1594,7 +1660,7 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
         }
         const rootName = names.allocate(`${target.component.name}Root`);
         writer.line(
-          `const ${rootName} = createRoot(() => ${targetName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}, { ${entries.join(', ')} }), { name: ${JSON.stringify(`${target.component.name} component`)} });`,
+          `const ${rootName} = createRoot(() => ${targetName}(document${usesServerFunctions ? ', serverFunctions' : ''}${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}${usesAsyncProcedures ? ', onError' : ''}, { ${entries.join(', ')} }), { name: ${JSON.stringify(`${target.component.name} component`)} });`,
         );
         return `${rootName}.value`;
       };
@@ -1689,8 +1755,10 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
           if (!procedureName) {
             invalidGraph(`Element "${element.id}" references an unknown procedure.`);
           }
+          const procedure = plan.nodesById.get(event.to);
+          const asyncErrorName = `${component.component.name}.${procedure?.kind === 'procedure' ? procedure.name : event.authoredName}`;
           writer.line(
-            `listen(${elementName}, ${JSON.stringify(event.event)}, ${procedureName}, { replayId: ${JSON.stringify(hydrationMarkerId(element.id))} });`,
+            `listen(${elementName}, ${JSON.stringify(event.event)}, ${procedureName}, {${asyncProcedureIds.has(event.to) ? ` onError: onError ? (error) => onError(error, { kind: 'async-procedure', name: ${JSON.stringify(asyncErrorName)} }) : undefined,` : ''} replayId: ${JSON.stringify(hydrationMarkerId(element.id))} });`,
           );
         }
 
@@ -2125,10 +2193,25 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
   if (plan.components.length > 0) {
     writer.line();
   }
+  if (usesServerFunctions) {
+    writer.line(`const serverFunctionDefinitions = ${JSON.stringify(plan.serverFunctions)};`);
+    writer.line('const requireServerFunction = (serverFunctions, path) => {');
+    writer.indented(() => {
+      writer.line('const capability = serverFunctions.get(path);');
+      writer.line('if (!capability) {');
+      writer.indented(() => {
+        writer.line('throw new Error(`Missing generated server function capability "${path}".`);');
+      });
+      writer.line('}');
+      writer.line('return capability;');
+    });
+    writer.line('};');
+    writer.line();
+  }
   if (routeSegmentName && options.routeSegment) {
     writer.source(plan.entry.component.span);
     writer.line(
-      `const ${routeSegmentName} = (${options.routeSegment === 'layout' ? `{ children, document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''} }` : `{ document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''} }`}) => {`,
+      `const ${routeSegmentName} = (${options.routeSegment === 'layout' ? `{ children, document${usesServerFunctions ? ', serverFunctions' : ''}${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${usesAsyncProcedures ? ', onError' : ''} }` : `{ document${usesServerFunctions ? ', serverFunctions' : ''}${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${usesAsyncProcedures ? ', onError' : ''} }`}) => {`,
     );
     writer.indented(() => {
       if (usesLocalization) {
@@ -2140,17 +2223,26 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
         });
         writer.line('}');
       }
+      if (usesServerFunctions) {
+        writer.line('if (!serverFunctions) {');
+        writer.indented(() => {
+          writer.line(
+            `throw new Error(${JSON.stringify(`Cannot build ${plan.entry.component.name} route segment: serverFunctions are required.`)});`,
+          );
+        });
+        writer.line('}');
+      }
       if (usesAsyncResources) {
         writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
         writer.line(
           `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
         );
         writer.line(
-          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}, asyncCoordinator${options.routeSegment === 'layout' ? ', { children }' : ''});`,
+          `return ${componentName}(document${usesServerFunctions ? ', serverFunctions' : ''}${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}, asyncCoordinator${usesAsyncProcedures ? ', onError' : ''}${options.routeSegment === 'layout' ? ', { children }' : ''});`,
         );
       } else {
         writer.line(
-          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${options.routeSegment === 'layout' ? ', { children }' : ''});`,
+          `return ${componentName}(document${usesServerFunctions ? ', serverFunctions' : ''}${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${usesAsyncProcedures ? ', onError' : ''}${options.routeSegment === 'layout' ? ', { children }' : ''});`,
         );
       }
     });
@@ -2187,6 +2279,18 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
       });
       writer.line('}');
     }
+    if (usesServerFunctions) {
+      writer.line('if (!options.serverFunctionTransport) {');
+      writer.indented(() => {
+        writer.line(
+          `throw new Error(${JSON.stringify(`Cannot mount ${plan.entry.component.name}: options.serverFunctionTransport is required by server functions.`)});`,
+        );
+      });
+      writer.line('}');
+      writer.line(
+        'const serverFunctions = createServerFunctionCapabilityMap(serverFunctionDefinitions, options.serverFunctionTransport, options.serverFunctionLimits);',
+      );
+    }
     if (usesAsyncResources) {
       writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
       writer.line('return mount(container, () => {');
@@ -2195,13 +2299,13 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
           `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
         );
         writer.line(
-          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', options.route' : ''}, asyncCoordinator${options.routeSegment === 'layout' ? ', { children: [] }' : ''});`,
+          `return ${componentName}(document${usesServerFunctions ? ', serverFunctions' : ''}${usesLocalization ? ', i18n' : ''}${usesRoute ? ', options.route' : ''}, asyncCoordinator${usesAsyncProcedures ? ', options.onError' : ''}${options.routeSegment === 'layout' ? ', { children: [] }' : ''});`,
         );
       });
       writer.line('}, { onError: options.onError });');
     } else {
       writer.line(
-        `return mount(container, () => ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', options.route' : ''}${options.routeSegment === 'layout' ? ', { children: [] }' : ''}), { onError: options.onError });`,
+        `return mount(container, () => ${componentName}(document${usesServerFunctions ? ', serverFunctions' : ''}${usesLocalization ? ', i18n' : ''}${usesRoute ? ', options.route' : ''}${usesAsyncProcedures ? ', options.onError' : ''}${options.routeSegment === 'layout' ? ', { children: [] }' : ''}), { onError: options.onError });`,
       );
     }
   });
@@ -2248,6 +2352,18 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
         });
         writer.line('}');
       }
+      if (usesServerFunctions) {
+        writer.line('if (!options.serverFunctionTransport) {');
+        writer.indented(() => {
+          writer.line(
+            `throw new Error(${JSON.stringify(`Cannot hydrate ${plan.entry.component.name}: options.serverFunctionTransport is required by server functions.`)});`,
+          );
+        });
+        writer.line('}');
+        writer.line(
+          'const serverFunctions = createServerFunctionCapabilityMap(serverFunctionDefinitions, options.serverFunctionTransport, options.serverFunctionLimits);',
+        );
+      }
       writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
       writer.line('asyncCoordinator.hydrate(readSerializedAsyncCheckpoints(document));');
       writer.line('const actualBuildFingerprint = readSerializedBuildFingerprint(document);');
@@ -2257,7 +2373,7 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
           `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
         );
         writer.line(
-          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', options.route' : ''}, asyncCoordinator${options.routeSegment === 'layout' ? ', { children: [] }' : ''});`,
+          `return ${componentName}(document${usesServerFunctions ? ', serverFunctions' : ''}${usesLocalization ? ', i18n' : ''}${usesRoute ? ', options.route' : ''}, asyncCoordinator${usesAsyncProcedures ? ', options.onError' : ''}${options.routeSegment === 'layout' ? ', { children: [] }' : ''});`,
         );
       });
       writer.line(
@@ -2273,6 +2389,7 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
     mappings: writer.mappings(),
     mountName,
     ...(routeSegmentName ? { routeSegmentName } : {}),
+    serverFunctions: plan.serverFunctions,
     source: writer.toString(),
   };
 };
@@ -2350,6 +2467,7 @@ const buildSourceMap = (
 
 const emitFactorySource = (program: EmittedProgram): string => {
   const writer = new CodeWriter();
+  const usesServerFunctions = program.serverFunctions.length > 0;
   const runtimeBindings = [
     ...(program.source.includes('addCollection(') ? ['addCollection'] : []),
     'batch',
@@ -2403,17 +2521,20 @@ const emitFactorySource = (program: EmittedProgram): string => {
       : []),
     'setDomValue',
   ].join(', ');
-  writer.line('(runtime, dom) => {');
+  writer.line(`(runtime, dom${usesServerFunctions ? ', serverFunctionRuntime' : ''}) => {`);
   writer.indented(() => {
     writer.line(`const { ${runtimeBindings} } = runtime;`);
     writer.line(`const { ${domBindings} } = dom;`);
+    if (usesServerFunctions) {
+      writer.line('const { createServerFunctionCapabilityMap } = serverFunctionRuntime;');
+    }
     writer.line();
     for (const line of program.source.split('\n')) {
       writer.line(line);
     }
     writer.line();
     writer.line(
-      `return { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''}${program.routeSegmentName ? `, ${program.routeSegmentName}` : ''} };`,
+      `return { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''}${program.routeSegmentName ? `, ${program.routeSegmentName}` : ''}${usesServerFunctions ? ', serverFunctionDefinitions' : ''} };`,
     );
   });
   writer.line('}');
@@ -2422,6 +2543,7 @@ const emitFactorySource = (program: EmittedProgram): string => {
 
 const emitModuleSource = (program: EmittedProgram): string => {
   const writer = new CodeWriter();
+  const usesServerFunctions = program.serverFunctions.length > 0;
   const runtimeBindings = [
     ...(program.source.includes('addCollection(') ? ['addCollection'] : []),
     'batch',
@@ -2477,13 +2599,16 @@ const emitModuleSource = (program: EmittedProgram): string => {
   ].join(', ');
   writer.line(`import { ${runtimeBindings} } from '@oxe/runtime';`);
   writer.line(`import { ${domBindings} } from '@oxe/runtime-dom';`);
+  if (usesServerFunctions) {
+    writer.line(`import { createServerFunctionCapabilityMap } from '@oxe/server-functions';`);
+  }
   writer.line();
   for (const line of program.source.split('\n')) {
     writer.line(line);
   }
   writer.line();
   writer.line(
-    `export { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''}${program.routeSegmentName ? `, ${program.routeSegmentName}` : ''} };`,
+    `export { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''}${program.routeSegmentName ? `, ${program.routeSegmentName}` : ''}${usesServerFunctions ? ', serverFunctionDefinitions' : ''} };`,
   );
   return `${writer.toString()}\n`;
 };
@@ -2493,15 +2618,29 @@ export const generateDomArtifact = (
   options: DomCodegenOptions = {},
 ): DomCodeArtifact => {
   const program = emitProgram(buildPlan(graph, options), options);
+  const usesServerFunctions = program.serverFunctions.length > 0;
   return {
     componentExport: program.componentName,
     factorySource: emitFactorySource(program),
-    factorySourceMap: buildSourceMap(program, `${program.componentName}.factory.js`, 4, 2),
+    factorySourceMap: buildSourceMap(
+      program,
+      `${program.componentName}.factory.js`,
+      usesServerFunctions ? 5 : 4,
+      2,
+    ),
     moduleSource: emitModuleSource(program),
-    moduleSourceMap: buildSourceMap(program, `${program.componentName}.js`, 3, 0),
+    moduleSourceMap: buildSourceMap(
+      program,
+      `${program.componentName}.js`,
+      usesServerFunctions ? 4 : 3,
+      0,
+    ),
     mountExport: program.mountName,
     ...(program.hydrateName ? { hydrateExport: program.hydrateName } : {}),
     ...(program.routeSegmentName ? { routeSegmentExport: program.routeSegmentName } : {}),
+    ...(usesServerFunctions
+      ? { serverFunctionDefinitionsExport: 'serverFunctionDefinitions' }
+      : {}),
   };
 };
 

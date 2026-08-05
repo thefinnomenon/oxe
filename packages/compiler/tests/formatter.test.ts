@@ -8,6 +8,23 @@ const syntaxShape = (value: unknown): unknown =>
   ) as unknown;
 
 describe('OXE trivia and formatter', () => {
+  it('formats server declarations without changing their procedural body', () => {
+    const source = `export server readProject( id:string ) :
+  project=database.projects.read( id )
+  project
+`;
+    const result = formatSource(source, 'server.oxe');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.formatted).toBe(`export server readProject(id: string):
+  project = database.projects.read(id)
+  project
+`);
+    expect(syntaxShape(parseSource(result.formatted).ast)).toEqual(
+      syntaxShape(parseSource(source).ast),
+    );
+  });
+
   it('preserves ordered whitespace and comment trivia', () => {
     const result = scanSource('App():  // root\n  // state\n  value = 1\n', 'trivia.oxe');
 

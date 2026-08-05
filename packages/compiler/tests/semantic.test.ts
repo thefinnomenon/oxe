@@ -90,6 +90,103 @@ const expectOnlySemanticDiagnostic = (
 };
 
 describe('OXE semantic analysis', () => {
+  it('turns authored server declarations into exact async RPC contracts', () => {
+    const graph = requireGraph(
+      analyzeSource(
+        `export server readProject(id):
+  project = database.projects.read(id)
+  project
+
+export App():
+  project = readProject("p1")
+  <h1>{project.name}
+`,
+        'projects.oxe',
+        'projects.oxe',
+        {
+          capabilities: [
+            {
+              kind: 'async',
+              name: 'database.projects.read',
+              parameters: ['string'],
+              parameterSchemas: [{ kind: 'string' }],
+              returns: 'record',
+              returnSchema: {
+                fields: [
+                  { name: 'id', schema: { kind: 'string' } },
+                  { name: 'name', schema: { kind: 'string' } },
+                ],
+                kind: 'record',
+              },
+              target: 'server',
+            },
+          ],
+        },
+      ),
+    );
+
+    expect(graph.serverFunctions).toEqual([
+      expect.objectContaining({
+        mode: 'query',
+        moduleId: 'projects.oxe',
+        name: 'readProject',
+        parameters: [{ name: 'id', schema: { kind: 'string' } }],
+        returns: {
+          fields: [
+            { name: 'id', schema: { kind: 'string' } },
+            { name: 'name', schema: { kind: 'string' } },
+          ],
+          kind: 'record',
+        },
+        schemaVersion: 'oxe.server-function.v1',
+      }),
+    ]);
+    const definition = graph.serverFunctions?.[0];
+    expect(graph.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'platform-capability',
+          serverFunctionId: definition?.id,
+          target: 'universal',
+        }),
+        expect.objectContaining({ kind: 'async-resource', name: 'project', type: 'record' }),
+      ]),
+    );
+  });
+
+  it('keeps server bodies sequential and rejects client-only capability calls', () => {
+    const result = analyzeSource(
+      `server saveProject(id: string):
+  saved = browserStorage.save(id)
+  saved
+
+App():
+  <p>Static
+`,
+      'server-errors.oxe',
+      'server-errors.oxe',
+      {
+        capabilities: [
+          {
+            kind: 'async',
+            name: 'browserStorage.save',
+            parameters: ['string'],
+            returns: 'string',
+            target: 'client',
+          },
+        ],
+      },
+    );
+
+    expect(result.graph).toBeUndefined();
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'OXE2008',
+        message: 'Client-only capability "browserStorage.save" cannot run in a server function.',
+      }),
+    ]);
+  });
+
   it('consumes localization metadata without emitting a DOM attribute', () => {
     const graph = requireGraph(
       analyzeSource(

@@ -1,130 +1,147 @@
-# Typed server functions
+# Server functions
 
-OXE server functions are a versioned transport boundary around existing typed
-capabilities. The authored language continues to use an ordinary assignment:
+Server functions are declarations in OXE source. Authors do not create an RPC
+schema, capability contract, manifest entry, client proxy, or registry entry by
+hand:
 
 ```oxe
-ProjectPage():
-  project = projects.read("project-1")
+export server readProject(id):
+  project = database.projects.read(id)
+  project
+
+export ProjectPage():
+  project = readProject("project-1")
 
   <h1>{project.name}
 ```
 
-The host defines the function once in TypeScript:
+`server` is the execution boundary. The body is ordinary procedural server code:
+statements run once, in source order, for each invocation. Assignments introduce
+immutable locals, and the final expression is the result. OXE omits `function`,
+`async`, `await`, and `return`; the compiler emits those JavaScript details.
 
-```ts
-import {
-  createServerFunctionRegistry,
-  defineServerFunction,
-  implementServerFunction,
-} from '@oxe/server-functions';
-import { serverFunctionCompilerCapability } from '@oxe/server-functions/compiler';
+This is different from module initialization. A deployed module may be initialized
+once per process, isolate, or cold start, but `readProject` runs again for every
+call.
 
-const readProject = defineServerFunction({
-  id: 'projects.read.v1',
-  mode: 'query',
-  parameters: [{ name: 'id', schema: { kind: 'string', minimumLength: 1 } }],
-  path: ['projects', 'read'],
-  returns: {
-    kind: 'record',
-    fields: [
-      { name: 'id', schema: { kind: 'string' } },
-      { name: 'name', schema: { kind: 'string' } },
-    ],
-  },
-});
+## Compiler-owned contract
 
-const compilerCapability = serverFunctionCompilerCapability(readProject);
+The compiler turns each reachable declaration into one
+`oxe.server-function.v1` definition. It owns:
 
-interface RequestContext {
-  readonly projects: {
-    read(id: string, signal: AbortSignal): Promise<{ id: string; name: string }>;
-  };
-}
+- a stable id derived from the module, name, parameters, and result;
+- an internal capability path;
+- ordered named parameter schemas and the result schema;
+- `query` or `mutation` classification; and
+- the client proxy and server registry implementation.
 
-const registry = createServerFunctionRegistry([
-  implementServerFunction<typeof readProject, RequestContext>(
-    readProject,
-    async ([id], context, signal) => context.projects.read(id, signal),
-  ),
-]);
+Scalar parameter types are inferred from their uses. An explicit annotation can
+be added when inference is ambiguous:
+
+```oxe
+server findProject(id: string):
+  database.projects.read(id)
 ```
 
-`serverFunctionCompilerCapability` creates an async universal capability. The
-generated DOM artifact calls a host-installed client adapter, while server
-rendering can resolve the same stable function id locally. The semantic UI graph
-and serialized server render plan retain `serverFunctionId`; the executable
-handler and its request context never enter either artifact.
+The current boundary supports booleans, finite numbers, strings, homogeneous
+arrays, and exact records. It does not silently serialize `undefined`, `null`,
+dates, `BigInt`, binary values, class instances, functions, symbols, unknown
+record fields, or cycles.
 
-## Contract and manifest
+Calls inside a server body resolve through configured server or universal host
+capabilities. For example, `database.projects.read` is a server capability whose
+exact result schema comes from the database adapter. Client-only and disposable
+resource capabilities are rejected in server bodies.
 
-Each `oxe.server-function.v1` definition contains:
+## Next: infer package and import ownership
 
-- a stable id, which changes when an incompatible contract replaces an old one;
-- a dot path used by compiler-emitted capability calls;
-- a `query` or `mutation` classification for later caching, invalidation, retry,
-  and observability policy;
-- ordered named parameter schemas; and
-- one result schema.
+Add JavaScript and package imports to OXE projects, then classify every imported
+binding from its actual references. A binding used only by `server` declarations
+must appear only in the generated server module graph; a binding used only by
+component code must appear only in the browser graph; and a binding used on both
+sides may appear in both when it is compatible with both targets. A server-only
+dependency that reaches component code must be a compile-time error.
 
-`createServerFunctionManifest` rejects duplicate ids and paths, sorts functions
-by id, sorts record fields by name, and freezes the normalized definitions.
-`serializeServerFunctionManifest` therefore produces identical bytes regardless
-of registration order.
+This split must be semantic. OXE will not require `.server.ts`, `.client.ts`, or
+another filename convention to decide where an import belongs. The generated
+client artifact must omit server-only imports and their transitive dependencies
+by construction rather than depending on downstream tree-shaking to remove them.
 
-Version 1 values are deliberately narrow:
+## Generated artifacts
 
-- Boolean values.
-- Finite numbers, with optional integer and inclusive range constraints.
-- Strings, with optional length and enum constraints.
-- Homogeneous arrays, with optional item-count constraints.
-- Exact records with required fields and nested schemas.
+After `analyzeProject`, the compiler produces both halves from the same source:
 
-There is no implicit `undefined`, optional field, `null`, special date encoding,
-binary encoding, class instance, function, symbol, `BigInt`, or non-finite number.
-Unknown fields and non-plain records fail validation. A later nullable or special
-scalar design must version the contract rather than quietly changing JSON
-semantics.
+```ts
+import { generateDomArtifact, generateServerFunctionModuleSource } from '@oxe/compiler';
 
-## Invocation boundary
+const client = generateDomArtifact(project.graph);
+const serverModule = generateServerFunctionModuleSource(project);
+```
 
-`createServerFunctionCaller` accepts the definition and a platform transport. It
-validates arguments before producing an `oxe.server-function-request.v1`
-envelope. The registry parses and revalidates the envelope before invoking the
-handler, validates its result, and returns an
-`oxe.server-function-response.v1` envelope. The caller validates the response
-again before exposing the value.
+The browser mount accepts `serverFunctionTransport`; generated code creates the
+capabilities automatically. The generated server module exports
+`serverFunctionDefinitions` and `serverFunctionRegistry`. Each implementation
+calls `context.callCapability(path, arguments, signal)` for host operations, so
+authentication, authorization, database handles, tenant identity, tracing, and
+secrets remain request-local and never enter an RPC payload or compiler artifact.
 
-`createFetchServerFunctionTransport` and `createServerFunctionFetchHandler`
-provide the standard browser/host adapter. They use POST, require JSON, send a
-non-form `x-oxe-server-function` header, default credentials to `same-origin`,
-reject mismatched browser origins, disable response caching, and enforce the body
-limit while reading the request stream. Hosts may configure an explicit origin
-allowlist for deployments whose public origin differs from their internal request
-URL.
+Arguments are validated before transport and again before execution. Results are
+validated before serialization and again in the browser. Abort signals propagate
+from an async UI resource through Fetch and into the implementation.
 
-Default limits are 1 MiB encoded payloads, 32 nested levels, and 10,000 visited
-values. Hosts may lower all three limits. Limits apply independently on both
-sides, and values are normalized into frozen JSON-only arrays and records.
+## Fetch and Node hosts
 
-Compiler-generated async resources pass their cancellation signal to
-`createServerFunctionCapability`. Transports must stop their request when that
-signal aborts. The registry passes the same signal to the handler and rejects an
-aborted in-process execution without converting it into an application failure.
+`@oxe/router/server` provides the application host. One handler route-matches page
+requests, composes layouts, waits for status gates, streams SSR patches and
+hydration state, and dispatches server-function POSTs:
 
-## Errors and security boundary
+```ts
+import { createFetchRouteHandler } from '@oxe/router/server';
 
-`OxeServerFunctionPublicError` is the only exception whose authored message may
-cross the wire. It carries one of the existing async failure kinds and optional
-bounded validation issues. An `OxeAsyncFailure` keeps its classification and
-status but receives a standard public message. Every other thrown value is sent
-to the registry's `onError` observer and becomes a generic `unexpected` response;
-private exception messages, causes, and stacks are never serialized.
+const handleRequest = createFetchRouteHandler({
+  manifest,
+  loadPlan,
+  serverFunctions: {
+    registry: serverFunctionRegistry,
+    createContext: (request, signal) => ({
+      callCapability: (path, args) =>
+        applicationCapabilities.call(path, args, {
+          request,
+          signal,
+        }),
+    }),
+  },
+});
+```
 
-Handler context is passed out of band. Authentication state, tenant identity,
-authorization services, database handles, secrets, headers, and request objects
-must live there rather than in serialized arguments. The transport-neutral
-package intentionally does not guess HTTP policy. A production host remains
-responsible for restrictive CORS, stronger CSRF policy when its cookie model
-requires it, session construction, authorization, rate limiting, and request
-tracing before calling the registry.
+The returned `(request: Request) => Promise<Response>` function is the portable
+boundary for Workers, serverless platforms, and deployment layers such as Nitro.
+Those tools adapt platform events and deployment packaging; they do not define
+OXE server-function semantics.
+
+For a native Node HTTP server, use the same options with `createNodeRouteHandler`,
+or adapt an existing Fetch handler with `createNodeHandler`:
+
+```ts
+import { createServer } from 'node:http';
+import { createNodeRouteHandler } from '@oxe/router/server';
+
+const handleNodeRequest = createNodeRouteHandler({
+  manifest,
+  loadPlan,
+  serverFunctions: { registry: serverFunctionRegistry, createContext },
+});
+
+createServer((request, response) => {
+  void handleNodeRequest(request, response);
+}).listen(3000);
+```
+
+The standard server-function endpoint defaults to `/__oxe/functions`. It requires
+POST, JSON, and `x-oxe-server-function`, applies origin checks and body limits,
+and returns no-store JSON. Production hosts remain responsible for session and
+authorization policy, restrictive CORS, CSRF policy appropriate to their cookie
+model, rate limiting, secrets, and observability.
+
+Only deliberately public typed failures may expose authored messages. Other
+failures are reported to the host and cross the wire as safe generic errors.

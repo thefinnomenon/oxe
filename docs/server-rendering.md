@@ -98,6 +98,11 @@ the reveal.
   also lets a host promote additional resources. Gates settle before the 200
   response commits, so a global policy can return a 404/401/403/validation/500
   response. Non-gated work continues to stream without head-of-line blocking.
+- The router server package now exposes one standard Fetch handler that matches
+  the request URL, composes v2 route plans, settles status gates before creating
+  the `Response`, streams the shell/patches/checkpoints with backpressure, emits
+  the route snapshot, and dispatches compiler-generated server functions. A Node
+  adapter bridges the same handler to `IncomingMessage` and `ServerResponse`.
 - Hydration mismatches carry the nearest compiler boundary and source location.
   Production recovery replaces only that conditional or keyed range when one is
   available, otherwise it replaces the root. Canonical graph fingerprints travel
@@ -149,13 +154,11 @@ still need dedicated profiles.
 
 The next server steps should happen in this order:
 
-1. Add host response integration around the completed routing composition,
-   readiness, and status contracts.
-2. Add an authored nearest error boundary only if application examples need more
+1. Add an authored nearest error boundary only if application examples need more
    than the global policy.
-3. Expand benchmarks to browser transfer, hydration, navigation, retained memory,
+2. Expand benchmarks to browser transfer, hydration, navigation, retained memory,
    and authorized application workloads.
-4. Implement a Rust consumer of the serialized plan only if those measurements
+3. Implement a Rust consumer of the serialized plan only if those measurements
    justify it. The Rust backend must pass the same plan fixtures, HTML golden
    outputs, capability rules, escaping cases, and structural metrics before it can
    replace the JavaScript reference backend.

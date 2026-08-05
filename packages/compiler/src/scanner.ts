@@ -10,6 +10,7 @@ const keywordKinds: Readonly<Record<string, TokenKind>> = {
   from: 'from',
   import: 'import',
   or: 'or',
+  server: 'server',
 };
 
 const punctuationKinds: Readonly<Record<string, TokenKind>> = {

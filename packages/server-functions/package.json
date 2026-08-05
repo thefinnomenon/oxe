@@ -8,10 +8,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./compiler": {
-      "types": "./dist/compiler.d.ts",
-      "import": "./dist/compiler.js"
     }
   },
   "scripts": {
@@ -21,7 +17,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@oxe/compiler": "workspace:*",
     "@oxe/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@oxe/compiler": "workspace:*"
   }
 }

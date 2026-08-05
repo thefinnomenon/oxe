@@ -3,11 +3,7 @@ export {
   createServerFunctionCapability,
   createServerFunctionCapabilityMap,
 } from './client.js';
-export {
-  createServerFunctionManifest,
-  defineServerFunction,
-  serializeServerFunctionManifest,
-} from './contract.js';
+export { createServerFunctionManifest, serializeServerFunctionManifest } from './contract.js';
 export {
   OxeServerFunctionError,
   OxeServerFunctionPublicError,

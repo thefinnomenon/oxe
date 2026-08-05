@@ -10,7 +10,6 @@ import {
   createServerFunctionCapabilityMap,
   createServerFunctionManifest,
   createServerFunctionRegistry,
-  defineServerFunction,
   implementServerFunction,
   OxeServerFunctionError,
   OxeServerFunctionPublicError,
@@ -19,7 +18,7 @@ import {
   serializeServerFunctionRequest,
   type ServerFunctionImplementation,
 } from '../src/index.js';
-import { serverFunctionCompilerCapability } from '../src/compiler.js';
+import { defineServerFunction } from '../src/contract.js';
 
 const projectSchema = {
   fields: [
@@ -341,46 +340,44 @@ describe('typed server-function contracts', () => {
     await expect(promise).rejects.toMatchObject({ code: 'OXE_SERVER_FUNCTION_ABORTED' });
   });
 
-  it('rejects duplicate ids and paths and malformed compiler capability use', () => {
+  it('rejects duplicate runtime ids while the compiler owns authored function capabilities', () => {
     expect(() => createServerFunctionManifest([readProject, readProject])).toThrow(
       OxeServerFunctionError,
     );
-    const contract = serverFunctionCompilerCapability(readProject);
     const analyzed = analyzeSource(
-      `export App():
-  project = projects.read("p1")
+      `export server readProject(id):
+  project = database.read(id)
+  project
+
+export App():
+  project = readProject("p1")
   <p>{project.name}
 `,
       'server-function.oxe',
       'server-function.oxe',
-      { capabilities: [contract], target: 'client' },
+      {
+        capabilities: [
+          {
+            kind: 'async',
+            name: 'database.read',
+            parameters: ['string'],
+            parameterSchemas: [{ kind: 'string' }],
+            returns: 'record',
+            returnSchema: projectSchema,
+            target: 'server',
+          },
+        ],
+        target: 'client',
+      },
     );
     expect(analyzed.diagnostics).toEqual([]);
     expect(analyzed.graph?.nodes).toContainEqual(
       expect.objectContaining({
         capabilityKind: 'async',
         kind: 'platform-capability',
-        serverFunctionId: 'projects.read.v1',
+        serverFunctionId: analyzed.graph?.serverFunctions?.[0]?.id,
         target: 'universal',
       }),
     );
-
-    const invalid = analyzeSource(
-      'App():\n  value = remote.call()\n  <p>{value}\n',
-      'bad.oxe',
-      'bad.oxe',
-      {
-        capabilities: [
-          {
-            kind: 'pure',
-            name: 'remote.call',
-            parameters: [],
-            returns: 'string',
-            serverFunctionId: 'remote.call.v1',
-          },
-        ],
-      },
-    );
-    expect(invalid.diagnostics[0]?.message).toContain('must be async and universal');
   });
 });

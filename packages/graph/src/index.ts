@@ -43,6 +43,8 @@ export type {
   ProcedureNodeV1,
   ResourceNodeV1,
   RouteIntrinsicV1,
+  ServerValueSchemaV1,
+  UiServerFunctionDefinitionV1,
   RefreshStepV1,
   RefNodeV1,
   StaticAttributeV1,

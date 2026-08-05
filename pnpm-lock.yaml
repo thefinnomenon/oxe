@@ -114,6 +114,9 @@ importers:
       '@oxe/runtime-server':
         specifier: workspace:*
         version: link:../runtime-server
+      '@oxe/server-functions':
+        specifier: workspace:*
+        version: link:../server-functions
     devDependencies:
       '@oxe/compiler':
         specifier: workspace:*
@@ -145,12 +148,13 @@ importers:
 
   packages/server-functions:
     dependencies:
-      '@oxe/compiler':
-        specifier: workspace:*
-        version: link:../compiler
       '@oxe/runtime':
         specifier: workspace:*
         version: link:../runtime
+    devDependencies:
+      '@oxe/compiler':
+        specifier: workspace:*
+        version: link:../compiler
 
 packages:
 

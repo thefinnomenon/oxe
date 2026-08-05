@@ -23,6 +23,49 @@ export interface GraphAccessV1 {
 
 export type PrimitiveTypeV1 = 'array' | 'boolean' | 'number' | 'record' | 'string' | 'unknown';
 
+export type ServerValueSchemaV1 =
+  | { readonly kind: 'boolean' }
+  | {
+      readonly integer?: boolean;
+      readonly kind: 'number';
+      readonly maximum?: number;
+      readonly minimum?: number;
+    }
+  | {
+      readonly enum?: readonly string[];
+      readonly kind: 'string';
+      readonly maximumLength?: number;
+      readonly minimumLength?: number;
+    }
+  | {
+      readonly items: ServerValueSchemaV1;
+      readonly kind: 'array';
+      readonly maximumItems?: number;
+      readonly minimumItems?: number;
+    }
+  | {
+      readonly fields: readonly {
+        readonly name: string;
+        readonly schema: ServerValueSchemaV1;
+      }[];
+      readonly kind: 'record';
+    };
+
+/** Compiler-owned RPC contract synthesized from an authored `server` declaration. */
+export interface UiServerFunctionDefinitionV1 {
+  readonly id: string;
+  readonly mode: 'mutation' | 'query';
+  readonly moduleId: string;
+  readonly name: string;
+  readonly parameters: readonly {
+    readonly name: string;
+    readonly schema: ServerValueSchemaV1;
+  }[];
+  readonly path: readonly string[];
+  readonly returns: ServerValueSchemaV1;
+  readonly schemaVersion: 'oxe.server-function.v1';
+}
+
 export type RouteIntrinsicV1 =
   'location' | 'navigate' | 'params' | 'search-params' | 'set-search-params';
 
@@ -539,4 +582,6 @@ export interface UiGraphV1 {
   /** Sorted lexicographically by semantic id. */
   readonly nodes: readonly UiNodeV1[];
   readonly schemaVersion: 'oxe.ui-graph.v1';
+  /** Server declarations reachable from this compiled application. */
+  readonly serverFunctions?: readonly UiServerFunctionDefinitionV1[];
 }

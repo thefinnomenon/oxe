@@ -893,23 +893,31 @@ source of truth.
 
 ## Typed server functions
 
-Server functions reuse the existing external capability and ordinary async-value
-syntax. OXE does not add `server`, `async`, RPC, request, or response syntax to an
-application component:
+Server functions are top-level language declarations. `server` marks the
+execution boundary without exposing RPC, request, response, `async`, `await`, or
+`return` syntax:
 
 ```oxe
+export server readProject(id):
+  project = database.projects.read(id)
+  project
+
 ProjectPage():
-  project = projects.read("project-1")
+  project = readProject("project-1")
 
   <h1>{project.name}
 ```
 
-The host supplies a versioned `oxe.server-function.v1` definition. It contains a
-stable id, compiler-visible dot path, `query` or `mutation` classification,
-ordered named parameters, and a result schema. The compiler records the stable
-server-function id on the async capability node and preserves it in the server
-render plan. Browser code calls a transport adapter; SSR hosts may execute the
-same definition locally through their capability resolver.
+The server body is procedural and source ordered. Assignments introduce immutable
+locals, the final expression is the result, and the body executes once per
+invocation. Module initialization remains a separate deployment-runtime concern.
+
+The compiler supplies the versioned `oxe.server-function.v1` definition. It owns
+the stable id, internal capability path, `query` or `mutation` classification,
+ordered named parameters, result schema, browser proxy, and registry
+implementation. The stable server-function id remains on the async capability
+node and in the server render plan. Browser code calls a transport adapter; SSR
+executes the same registry locally.
 
 The first transport schema deliberately supports only required JSON values:
 booleans, finite numbers, strings, homogeneous arrays, and exact records. Nested
@@ -924,19 +932,19 @@ Client arguments are validated before transport, then revalidated before a
 handler runs. Handler results are validated before serialization and again after
 the client receives them. Payload byte, depth, and node-count limits are explicit.
 Request context—including authentication, authorization, credentials, database
-handles, and tenant scope—is supplied directly to the server handler and is never
-part of an argument or response envelope.
+handles, tenant scope, and the host capability resolver—is supplied out of band
+and is never part of an argument or response envelope.
 
 Handlers may raise a deliberately public typed failure. Existing async failure
 classes map to safe standard messages; arbitrary exceptions are reported only to
 the host and cross the boundary as a generic unexpected failure. Abort signals
 propagate from compiler-owned async resources through the transport into the
-handler. HTTP route mapping, restrictive CORS, session construction, stronger
-application-specific CSRF policy, rate limiting, and deployment-provider wiring
-remain host responsibilities around this platform-neutral contract; the standard
-Fetch adapter supplies POST, JSON, custom-header, same-origin, cache, and streaming
-body-limit defaults without trying to construct an authenticated application
-context.
+handler. The standard Fetch route host matches pages, composes layouts, settles
+status gates, streams SSR and hydration state, and dispatches the server-function
+endpoint. A Node adapter bridges that handler to `IncomingMessage` and
+`ServerResponse`. Restrictive CORS, session construction, stronger
+application-specific CSRF policy, rate limiting, and provider deployment wiring
+remain host responsibilities around this platform-neutral boundary.
 
 ## Persistence
 

@@ -1,5 +1,6 @@
 import * as runtimeDom from '@oxe/runtime-dom';
 import * as runtime from '@oxe/runtime';
+import * as serverFunctionRuntime from '@oxe/server-functions';
 import { createI18n, type LocaleCatalog } from '@oxe/i18n/runtime';
 
 import enCatalog from '../../../examples/localization/locales/en-US.json';
@@ -17,7 +18,7 @@ import {
 } from '@oxe/router';
 
 import type { PlaygroundCapabilitySet } from './demo-capabilities.js';
-import { createServerFunctionDemoCapability } from './server-function-demo.js';
+import { createServerFunctionDemoTransport } from './server-function-demo.js';
 
 import {
   OXE_PLAYGROUND_PROTOCOL_VERSION,
@@ -34,7 +35,11 @@ import {
 import './preview.css';
 
 type GeneratedExports = Readonly<Record<string, unknown>>;
-type GeneratedFactory = (runtimeApi: typeof runtime, domApi: typeof runtimeDom) => GeneratedExports;
+type GeneratedFactory = (
+  runtimeApi: typeof runtime,
+  domApi: typeof runtimeDom,
+  serverFunctionApi: typeof serverFunctionRuntime,
+) => GeneratedExports;
 
 const previewRoot = document.querySelector<HTMLElement>('#oxe-preview-root');
 if (!previewRoot) {
@@ -136,20 +141,6 @@ const loadDemoUser = (id: number, signal?: AbortSignal): Promise<DemoUser> => {
 const installDemoCapabilities = (set: PlaygroundCapabilitySet | undefined): void => {
   demoRequestSequence = 0;
   Reflect.deleteProperty(globalThis, 'playground');
-  Reflect.deleteProperty(globalThis, 'projects');
-  if (set === 'server-projects') {
-    Object.defineProperty(globalThis, 'projects', {
-      configurable: true,
-      value: Object.freeze({
-        read: createServerFunctionDemoCapability({
-          origin: window.location.origin,
-          onExchange: (direction, payload) =>
-            console.info(`server-function ${direction}: ${payload}`),
-        }),
-      }),
-    });
-    return;
-  }
   if (set !== 'async-users') return;
   Object.defineProperty(globalThis, 'playground', {
     configurable: true,
@@ -485,7 +476,7 @@ const mountPreview = async (
             command.runId,
             undefined,
             encodeURIComponent(definition.id),
-          ).then((factory) => factory(runtime, runtimeDom));
+          ).then((factory) => factory(runtime, runtimeDom, serverFunctionRuntime));
           generated.set(definition.id, loading);
         }
         const exports = await loading;
@@ -577,7 +568,7 @@ const mountPreview = async (
 
   let generated: GeneratedExports;
   try {
-    generated = createGenerated(runtime, runtimeDom);
+    generated = createGenerated(runtime, runtimeDom, serverFunctionRuntime);
   } catch (error) {
     postError('factory', error, command.runId);
     return;
@@ -597,9 +588,24 @@ const mountPreview = async (
   observeReactivity(command.runId);
   const startedAt = performance.now();
   try {
+    const definitions = generated.serverFunctionDefinitions;
+    const serverFunctionTransport =
+      command.capabilitySet === 'server-projects'
+        ? createServerFunctionDemoTransport(
+            Array.isArray(definitions)
+              ? (definitions as readonly serverFunctionRuntime.ServerFunctionDefinitionV1[])
+              : [],
+            {
+              origin: window.location.origin,
+              onExchange: (direction, payload) =>
+                console.info(`server-function ${direction}: ${payload}`),
+            },
+          )
+        : undefined;
     const result: unknown = mount(previewRoot, {
       ...(i18n ? { i18n } : {}),
       onError: (error: unknown) => postError('runtime', error, command.runId),
+      ...(serverFunctionTransport ? { serverFunctionTransport } : {}),
     });
     if (
       typeof result !== 'object' ||

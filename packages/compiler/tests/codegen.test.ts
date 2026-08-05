@@ -33,6 +33,43 @@ const counterGraph = () => {
 };
 
 describe('DOM code generation', () => {
+  it('awaits server-function calls in event procedures and owns their cancellation signal', () => {
+    const result = analyzeSource(
+      `export server saveProject(id: string):
+  saved = database.save(id)
+  saved
+
+export App():
+  save():
+    saveProject("p1")
+  <button onClick={save}>Save
+`,
+      'mutation.oxe',
+      'mutation.oxe',
+      {
+        capabilities: [
+          {
+            kind: 'async',
+            name: 'database.save',
+            parameters: ['string'],
+            returns: 'boolean',
+            target: 'server',
+            writes: 'projects',
+          },
+        ],
+      },
+    );
+    if (!result.graph) throw new Error(JSON.stringify(result.diagnostics));
+    expect(result.graph.serverFunctions?.[0]?.mode).toBe('mutation');
+
+    const source = generateDomFactorySource(result.graph);
+    expect(source).toContain('const saveHandler = async () =>');
+    expect(source).toContain('new AbortController()');
+    expect(source).toContain('await requireServerFunction(serverFunctions');
+    expect(source).toContain('.signal);');
+    expect(source).toContain('kind: \'async-procedure\', name: "App.save"');
+  });
+
   it('emits async resources, granular bindings, refresh, and eager hydration adoption', () => {
     const result = analyzeSource(
       `export App():

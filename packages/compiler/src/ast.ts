@@ -5,6 +5,7 @@ export interface ModuleNode {
   readonly imports: readonly ImportDeclarationNode[];
   readonly contexts: readonly ContextDeclarationNode[];
   readonly declarations: readonly ComponentDeclarationNode[];
+  readonly serverFunctions: readonly ServerFunctionDeclarationNode[];
   readonly schemaVersion: 'oxe.syntax.v1';
   readonly span: SourceSpan;
 }
@@ -64,6 +65,23 @@ export interface HandlerDeclarationNode {
   readonly name: IdentifierNode;
   readonly parameters: readonly IdentifierNode[];
   readonly body: readonly ProceduralStatementNode[];
+  readonly span: SourceSpan;
+}
+
+export interface ServerFunctionParameterNode {
+  readonly kind: 'ServerFunctionParameter';
+  readonly name: IdentifierNode;
+  /** Optional scalar annotation used when the exact type cannot be inferred from the body. */
+  readonly type?: 'boolean' | 'number' | 'string';
+  readonly span: SourceSpan;
+}
+
+export interface ServerFunctionDeclarationNode {
+  readonly body: readonly ServerFunctionStatementNode[];
+  readonly exported: boolean;
+  readonly kind: 'ServerFunctionDeclaration';
+  readonly name: IdentifierNode;
+  readonly parameters: readonly ServerFunctionParameterNode[];
   readonly span: SourceSpan;
 }
 
@@ -306,6 +324,8 @@ export type ProceduralStatementNode =
   | CollectionMutationStatementNode
   | ExpressionStatementNode
   | MemberAssignmentStatementNode;
+
+export type ServerFunctionStatementNode = AssignmentStatementNode | ExpressionStatementNode;
 
 export type MarkupChildNode = ElementNode | TextNode | InterpolationNode | ConditionalRegionNode;
 

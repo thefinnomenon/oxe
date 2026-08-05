@@ -4,6 +4,7 @@ import {
   analyzeProject,
   generateDomArtifact,
   generateDomFactorySource,
+  generateServerFunctionModuleSource,
   type AnalyzeProjectResult,
 } from '../src/index.js';
 
@@ -32,6 +33,121 @@ const requireGraph = (result: AnalyzeProjectResult) => {
 };
 
 describe('OXE project analysis', () => {
+  it('links exported server functions and emits their ordinary sequential implementations', async () => {
+    const files = {
+      'src/App.oxe': `import { readProject } from "./server.oxe"
+
+export App():
+  project = readProject("p1")
+  <h1>{project.name}
+`,
+      'src/server.oxe': `export server readProject(id):
+  project = database.readProject(id)
+  project
+`,
+    };
+    const result = await analyzeProject({
+      capabilities: [
+        {
+          kind: 'async',
+          name: 'database.readProject',
+          parameters: ['string'],
+          parameterSchemas: [{ kind: 'string' }],
+          returns: 'record',
+          returnSchema: {
+            fields: [
+              { name: 'id', schema: { kind: 'string' } },
+              { name: 'name', schema: { kind: 'string' } },
+            ],
+            kind: 'record',
+          },
+          target: 'server',
+        },
+      ],
+      entryExport: 'App',
+      entryModuleId: 'src/App.oxe',
+      loadModule: async (moduleId) => files[moduleId as keyof typeof files],
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    const graph = requireGraph(result);
+    expect(graph.serverFunctions).toHaveLength(1);
+    const client = generateDomArtifact(graph);
+    expect(client.serverFunctionDefinitionsExport).toBe('serverFunctionDefinitions');
+    expect(client.moduleSource).toContain(
+      "import { createServerFunctionCapabilityMap } from '@oxe/server-functions';",
+    );
+    expect(client.moduleSource).toContain('options.serverFunctionTransport');
+    expect(client.moduleSource).toContain('requireServerFunction(serverFunctions');
+    expect(client.factorySource).toContain('serverFunctionDefinitions');
+
+    const server = generateServerFunctionModuleSource(result);
+    expect(server).toContain(
+      "import { createServerFunctionRegistry, implementServerFunction } from '@oxe/server-functions';",
+    );
+    expect(server).toContain('const id = serverArguments[0];');
+    expect(server).toContain(
+      'await callServerCapability(serverContext, ["database","readProject"], [id], serverSignal)',
+    );
+    expect(server).toContain('return project;');
+    expect(server).toContain('createServerFunctionRegistry(implementations)');
+
+    type GeneratedImplementation = {
+      readonly handler: (
+        arguments_: readonly unknown[],
+        context: unknown,
+        signal: AbortSignal,
+      ) => Promise<unknown>;
+    };
+    const generatedContext: {
+      generated?: {
+        readonly serverFunctionRegistry: { implementations: GeneratedImplementation[] };
+      };
+      readonly serverRuntime: {
+        readonly createServerFunctionRegistry: (implementations: GeneratedImplementation[]) => {
+          readonly implementations: GeneratedImplementation[];
+        };
+        readonly implementServerFunction: (
+          definition: unknown,
+          handler: GeneratedImplementation['handler'],
+        ) => GeneratedImplementation;
+      };
+    } = {
+      serverRuntime: {
+        createServerFunctionRegistry: (implementations) => ({ implementations }),
+        implementServerFunction: (_definition, handler) => ({ handler }),
+      },
+    };
+    runInNewContext(
+      server
+        .replace(
+          "import { createServerFunctionRegistry, implementServerFunction } from '@oxe/server-functions';",
+          'const { createServerFunctionRegistry, implementServerFunction } = serverRuntime;',
+        )
+        .replace(
+          'export { serverFunctionDefinitions, serverFunctionRegistry };',
+          'globalThis.generated = { serverFunctionDefinitions, serverFunctionRegistry };',
+        ),
+      generatedContext,
+    );
+    const implementation = generatedContext.generated?.serverFunctionRegistry.implementations[0];
+    if (!implementation) throw new Error('Expected an executable generated implementation.');
+    const capabilityCalls: string[] = [];
+    await expect(
+      implementation.handler(
+        ['p1'],
+        {
+          callCapability: (path: readonly string[], arguments_: readonly unknown[]) => {
+            capabilityCalls.push(`${path.join('.')}:${String(arguments_[0])}`);
+            return { id: 'p1', name: 'Generated implementation' };
+          },
+        },
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual({ id: 'p1', name: 'Generated implementation' });
+    expect(capabilityCalls).toEqual(['database.readProject:p1']);
+  });
+
   it('loads exact relative modules once and links exported components across module boundaries', async () => {
     const { calls, result } = await project({
       'src/App.oxe': `import { Card } from "./components/Card.oxe"
@@ -405,3 +521,4 @@ export App():
     expect(artifact.factorySource).toContain('serialized localization state is missing');
   });
 });
+import { runInNewContext } from 'node:vm';

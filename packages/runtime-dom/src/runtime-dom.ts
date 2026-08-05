@@ -19,7 +19,7 @@ import {
 export type TextValue = bigint | boolean | number | string | null | undefined;
 export type DomValue = boolean | number | string | null | undefined;
 export type DomValueMode = 'attribute' | 'property';
-export type DomEventHandler<EventType extends Event = Event> = (event: EventType) => void;
+export type DomEventHandler<EventType extends Event = Event> = (event: EventType) => unknown;
 export type MountContent = ChildNode | readonly ChildNode[];
 
 export type StructuredContentPart =
@@ -33,15 +33,22 @@ export type StructuredContentPart =
 export type StructuredContentFactory = (children: readonly ChildNode[]) => ChildNode;
 
 export interface DomListenerOptions extends AddEventListenerOptions {
+  readonly onError?: (error: unknown) => void;
   readonly replayId?: string;
 }
+
+const isPromiseLike = (value: unknown): value is PromiseLike<unknown> =>
+  (typeof value === 'object' || typeof value === 'function') &&
+  value !== null &&
+  'then' in value &&
+  typeof value.then === 'function';
 
 export interface MountHandle {
   unmount(): void;
 }
 
 export interface DomErrorContext {
-  readonly kind: 'async-attribute' | 'async-structural' | 'async-text';
+  readonly kind: 'async-attribute' | 'async-procedure' | 'async-structural' | 'async-text';
   readonly name: string;
 }
 
@@ -543,14 +550,25 @@ export const listen = <Target extends EventTarget, EventName extends string>(
   handler: DomEventHandler<EventFor<Target, EventName>>,
   options?: DomListenerOptions | boolean,
 ): void => {
-  const listener: EventListener = (event) =>
-    batch(() => handler(event as EventFor<Target, EventName>));
+  const listener: EventListener = (event) => {
+    const result = batch(() => handler(event as EventFor<Target, EventName>));
+    if (isPromiseLike(result)) {
+      void Promise.resolve(result).catch((error: unknown) => {
+        if (typeof options === 'object' && options.onError) options.onError(error);
+        else
+          queueMicrotask(() => {
+            throw error;
+          });
+      });
+    }
+  };
   const replayId = typeof options === 'object' ? options.replayId : undefined;
   const listenerOptions =
     typeof options === 'object'
       ? {
           ...(options.capture === undefined ? {} : { capture: options.capture }),
           ...(options.once === undefined ? {} : { once: options.once }),
+          // onError is an OXE listener policy, not a native EventListener option.
           ...(options.passive === undefined ? {} : { passive: options.passive }),
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         }

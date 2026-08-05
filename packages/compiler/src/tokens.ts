@@ -34,6 +34,7 @@ export type TokenKind =
   | 'rightBrace'
   | 'rightBracket'
   | 'rightParen'
+  | 'server'
   | 'slash'
   | 'star'
   | 'string';

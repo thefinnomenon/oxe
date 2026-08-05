@@ -25,9 +25,6 @@ export default defineConfig({
       '@oxe/router': fromRepositoryRoot('packages/router/src/index.ts'),
       '@oxe/runtime': fromRepositoryRoot('packages/runtime/src/index.ts'),
       '@oxe/runtime-dom': fromRepositoryRoot('packages/runtime-dom/src/index.ts'),
-      '@oxe/server-functions/compiler': fromRepositoryRoot(
-        'packages/server-functions/src/compiler.ts',
-      ),
       '@oxe/server-functions': fromRepositoryRoot('packages/server-functions/src/index.ts'),
     },
   },

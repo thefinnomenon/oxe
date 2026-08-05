@@ -242,6 +242,24 @@ describe('OXE scanner', () => {
     ]);
   });
 
+  it('reserves server declarations as an authored execution boundary', () => {
+    expect(significantKinds('export server readProject(id):\n  id\n')).toEqual([
+      'export',
+      'server',
+      'identifier',
+      'leftParen',
+      'identifier',
+      'rightParen',
+      'colon',
+      'newline',
+      'indent',
+      'identifier',
+      'newline',
+      'dedent',
+      'endOfFile',
+    ]);
+  });
+
   it('decodes supported string escapes and diagnoses unterminated strings', () => {
     const valid = scanSource('message = "line\\nnext"\n');
     expect(valid.diagnostics).toEqual([]);
