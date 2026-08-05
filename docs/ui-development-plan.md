@@ -239,7 +239,7 @@ replacement and recover safely from deliberate mismatches.
 - [x] Generate complete platform-derived cardinal and ordinal catalogs with
       purpose/context guidance, glossary invalidation, bounded locale concurrency,
       and a tree-shakable browser selection runtime.
-- [ ] Invoke localization preparation from the eventual `oxe build` pipeline and
+- [x] Invoke localization preparation from the `oxe build` pipeline and
       provide an explicit `--sync-i18n` composition for developer-controlled
       generation before build.
 - [ ] Add optional design-system locale and currency pickers driven by configured

@@ -6,11 +6,21 @@
     "lib": ["ES2022"],
     "outDir": "./dist-typecheck",
     "paths": {
-      "@oxe/i18n": ["../i18n/src/index.ts"]
+      "@oxe/compiler": ["../compiler/src/index.ts"],
+      "@oxe/graph": ["../graph/src/index.ts"],
+      "@oxe/i18n": ["../i18n/src/index.ts"],
+      "@oxe/router": ["../router/src/index.ts"],
+      "@oxe/runtime-server": ["../runtime-server/src/index.ts"]
     },
     "rootDir": ".",
     "types": ["node", "vitest/globals"]
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
-  "references": [{ "path": "../i18n" }]
+  "references": [
+    { "path": "../compiler" },
+    { "path": "../graph" },
+    { "path": "../i18n" },
+    { "path": "../router" },
+    { "path": "../runtime-server" }
+  ]
 }
