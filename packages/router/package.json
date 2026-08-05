@@ -15,9 +15,10 @@
     }
   },
   "scripts": {
+    "bench": "vitest bench --run",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" --max-warnings=0",
+    "lint": "eslint \"benchmarks/**/*.ts\" \"src/**/*.ts\" \"tests/**/*.ts\" --max-warnings=0",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

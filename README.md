@@ -164,6 +164,7 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm bench
 pnpm --filter @oxe/runtime-server bench
 ```
 
@@ -243,7 +244,9 @@ errors. Fixed example projects expose accessible file tabs, per-file drafts and
 reset state, file-aware diagnostics, and active-file AST and token views. It also
 exposes generated JavaScript, preview console/runtime failures, compile and mount
 timings, DOM mutation counts, reactive explanations, and the live owner/resource
-tree. Its semantic graph inspector links every node
+tree. Its Performance view collects five-run warm-browser compile and mount
+distributions alongside graph, mutation, and payload boundaries; the complete
+methodology is in [docs/performance.md](docs/performance.md). Its semantic graph inspector links every node
 back to the right source file and summarizes its owner, inputs, consumers, props,
 and related component nodes. The local size report links the whole project,
 builds the generated app with esbuild, and reports raw, minified, gzip, and Brotli

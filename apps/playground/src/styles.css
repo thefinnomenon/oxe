@@ -1068,6 +1068,65 @@ button.inspector-reference:hover {
   font-weight: 750;
 }
 
+.metric-detail {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.67rem;
+}
+
+.performance-section-title {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.78rem;
+}
+
+.pane-toolbar + .performance-section-title {
+  margin-top: 0;
+}
+
+.performance-status {
+  margin: 0 0 0.8rem;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.58rem;
+  color: var(--muted);
+  background: var(--panel-subtle);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.performance-status[data-status='complete'] {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.performance-status[data-status='error'] {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.performance-table td:not(:first-child),
+.performance-table th:not(:first-child) {
+  text-align: right;
+}
+
+.performance-methodology {
+  margin-top: 1rem;
+  padding-top: 0.1rem;
+  border-top: 1px solid var(--border);
+}
+
+.performance-methodology code {
+  color: var(--code);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.performance-methodology a {
+  color: var(--accent-strong);
+}
+
 .graph-node-button {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

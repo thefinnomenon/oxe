@@ -1,5 +1,8 @@
 # Runtime-server baselines
 
+The complete cross-package methodology is documented in
+[`docs/performance.md`](../../../docs/performance.md).
+
 Run `pnpm --filter @oxe/runtime-server bench` from the repository root.
 
 The first case measures reference JavaScript SSR traversal across 250 keyed rows. The second
