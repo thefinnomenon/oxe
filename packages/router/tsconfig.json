@@ -7,7 +7,7 @@
     "rootDir": ".",
     "tsBuildInfoFile": "dist-typecheck/tsconfig.tsbuildinfo"
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "include": ["benchmarks/**/*.ts", "src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
   "references": [
     { "path": "../compiler" },
     { "path": "../runtime" },

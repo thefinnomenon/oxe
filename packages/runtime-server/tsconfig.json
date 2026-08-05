@@ -14,7 +14,7 @@
     "rootDir": ".",
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "include": ["benchmarks/**/*.ts", "src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
   "references": [
     { "path": "../compiler" },
     { "path": "../graph" },

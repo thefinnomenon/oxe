@@ -14,6 +14,11 @@ import {
   type GraphInspectorReference,
 } from './graph-inspector.js';
 import {
+  renderPerformancePanel,
+  type BrowserBenchmarkState,
+  type BrowserPerformanceSample,
+} from './performance.js';
+import {
   OXE_PLAYGROUND_PROTOCOL_VERSION,
   isCompileResult,
   isPreviewEvent,
@@ -40,6 +45,7 @@ type OutputTab =
   | 'graph'
   | 'ast'
   | 'tokens'
+  | 'performance'
   | 'size';
 
 type MobilePanel = 'output' | 'source';
@@ -63,6 +69,7 @@ const tabs: readonly { readonly id: OutputTab; readonly label: string }[] = [
   { id: 'graph', label: 'Graph' },
   { id: 'ast', label: 'AST' },
   { id: 'tokens', label: 'Tokens' },
+  { id: 'performance', label: 'Performance' },
   { id: 'size', label: 'Size' },
 ];
 
@@ -86,7 +93,7 @@ applicationRoot.innerHTML = `
         <div class="brand-mark" aria-hidden="true">OXE</div>
         <div class="brand-copy">
           <h1>OXE Playground</h1>
-          <p>Compiler, graph, runtime, and payload lab</p>
+          <p>Compiler, graph, runtime, payload, and performance lab</p>
         </div>
       </div>
 
@@ -267,6 +274,10 @@ applicationRoot.innerHTML = `
             <pre class="code-output" id="tokens-output" tabindex="0"></pre>
           </section>
 
+          <section class="output-pane" id="pane-performance" role="tabpanel">
+            <div class="pane-scroll" id="performance-content"></div>
+          </section>
+
           <section class="output-pane" id="pane-size" role="tabpanel">
             <div class="pane-scroll" id="size-content"></div>
           </section>
@@ -335,6 +346,7 @@ const graphInspector = requireElement('#graph-inspector', HTMLElement);
 const graphOutput = requireElement('#graph-output', HTMLPreElement);
 const astOutput = requireElement('#ast-output', HTMLPreElement);
 const tokensOutput = requireElement('#tokens-output', HTMLPreElement);
+const performanceContent = requireElement('#performance-content', HTMLDivElement);
 const sizeContent = requireElement('#size-content', HTMLDivElement);
 const compileStatus = requireElement('#compile-status', HTMLSpanElement);
 const compileTime = requireElement('#compile-time', HTMLSpanElement);
@@ -400,6 +412,14 @@ let consoleEvents: PreviewConsoleEvent[] = [];
 let reactivityEvents: ReactiveTraceEvent[] = [];
 let ownership: OwnershipSnapshot | undefined;
 let previewErrors: PreviewErrorEvent[] = [];
+const browserBenchmarkSampleCount = 5;
+let browserBenchmark: BrowserBenchmarkState = {
+  samples: [],
+  status: 'idle',
+  targetSamples: browserBenchmarkSampleCount,
+};
+let browserBenchmarkRunId: number | undefined;
+let browserBenchmarkTimer: number | undefined;
 let sizeRequestSequence = 0;
 let sizeState: SizeState = { exact: false, status: 'idle' };
 let compileTimer: number | undefined;
@@ -1183,6 +1203,96 @@ const updateSizeShortcut = (): void => {
     sizeState.status === 'error' ? 'Size unavailable' : 'Size pending';
 };
 
+const renderPerformance = (): void => {
+  const payload = sizeState.report
+    ? `${formatBytes(sizeState.report.bytes.gzip)} gzip`
+    : sizeState.sourceGzipBytes !== undefined
+      ? `${formatBytes(sizeState.sourceGzipBytes)} generated gzip`
+      : sizeState.sourceBytes !== undefined
+        ? `${formatBytes(sizeState.sourceBytes)} generated`
+        : undefined;
+  renderPerformancePanel(performanceContent, {
+    benchmark: browserBenchmark,
+    current: {
+      domMutations: mutations.attributes + mutations.characterData + mutations.childList,
+      ...(currentResult ? { compileMilliseconds: currentResult.compileMilliseconds } : {}),
+      ...(currentResult?.graphStats
+        ? {
+            graphEdges: currentResult.graphStats.edges,
+            graphNodes: currentResult.graphStats.nodes,
+          }
+        : {}),
+      ...(mountMilliseconds === undefined ? {} : { mountMilliseconds }),
+      ...(payload === undefined ? {} : { payload }),
+    },
+    onRunBenchmark: startBrowserBenchmark,
+  });
+};
+
+function clearBrowserBenchmarkTimer(): void {
+  if (browserBenchmarkTimer !== undefined) {
+    window.clearTimeout(browserBenchmarkTimer);
+    browserBenchmarkTimer = undefined;
+  }
+}
+
+function resetBrowserBenchmark(): void {
+  clearBrowserBenchmarkTimer();
+  browserBenchmarkRunId = undefined;
+  browserBenchmark = {
+    samples: [],
+    status: 'idle',
+    targetSamples: browserBenchmarkSampleCount,
+  };
+  renderPerformance();
+}
+
+function failBrowserBenchmark(message: string): void {
+  clearBrowserBenchmarkTimer();
+  browserBenchmarkRunId = undefined;
+  browserBenchmark = { ...browserBenchmark, message, status: 'error' };
+  renderPerformance();
+}
+
+function startBrowserBenchmark(): void {
+  clearBrowserBenchmarkTimer();
+  if (compileTimer !== undefined) {
+    window.clearTimeout(compileTimer);
+    compileTimer = undefined;
+  }
+  browserBenchmark = {
+    samples: [],
+    status: 'running',
+    targetSamples: browserBenchmarkSampleCount,
+  };
+  renderPerformance();
+  browserBenchmarkRunId = compileSource(true);
+}
+
+function recordBrowserBenchmarkSample(sample: BrowserPerformanceSample): void {
+  const samples = [...browserBenchmark.samples, sample];
+  browserBenchmarkRunId = undefined;
+  if (samples.length >= browserBenchmark.targetSamples) {
+    browserBenchmark = {
+      message: `Completed ${samples.length} warm browser samples for the current project.`,
+      samples,
+      status: 'complete',
+      targetSamples: browserBenchmark.targetSamples,
+    };
+    renderPerformance();
+    showToast('Performance sample complete.');
+    return;
+  }
+  browserBenchmark = { ...browserBenchmark, samples };
+  renderPerformance();
+  browserBenchmarkTimer = window.setTimeout(() => {
+    browserBenchmarkTimer = undefined;
+    if (browserBenchmark.status === 'running') {
+      browserBenchmarkRunId = compileSource(true);
+    }
+  }, 60);
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -1276,6 +1386,7 @@ const setEstimatedSize = async (result: CompileResult, requestId: number): Promi
   };
   updateSizeShortcut();
   renderSize();
+  renderPerformance();
 };
 
 const measureSize = async (
@@ -1317,6 +1428,7 @@ const measureSize = async (
     }
     updateSizeShortcut();
     renderSize();
+    renderPerformance();
   } catch {
     await setEstimatedSize(result, requestId);
   }
@@ -1370,11 +1482,14 @@ const handleCompileResult = (result: CompileResult): void => {
   if (result.runId !== latestRequestedRunId) {
     return;
   }
+  const benchmarkRun =
+    browserBenchmark.status === 'running' && browserBenchmarkRunId === result.runId;
   const firstResultForExample = currentResult === undefined;
   currentResult = result;
   runButton.disabled = false;
   compileTime.textContent = `Compile ${formatMilliseconds(result.compileMilliseconds)}`;
   updateCompilerOutputs(result);
+  renderPerformance();
 
   const valid =
     result.stage === 'complete' &&
@@ -1391,6 +1506,11 @@ const handleCompileResult = (result: CompileResult): void => {
     sizeState = { exact: false, status: 'stale' };
     updateSizeShortcut();
     renderSize();
+    if (benchmarkRun) {
+      failBrowserBenchmark(
+        'The browser benchmark stopped because the current source did not compile.',
+      );
+    }
     if (lastSuccessfulResult) {
       setPreviewOverlay('Current source has errors. Showing the last successful preview.');
     } else {
@@ -1424,10 +1544,13 @@ const handleCompileResult = (result: CompileResult): void => {
     : 'Graph ready';
   setPreviewOverlay('Mounting generated output…');
   postPreviewMount(result);
-  void measureSize(currentProjectFiles(), result);
+  renderPerformance();
+  if (!benchmarkRun) {
+    void measureSize(currentProjectFiles(), result);
+  }
 };
 
-const compileSource = (): void => {
+const compileSource = (benchmark = false): number => {
   if (compileTimer !== undefined) {
     window.clearTimeout(compileTimer);
     compileTimer = undefined;
@@ -1436,14 +1559,18 @@ const compileSource = (): void => {
   latestRequestedRunId = runId;
   runButton.disabled = true;
   setCompileTone('working', 'Compiling');
-  sizeRequestSequence += 1;
-  sizeState = { exact: false, status: 'stale' };
-  updateSizeShortcut();
-  renderSize();
+  if (!benchmark) {
+    sizeRequestSequence += 1;
+    sizeState = { exact: false, status: 'stale' };
+    updateSizeShortcut();
+    renderSize();
+  }
   setPreviewOverlay(
-    lastSuccessfulResult
-      ? 'Compiling edits. The preview is from the last successful run.'
-      : 'Compiling the example…',
+    benchmark
+      ? `Collecting performance sample ${browserBenchmark.samples.length + 1} of ${browserBenchmark.targetSamples}…`
+      : lastSuccessfulResult
+        ? 'Compiling edits. The preview is from the last successful run.'
+        : 'Compiling the example…',
   );
   compilerWorker.postMessage({
     type: 'compile',
@@ -1458,13 +1585,14 @@ const compileSource = (): void => {
     entryExport: selectedExample.entryExport,
     files: currentProjectFiles(),
   });
+  return runId;
 };
 
 const scheduleCompile = (): void => {
   if (compileTimer !== undefined) {
     window.clearTimeout(compileTimer);
   }
-  compileTimer = window.setTimeout(compileSource, 320);
+  compileTimer = window.setTimeout(() => compileSource(), 320);
 };
 
 const buildExampleOptions = (): void => {
@@ -1500,6 +1628,13 @@ const loadExample = (example: PlaygroundExample): void => {
   reactivityEvents = [];
   ownership = undefined;
   previewErrors = [];
+  clearBrowserBenchmarkTimer();
+  browserBenchmarkRunId = undefined;
+  browserBenchmark = {
+    samples: [],
+    status: 'idle',
+    targetSamples: browserBenchmarkSampleCount,
+  };
   generatedOutput.textContent = '';
   graphOutput.textContent = '';
   astOutput.textContent = '';
@@ -1518,6 +1653,7 @@ const loadExample = (example: PlaygroundExample): void => {
   renderOwnership();
   renderGraph();
   renderSize();
+  renderPerformance();
   updateSizeShortcut();
   const url = new URL(window.location.href);
   url.searchParams.set('example', example.id);
@@ -1613,6 +1749,9 @@ compilerWorker.addEventListener('error', (event) => {
   runButton.disabled = false;
   setCompileTone('danger', 'Worker failed');
   setPreviewOverlay(`Compiler worker failed: ${event.message}`);
+  if (browserBenchmark.status === 'running') {
+    failBrowserBenchmark('The browser benchmark stopped because the compiler worker failed.');
+  }
 });
 
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
@@ -1639,6 +1778,17 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       mountMilliseconds = event.data.mountMilliseconds;
       mountTime.textContent = `Mount ${formatMilliseconds(mountMilliseconds)}`;
       setPreviewOverlay();
+      renderPerformance();
+      if (
+        browserBenchmark.status === 'running' &&
+        browserBenchmarkRunId === event.data.runId &&
+        currentResult?.runId === event.data.runId
+      ) {
+        recordBrowserBenchmarkSample({
+          compileMilliseconds: currentResult.compileMilliseconds,
+          mountMilliseconds: event.data.mountMilliseconds,
+        });
+      }
       break;
     case 'preview:mutations':
       if (event.data.runId !== lastSuccessfulResult?.runId) {
@@ -1646,6 +1796,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       }
       mutations = event.data.counts;
       mutationStatus.textContent = `DOM ${mutations.characterData} text · ${mutations.addedNodes} added · ${mutations.removedNodes} removed`;
+      renderPerformance();
       break;
     case 'preview:console':
       if (event.data.runId !== null && event.data.runId !== lastSuccessfulResult?.runId) {
@@ -1675,12 +1826,23 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       previewErrors = [...previewErrors.slice(-49), event.data];
       renderConsole();
       setPreviewOverlay(`Preview ${event.data.phase} error: ${event.data.error.message}`);
+      if (
+        browserBenchmark.status === 'running' &&
+        (event.data.runId === null || event.data.runId === browserBenchmarkRunId)
+      ) {
+        failBrowserBenchmark(
+          `The browser benchmark stopped after a preview ${event.data.phase} error.`,
+        );
+      }
       showTab('console');
       break;
   }
 });
 
 editor.addEventListener('input', () => {
+  if (browserBenchmark.status !== 'idle' || browserBenchmark.samples.length > 0) {
+    resetBrowserBenchmark();
+  }
   projectDrafts.set(activeModuleId, editor.value);
   saveDraft(selectedExample, activeModuleId, editor.value);
   updateLineGutter();
@@ -1689,6 +1851,7 @@ editor.addEventListener('input', () => {
   sizeState = { exact: false, status: 'stale' };
   updateSizeShortcut();
   renderSize();
+  renderPerformance();
   scheduleCompile();
 });
 
@@ -1721,7 +1884,7 @@ editor.addEventListener('keydown', (event) => {
   editor.dispatchEvent(new Event('input', { bubbles: true }));
 });
 
-runButton.addEventListener('click', compileSource);
+runButton.addEventListener('click', () => compileSource());
 
 resetButton.addEventListener('click', () => {
   const file = originalFile(activeModuleId);
@@ -1730,6 +1893,7 @@ resetButton.addEventListener('click', () => {
   }
   deleteDraft(selectedExample, activeModuleId);
   projectDrafts.set(activeModuleId, file.source);
+  resetBrowserBenchmark();
   editor.value = file.source;
   updateLineGutter();
   updateDirtyState();
