@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "pnpm --filter '@oxe/playground^...' build && vite build",
     "dev": "vite",
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" \"vite.config.ts\" --max-warnings=0",
     "preview": "vite preview",
