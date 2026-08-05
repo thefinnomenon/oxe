@@ -272,6 +272,8 @@ export interface PlatformCapabilityNodeV1 extends NodeBaseV1 {
   /** Compiler-owned application input rather than a host-defined capability. */
   readonly routeIntrinsic?: RouteIntrinsicV1;
   readonly returns?: PrimitiveTypeV1;
+  /** Stable RPC contract resolved by the host rather than executed in the browser. */
+  readonly serverFunctionId?: string;
   readonly target: 'client' | 'server' | 'universal';
   /** Stable host target used to reject competing persistent writers. */
   readonly writes?: string;

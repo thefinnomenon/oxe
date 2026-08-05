@@ -1590,6 +1590,21 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
           span: node.span,
         });
       }
+      if (
+        node.serverFunctionId !== undefined &&
+        (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(node.serverFunctionId) ||
+          node.capabilityKind !== 'async' ||
+          node.target !== 'universal' ||
+          node.returns === undefined ||
+          node.dispose !== undefined ||
+          node.writes !== undefined)
+      ) {
+        diagnostics.push({
+          code: 'OXE3006',
+          message: `Server function capability "${node.id}" has an invalid transport contract.`,
+          span: node.span,
+        });
+      }
     } else if (node.kind === 'ref') {
       requireReference(node.elementId, node.span);
       const element = nodes.get(node.elementId);

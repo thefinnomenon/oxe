@@ -128,6 +128,9 @@ or dynamically register their additional resource and patch work when they do no
 - `@oxe/router`: serializable filesystem route manifests, strict URL matching,
   graph-backed route inputs, nested SSR composition, reactive browser
   navigation, and persistent independently loaded DOM segments.
+- `@oxe/server-functions`: versioned typed RPC contracts, deterministic manifests,
+  exact request/result validation, safe error envelopes, cancellation, and
+  compiler capability metadata for host-provided transports.
 - `@oxe/playground`: browser compiler lab with native examples, an isolated DOM
   preview, diagnostics, generated output, graph inspection, and payload sizing.
 - `docs/language-decisions.md`: settled authored-language decisions and open
@@ -180,6 +183,9 @@ hydration/streaming steps are documented in
 The filesystem contract, authored route inputs, nested SSR composition,
 persistent layout lifecycle, and URL policy are documented in
 [docs/routing.md](docs/routing.md).
+Typed server functions reuse ordinary async OXE assignments. Their definitions,
+transport validation, safe errors, server-only context, and compiler boundary are
+documented in [docs/server-functions.md](docs/server-functions.md).
 
 After `pnpm build`, inspect the JavaScript generated from the authored counter:
 

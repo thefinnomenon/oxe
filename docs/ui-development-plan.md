@@ -216,7 +216,10 @@ replacement and recover safely from deliberate mismatches.
 - [x] Lower route snapshots and navigation operations into explicit graph inputs.
 - [x] Compose matched layout/page server plans and adopt the serialized route
       snapshot during hydration.
-- [ ] Add typed server functions and serialization boundaries.
+- [x] Add typed server functions with versioned JSON-only parameter/result schemas,
+      deterministic manifests, exact validation on both sides of the boundary,
+      cancellation, safe error envelopes, server-only request context, and stable
+      capability identities preserved in UI graphs and server render plans.
 - [ ] Reintroduce the schema graph around OXE's final type system.
 - [ ] Generate validated and authorized database/storage clients.
 - [ ] Connect reads and writes to semantic cache dependencies and invalidation.

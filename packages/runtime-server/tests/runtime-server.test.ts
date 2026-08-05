@@ -1032,6 +1032,37 @@ Profile():
     ).toBe('<p>Hello, Ada</p>');
   });
 
+  it('preserves server-function identities in the serialized backend plan', () => {
+    const plan = requirePlan(
+      `export App():
+  project = projects.read("p1")
+  <p>{project.name}
+`,
+      'server-function.oxe',
+      {
+        capabilities: [
+          {
+            kind: 'async',
+            name: 'projects.read',
+            parameters: ['string'],
+            returns: 'record',
+            serverFunctionId: 'projects.read.v1',
+            target: 'universal',
+          },
+        ],
+        target: 'server',
+      },
+    );
+
+    expect(plan.capabilities).toContainEqual(
+      expect.objectContaining({
+        path: ['projects', 'read'],
+        serverFunctionId: 'projects.read.v1',
+      }),
+    );
+    expect(JSON.parse(JSON.stringify(plan))).toEqual(plan);
+  });
+
   it('writes ordered chunks and returns reproducible structural performance metrics', () => {
     const plan = requirePlan(representativeSource, 'performance.oxe');
     const chunks: string[] = [];

@@ -485,6 +485,7 @@ export const createServerRenderPlan = (graph: UiGraphV1): ServerRenderPlanV1 => 
       parameters: capability.parameters,
       ...(capability.routeIntrinsic ? { routeIntrinsic: capability.routeIntrinsic } : {}),
       ...(capability.returns ? { returns: capability.returns } : {}),
+      ...(capability.serverFunctionId ? { serverFunctionId: capability.serverFunctionId } : {}),
     }));
 
   const belongsToReachableComponent = (node: UiNodeV1): boolean =>
