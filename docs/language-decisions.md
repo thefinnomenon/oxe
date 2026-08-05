@@ -243,6 +243,181 @@ self-closing punctuation:
 <input value={editor.draft.title}>
 ```
 
+## Localization and locale formatting
+
+Authored visible prose is localizable by default. Most markup therefore needs no
+localization annotation:
+
+```oxe
+<h1>Recent stories
+<p>Choose a story to continue.
+```
+
+The compiler extracts complete natural-language messages rather than isolated
+text fragments. Dynamic interpolations and inline markup become named, movable
+placeholders so a translation may reorder them. Arbitrary string-valued component
+props are not extracted merely because they contain text.
+
+The single explicit surface is the compiler-only `i18n` attribute. A strict inline
+record supplies exceptional message metadata; the compiler consumes the record
+and does not emit an `i18n` DOM attribute or allocate the authored object at
+runtime:
+
+```oxe
+<h1 i18n={{ key: "story.title" }}>The last voyage
+<p
+  i18n={{
+    key: "story.characters",
+    count: characters.length,
+    context: { gender: lead.gender },
+    purpose: "character count beneath the story title"
+  }}
+>
+  {characters.length} characters
+```
+
+`key` and `purpose` are static. `purpose` tells generation where and why the
+message appears; the extractor also supplies its component, element, translated
+attribute, and named context selectors. `count`, `ordinal`, and named `context`
+selectors may be reactive.
+Plural selection always receives the raw numeric count, never a precomputed
+Boolean, because languages have more categories than singular and plural. A
+literal opt-out applies to the element subtree and can be overridden by an
+explicit descendant configuration:
+
+```oxe
+<code i18n={false}>{source}
+```
+
+Automatic extraction skips `script`, `style`, `code`, `pre`, `kbd`, `samp`,
+`var`, `textarea`, and `template`; editable content, `translate="no"` subtrees,
+and raw SVG/MathML are also skipped initially. Literal inline elements inside a
+translated sentence remain safe movable placeholders. Automatic attribute
+translation is limited to authored human-readable `alt`, `title`, `placeholder`,
+`aria-label`, `aria-description`, and `aria-valuetext`, plus the defined
+human-readable cases of `value` and `label`. Identifiers, URLs, roles, types,
+generic values, `data-*`, and ID-reference ARIA attributes are never translated.
+
+The same `i18n` record formats standalone values. Formatting is a thin interface
+over the platform Internationalization API and retains its option names:
+
+```oxe
+<data
+  i18n={{
+    format: {
+      type: "currency",
+      currency: order.currency,
+      currencyDisplay: "symbol"
+    }
+  }}
+>
+  {order.total}
+
+<time
+  i18n={{
+    format: {
+      type: "date",
+      dateStyle: "long",
+      timeZone: user.timeZone
+    }
+  }}
+>
+  {publishedAt}
+
+<time
+  i18n={{
+    format: {
+      type: "time",
+      timeStyle: "short",
+      timeZone: user.timeZone
+    }
+  }}
+>
+  {meeting.startsAt}
+
+<time
+  i18n={{
+    format: {
+      type: "datetime",
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: user.timeZone
+    }
+  }}
+>
+  {meeting.startsAt}
+```
+
+`currency` is required unless the value's eventual static type carries an ISO
+currency code; locale alone cannot determine a user's currency. Currency uses
+`Intl.NumberFormat`; date, time, and datetime use `Intl.DateTimeFormat`. OXE does
+not ship parallel locale formatting algorithms or locale data. It caches formatter
+instances by locale and options rather than constructing one for every reactive
+update.
+
+`time` and `data` are semantic HTML, not formatting primitives. When a formatted
+`time` or `data` element contains exactly one value, the renderer also produces
+the machine-readable `datetime` or `value` attribute. The formatting annotation
+remains valid on any appropriate element when those semantics do not apply.
+
+The request's locale, time zone, calendar, and numbering system are stable render
+inputs. Server rendering serializes them for hydration so the browser cannot
+silently reformat server HTML with different host defaults. Locale catalogs are
+separate lazy chunks, and compiler feature analysis includes only the message
+selection and formatter capabilities actually used. An application with no
+localization configuration retains literal output and no localization runtime.
+
+Message extraction is automatic during development, but translation generation
+is explicit. Development records stable source hashes and marks affected catalog
+entries new or stale without spending provider tokens on unfinished copy.
+`oxe i18n sync` translates only those new and stale entries. The initial provider
+is OpenAI through the Responses API. Projects select an OpenAI model and the name
+of the environment variable containing its API key; credentials never appear in
+configuration, catalogs, manifests, runtime code, or client bundles. The default
+example uses `gpt-5.6-luna`, while model selection remains configurable.
+
+OXE owns a small translation-provider contract instead of exposing a provider's
+wire format. Additional providers can use the same project configuration shape
+with provider-specific adapters for authentication, structured output, retries,
+rate limits, and errors. The OpenAI adapter requests a strict ordered translation
+array, disables response storage, retries transient failures, and validates the
+result count. Sync first attempts movable protected placeholders; if a provider
+alters a protection marker, it translates the prose segments and reconstructs
+the placeholders exactly, flagging that generated draft for later review rather
+than risking corrupted runtime interpolation. Sync is incremental and resumable,
+and reviewed human translations are never overwritten by generated drafts.
+
+For `count` and `ordinal`, sync queries the platform `Intl.PluralRules` categories
+for every configured locale and generates a complete locale-specific case map.
+The small browser-safe `@oxe/i18n/runtime` entry selects the case and interpolates
+named values; it does not include extraction, provider, or Node tooling. The
+compiler lowers localized text and attributes into reactive reads of that runtime,
+keeps inline elements as structured movable parts rather than HTML strings, and
+emits the same metadata into the synchronous server render plan. Currency and
+temporal formatting call cached platform `Intl` formatters, while semantic `data`
+and `time` elements also receive machine-readable attributes. Project
+glossary entries may preserve a product term, describe its domain meaning, or
+supply an approved per-locale translation. The relevant glossary is part of a
+generated entry's source identity, so changing terminology regenerates drafts but
+never overwrites a reviewed catalog value. Locale work uses bounded concurrency,
+defaulting to four independent locales at a time.
+
+`oxe build` is deterministic: it validates catalog completeness, freshness,
+placeholders, and selector cases, but never downloads a model, invokes a
+translation provider, accesses the network, or rewrites catalogs. Projects choose
+whether missing or stale required messages warn, fail, or use source-language
+fallback. A developer may explicitly combine the operations with
+`oxe build --sync-i18n`; noninteractive production and CI builds do not infer this
+permission. Translation providers remain development tooling and are never
+included in the application runtime or client bundle.
+
+A future optional design-system package may expose locale and currency selection
+components whose choices come directly from the application's configured locales
+and supported currencies. Locale, language, country, and currency remain distinct
+concepts because they are not one-to-one. Currency selection affects display or
+an explicit application conversion workflow; locale formatting never silently
+converts monetary values.
+
 For multiline properties, the formatter places `>` on its own line so new
 properties can be inserted without moving the terminator:
 

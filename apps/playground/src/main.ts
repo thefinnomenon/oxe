@@ -1296,6 +1296,7 @@ const measureSize = async (
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...(selectedExample.capabilitySet ? { capabilitySet: selectedExample.capabilitySet } : {}),
+        ...(selectedExample.localization ? { localization: true } : {}),
         entryModuleId: selectedExample.entryModuleId,
         entryExport: selectedExample.entryExport,
         files,
@@ -1331,6 +1332,7 @@ const postPreviewMount = (result: CompileResult): void => {
       version: OXE_PLAYGROUND_PROTOCOL_VERSION,
       runId: result.runId,
       ...(selectedExample.capabilitySet ? { capabilitySet: selectedExample.capabilitySet } : {}),
+      ...(selectedExample.localization ? { localization: true } : {}),
       ...(result.factorySource ? { factorySource: result.factorySource } : {}),
       ...(result.factorySourceMap ? { factorySourceMap: result.factorySourceMap } : {}),
       ...(result.mountExport ? { mountExport: result.mountExport } : {}),
@@ -1448,6 +1450,7 @@ const compileSource = (): void => {
     version: OXE_PLAYGROUND_PROTOCOL_VERSION,
     runId,
     ...(selectedExample.capabilitySet ? { capabilitySet: selectedExample.capabilitySet } : {}),
+    ...(selectedExample.localization ? { localization: true } : {}),
     ...(selectedExample.routeInitialHref
       ? { routeInitialHref: selectedExample.routeInitialHref }
       : {}),

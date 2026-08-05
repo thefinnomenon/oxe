@@ -25,6 +25,8 @@ import {
   mount,
   OxeHydrationBuildMismatch,
   OxeHydrationMismatch,
+  readSerializedAsyncCheckpoints,
+  readSerializedLocalizationContext,
   setDomValue,
   type TextValue,
 } from '../src/index.js';
@@ -284,6 +286,36 @@ describe('direct DOM primitives', () => {
     expect(serverValue.data).toBe('2');
     hydrated.unmount();
     expect(container.childNodes).toEqual([]);
+  });
+
+  it('reads versioned localization state while retaining legacy async checkpoints', () => {
+    const context = {
+      calendar: 'gregory',
+      locale: 'fr-FR',
+      numberingSystem: 'latn',
+      schemaVersion: 'oxe.localization-context.v1',
+      timeZone: 'UTC',
+    };
+    const document = {
+      querySelector: () => ({
+        textContent: JSON.stringify({
+          checkpoints: [{ identity: 'user:1', value: { name: 'Ada' } }],
+          localization: context,
+          schemaVersion: 'oxe.hydration-state.v1',
+        }),
+      }),
+    } as unknown as Document;
+
+    expect(readSerializedAsyncCheckpoints(document)).toEqual([
+      { identity: 'user:1', value: { name: 'Ada' } },
+    ]);
+    expect(readSerializedLocalizationContext(document)).toEqual(context);
+
+    const legacy = {
+      querySelector: () => ({ textContent: '[{"identity":"legacy","value":1}]' }),
+    } as unknown as Document;
+    expect(readSerializedAsyncCheckpoints(legacy)).toEqual([{ identity: 'legacy', value: 1 }]);
+    expect(readSerializedLocalizationContext(legacy)).toBeUndefined();
   });
 
   it('adopts a conditional region between compiler-owned comment markers', () => {

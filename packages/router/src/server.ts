@@ -1,5 +1,6 @@
 import {
   renderToString,
+  renderToStringWithHydrationState,
   type ServerCapabilityPlanV1,
   type ServerRenderOptions,
   type ServerRenderPlanV1,
@@ -184,6 +185,12 @@ export const renderRouteToString = (
   match: RouteMatch,
   options: ServerRenderOptions = {},
 ): string => renderToString(plan, routeServerRenderOptions(match, options));
+
+export const renderRouteToStringWithHydrationState = (
+  plan: ServerRenderPlanV1,
+  match: RouteMatch,
+  options: ServerRenderOptions = {},
+): string => renderToStringWithHydrationState(plan, routeServerRenderOptions(match, options));
 
 export const serializeRouteSnapshotScript = (match: RouteMatch): string => {
   const snapshot: RouteSnapshot = { ...match, navigationId: 0 };

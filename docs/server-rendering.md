@@ -46,6 +46,14 @@ the reveal.
 - Ready resource checkpoints serialize into inert `application/json` state and
   restore the client coordinator before generated hydration creates resources,
   avoiding a duplicate request.
+- Locale, time zone, calendar, and numbering system resolve once per request and
+  travel in the same inert hydration state. Generated localized hydration adopts
+  that exact context before creating any formatter-backed bindings, so browser
+  host defaults cannot rewrite server-rendered currency or temporal values.
+- The JavaScript readiness adapter passes one request-local localization runtime
+  through the static shell and every deferred patch. Blocking and routed SSR have
+  hydratable string helpers, while streaming automatically emits the same context
+  beside its resource checkpoints.
 - The generated browser artifact exposes an eager hydration entry. Matching DOM
   is adopted by identity and receives live bindings without replacement. Exact
   mismatch errors and controlled replacement recovery are tested for the current

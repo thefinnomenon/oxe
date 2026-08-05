@@ -304,6 +304,21 @@ const procedureStepExpressions = (
 };
 
 const nodeExpressions = (node: UiNodeV1): readonly ValueExpressionV1[] => {
+  const localizedExpressions = (
+    localization: Extract<UiNodeV1, { readonly kind: 'text' }>['localization'] | undefined,
+  ): readonly ValueExpressionV1[] =>
+    localization
+      ? [
+          ...localization.values.map((value) => value.value),
+          ...(localization.selection ? [localization.selection.value] : []),
+          ...localization.markup.flatMap((markup) =>
+            markup.dynamicAttributes.flatMap((attribute) => [
+              attribute.value,
+              ...(attribute.localization ? localizedExpressions(attribute.localization) : []),
+            ]),
+          ),
+        ]
+      : [];
   switch (node.kind) {
     case 'async-resource':
       return [node.expression];
@@ -316,7 +331,15 @@ const nodeExpressions = (node: UiNodeV1): readonly ValueExpressionV1[] => {
     case 'procedure':
       return node.steps.flatMap(procedureStepExpressions);
     case 'text':
-      return node.parts.flatMap((part) => (part.kind === 'expression' ? [part.expression] : []));
+      return [
+        ...(node.format
+          ? []
+          : node.parts.flatMap((part) => (part.kind === 'expression' ? [part.expression] : []))),
+        ...(node.format
+          ? [node.format.value, ...node.format.options.map((option) => option.value)]
+          : []),
+        ...localizedExpressions(node.localization),
+      ];
     case 'component-parameter':
       return node.parameterKind === 'value' && node.default ? [node.default] : [];
     case 'conditional-region':
@@ -326,7 +349,10 @@ const nodeExpressions = (node: UiNodeV1): readonly ValueExpressionV1[] => {
     case 'keyed-collection':
       return [node.source, node.key];
     case 'element':
-      return (node.dynamicAttributes ?? []).map((attribute) => attribute.value);
+      return (node.dynamicAttributes ?? []).flatMap((attribute) => [
+        attribute.value,
+        ...localizedExpressions(attribute.localization),
+      ]);
     case 'context-provider':
       return [node.value];
     case 'resource':

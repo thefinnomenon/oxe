@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OXE localization example</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="card" aria-labelledby="greeting">
+        <div class="toolbar">
+          <label for="locale">Language</label>
+          <select id="locale">
+            <option value="en-US">English</option>
+            <option value="es">Español</option>
+            <option value="pt">Português</option>
+            <option value="fr">Français</option>
+            <option value="it">Italiano</option>
+          </select>
+        </div>
+
+        <div class="content" aria-live="polite">
+          <p class="eyebrow">OXE i18n</p>
+          <h1 id="greeting"></h1>
+          <p id="ready"></p>
+
+          <div class="stat">
+            <p id="story-count"></p>
+            <div class="stepper" aria-label="Story count">
+              <button id="remove-story" type="button" aria-label="Remove one story">−</button>
+              <button id="add-story" type="button" aria-label="Add one story">+</button>
+            </div>
+          </div>
+
+          <div class="stat">
+            <p id="rank"></p>
+            <div class="stepper" aria-label="Challenge rank">
+              <button id="better-rank" type="button" aria-label="Improve rank">−</button>
+              <button id="lower-rank" type="button" aria-label="Lower rank">+</button>
+            </div>
+          </div>
+
+          <p id="powered-by" class="powered-by"></p>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./switcher.js"></script>
+  </body>
+</html>

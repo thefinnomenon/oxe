@@ -44,6 +44,9 @@ importers:
       '@oxe/graph':
         specifier: workspace:*
         version: link:../../packages/graph
+      '@oxe/i18n':
+        specifier: workspace:*
+        version: link:../../packages/i18n
       '@oxe/router':
         specifier: workspace:*
         version: link:../../packages/router
@@ -73,6 +76,12 @@ importers:
         specifier: ^3.0.9
         version: 3.2.7(@types/node@22.20.1)
 
+  packages/cli:
+    dependencies:
+      '@oxe/i18n':
+        specifier: workspace:*
+        version: link:../i18n
+
   packages/compiler:
     dependencies:
       '@oxe/graph':
@@ -87,6 +96,15 @@ importers:
         version: link:../runtime-dom
 
   packages/graph: {}
+
+  packages/i18n:
+    dependencies:
+      '@oxe/compiler':
+        specifier: workspace:*
+        version: link:../compiler
+      '@oxe/runtime':
+        specifier: workspace:*
+        version: link:../runtime
 
   packages/router:
     dependencies:

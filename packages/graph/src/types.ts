@@ -353,9 +353,42 @@ export interface StaticAttributeV1 {
 }
 
 export interface DynamicAttributeV1 {
+  readonly localization?: LocalizedMessageV1;
   readonly mode: 'attribute' | 'property';
   readonly name: string;
   readonly span: GraphSpanV1;
+  readonly value: ValueExpressionV1;
+}
+
+export interface LocalizedMessageValueV1 {
+  readonly name: string;
+  readonly value: ValueExpressionV1;
+}
+
+export interface LocalizedMarkupV1 {
+  readonly dynamicAttributes: readonly DynamicAttributeV1[];
+  readonly name: string;
+  readonly staticAttributes: readonly StaticAttributeV1[];
+  readonly tag: string;
+}
+
+export interface LocalizedMessageV1 {
+  readonly key: string;
+  readonly markup: readonly LocalizedMarkupV1[];
+  readonly selection?: {
+    readonly kind: 'cardinal' | 'ordinal';
+    readonly value: ValueExpressionV1;
+  };
+  readonly source: string;
+  readonly values: readonly LocalizedMessageValueV1[];
+}
+
+export interface FormattedValueV1 {
+  readonly options: readonly {
+    readonly name: string;
+    readonly value: ValueExpressionV1;
+  }[];
+  readonly type: 'currency' | 'date' | 'datetime' | 'time';
   readonly value: ValueExpressionV1;
 }
 
@@ -379,7 +412,9 @@ export type TextPartV1 =
     };
 
 export interface TextNodeV1 extends NodeBaseV1 {
+  readonly format?: FormattedValueV1;
   readonly kind: 'text';
+  readonly localization?: LocalizedMessageV1;
   readonly parts: readonly TextPartV1[];
 }
 

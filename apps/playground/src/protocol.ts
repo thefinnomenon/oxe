@@ -37,6 +37,7 @@ export interface CompileRequest {
   readonly entryExport: string;
   readonly entryModuleId: string;
   readonly files: readonly CompileFile[];
+  readonly localization?: boolean;
   readonly runId: number;
   readonly routeInitialHref?: string;
   readonly type: 'compile';
@@ -79,6 +80,7 @@ export interface PreviewMountCommand {
   readonly factorySource?: string;
   readonly factorySourceMap?: DomSourceMapV3;
   readonly mountExport?: string;
+  readonly localization?: boolean;
   readonly routeBundle?: CompiledRouteBundle;
   readonly runId: number;
   readonly type: 'preview:mount';
@@ -368,6 +370,7 @@ export const isCompileRequest = (value: unknown): value is CompileRequest =>
   value.entryExport.length > 0 &&
   isOptionalString(value.routeInitialHref) &&
   (value.capabilitySet === undefined || isPlaygroundCapabilitySet(value.capabilitySet)) &&
+  (value.localization === undefined || typeof value.localization === 'boolean') &&
   Array.isArray(value.files) &&
   value.files.length > 0 &&
   value.files.every(
@@ -420,6 +423,7 @@ export const isPreviewCommand = (value: unknown): value is PreviewCommand => {
   return (
     value.type === 'preview:mount' &&
     (value.capabilitySet === undefined || isPlaygroundCapabilitySet(value.capabilitySet)) &&
+    (value.localization === undefined || typeof value.localization === 'boolean') &&
     (value.factorySourceMap === undefined || isSourceMap(value.factorySourceMap)) &&
     ((typeof value.factorySource === 'string' && typeof value.mountExport === 'string') ||
       isCompiledRouteBundle(value.routeBundle))

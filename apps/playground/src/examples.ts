@@ -16,6 +16,7 @@ import derivedSource from '../../../examples/derived/App.oxe?raw';
 import domAttributesSource from '../../../examples/dom-attributes/App.oxe?raw';
 import expressionValuesSource from '../../../examples/expression-values/App.oxe?raw';
 import keyedCollectionSource from '../../../examples/keyed-collection/App.oxe?raw';
+import localizationSource from '../../../examples/localization/App.oxe?raw';
 import staticSource from '../../../examples/static/App.oxe?raw';
 import untrackSnapshotSource from '../../../examples/untrack-snapshot/App.oxe?raw';
 import asyncDedupeSource from '../../../examples/async-dedupe/App.oxe?raw';
@@ -38,6 +39,7 @@ export const exampleGroups = [
   'Basics',
   'Async data',
   'Components',
+  'Localization',
   'Routing',
   'Reactivity',
   'Diagnostics',
@@ -60,6 +62,7 @@ export interface PlaygroundExample {
   readonly id: string;
   readonly intentionallyInvalid?: boolean;
   readonly label: string;
+  readonly localization?: boolean;
   readonly routeInitialHref?: string;
 }
 
@@ -74,6 +77,8 @@ const singleFileExample = (
   ...(example.intentionallyInvalid === undefined
     ? {}
     : { intentionallyInvalid: example.intentionallyInvalid }),
+  ...(example.localization === undefined ? {} : { localization: example.localization }),
+  ...(example.routeInitialHref === undefined ? {} : { routeInitialHref: example.routeInitialHref }),
   entryExport: 'App',
   entryModuleId: example.moduleId,
   files: [{ moduleId: example.moduleId, source: example.source }],
@@ -109,6 +114,16 @@ export const examples: readonly PlaygroundExample[] = [
     moduleId: 'examples/server-functions/App.oxe',
     source: serverFunctionsSource,
     capabilitySet: 'server-projects',
+  }),
+  singleFileExample({
+    id: 'localization',
+    label: 'Localization and Intl',
+    group: 'Localization',
+    description:
+      'Translated prose, plurals, ordinals, inline markup, attributes, and request-stable Intl formatting.',
+    moduleId: 'examples/localization/App.oxe',
+    source: localizationSource,
+    localization: true,
   }),
   singleFileExample({
     id: 'async-structural',

@@ -14,6 +14,7 @@ import type {
   ServerPreparedRegionV2,
   ServerReadinessAdapter,
   ServerReadinessPreparation,
+  ServerI18nRuntime,
   ServerRenderPlanV1,
   ServerRenderPlanV2,
   ServerRenderLocation,
@@ -40,6 +41,8 @@ export interface ServerJavaScriptReadinessOptions {
     signal: AbortSignal,
   ) => unknown | PromiseLike<unknown>;
   readonly scope?: string;
+  /** Request-local formatter shared by the shell and every deferred patch. */
+  readonly i18n?: ServerI18nRuntime;
   /** Host policy may promote additional resources into the pre-header status gate. */
   readonly statusGate?: (context: {
     readonly binding: Extract<ServerBindingV1, { readonly kind: 'async-resource' }>;
@@ -347,8 +350,31 @@ const structuralWrapper = (
   value: { kind: 'literal', value: false },
 });
 
+const captureWrapper = (view: ServerViewV1, context: TransformContext): ServerViewV1 => ({
+  children: [
+    staticText(`${view.id}/capture-start`, context.captureStart),
+    view,
+    staticText(`${view.id}/capture-end`, context.captureEnd),
+  ],
+  contextId: `${view.id}/capture-context`,
+  id: `${view.id}/capture-wrapper`,
+  kind: 'context-provider',
+  value: { kind: 'literal', value: false },
+});
+
 const transformView = (view: ServerViewV1, context: TransformContext): ServerViewV1 => {
   if (view.kind === 'text') {
+    const atomicSuffix = view.localization ? 'localization' : view.format ? 'format' : undefined;
+    const atomicRegion = atomicSuffix
+      ? context.regionByConsumer.get(consumerKey(view.id, atomicSuffix))
+      : undefined;
+    if (atomicRegion) {
+      if (atomicRegion.id === context.targetRegionId) return captureWrapper(view, context);
+      if (!regionIsResolved(atomicRegion, context)) {
+        return staticText(`${view.id}/marker`, addMarker(atomicRegion.id, context));
+      }
+      return view;
+    }
     const targetIndex = view.parts.findIndex((part, index) => {
       if (part.kind !== 'expression' || !context.targetRegionId) return false;
       return (
@@ -397,7 +423,12 @@ const transformView = (view: ServerViewV1, context: TransformContext): ServerVie
       const captureId = `${view.id}/attribute-capture`;
       context.targetAttribute = target;
       context.valueCaptureId = captureId;
-      return { id: captureId, kind: 'value-capture', value: target.value };
+      return {
+        id: captureId,
+        kind: 'value-capture',
+        ...(target.localization ? { localization: target.localization } : {}),
+        value: target.value,
+      };
     }
 
     const attributeMarkers: string[] = [];
@@ -1020,6 +1051,7 @@ const captureDependentResourceRequest = (
     dependenciesByBinding.set(dependency.bindingId, current);
   }
   renderToString(transformed.plan, {
+    ...(options.i18n ? { i18n: options.i18n } : {}),
     callCapability: syncCapability(options, signal),
     captureAsyncResource: (bindingId, arguments_, location) =>
       recordResourceArguments(instances, bindingId, arguments_, location),
@@ -1079,6 +1111,7 @@ const renderPreparedRegion = (
   let capturedValue: unknown;
   let capturedValues = 0;
   const html = renderToString(transformed.plan, {
+    ...(options.i18n ? { i18n: options.i18n } : {}),
     callCapability: syncCapability(options, signal),
     captureAsyncResource: (bindingId, arguments_, location) =>
       recordResourceArguments(runtimeInstances, bindingId, arguments_, location),
@@ -1315,6 +1348,7 @@ export const createJavaScriptReadinessAdapter = (
     const shellInstances = createRuntimeInstances();
     const shell = expandMarkers(
       renderToString(transformedShell.plan, {
+        ...(options.i18n ? { i18n: options.i18n } : {}),
         callCapability: syncCapability(options, signal),
         captureAsyncResource: (bindingId, arguments_, location) =>
           recordResourceArguments(shellInstances, bindingId, arguments_, location),
@@ -1498,6 +1532,7 @@ export const createJavaScriptReadinessAdapter = (
       return prepared;
     });
     return {
+      ...(options.i18n ? { localization: options.i18n.context } : {}),
       regions,
       resources: preparedResources,
       shell,

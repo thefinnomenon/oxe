@@ -1,0 +1,167 @@
+:root {
+  color-scheme: light dark;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  background: #eef1f7;
+  color: #181b22;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+select {
+  font: inherit;
+}
+
+.shell {
+  display: grid;
+  min-height: 100svh;
+  place-items: center;
+  padding: 24px;
+}
+
+.card {
+  width: min(100%, 620px);
+  overflow: hidden;
+  border: 1px solid #d8dce5;
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgb(33 39 55 / 12%);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e7e9ef;
+  color: #5c6370;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+select,
+button {
+  border: 1px solid #d8dce5;
+  border-radius: 10px;
+  background: #f8f9fb;
+  color: inherit;
+}
+
+select {
+  min-width: 150px;
+  padding: 8px 34px 8px 11px;
+}
+
+.content {
+  padding: clamp(28px, 7vw, 52px);
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: #6558d8;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: clamp(32px, 8vw, 48px);
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+}
+
+.stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 70px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid #e7e9ef;
+  border-radius: 15px;
+  background: #f8f9fb;
+}
+
+.stat p {
+  margin: 0;
+  font-weight: 650;
+}
+
+.stepper {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+button {
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  font-size: 20px;
+}
+
+button:hover {
+  background: #eceef3;
+}
+
+button:focus-visible,
+select:focus-visible {
+  outline: 3px solid #8277e8;
+  outline-offset: 2px;
+}
+
+.powered-by {
+  margin: 26px 0 0;
+  color: #747b89;
+  font-size: 13px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    background: #111318;
+    color: #f5f6f8;
+  }
+
+  .card {
+    border-color: #30343d;
+    background: #1a1d23;
+    box-shadow: 0 24px 70px rgb(0 0 0 / 35%);
+  }
+
+  .toolbar,
+  .stat {
+    border-color: #30343d;
+  }
+
+  .toolbar,
+  .powered-by {
+    color: #a9afba;
+  }
+
+  .stat,
+  select,
+  button {
+    border-color: #383d47;
+    background: #23272f;
+  }
+
+  button:hover {
+    background: #303641;
+  }
+}

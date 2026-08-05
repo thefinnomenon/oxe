@@ -90,6 +90,105 @@ const expectOnlySemanticDiagnostic = (
 };
 
 describe('OXE semantic analysis', () => {
+  it('consumes localization metadata without emitting a DOM attribute', () => {
+    const graph = requireGraph(
+      analyzeSource(
+        `App():
+  name = "Ada"
+  count = 2
+  <main>
+    <h1 i18n={{ key: "home.greeting", count: count }}>Hello {name}
+    <code i18n={false}>pnpm oxe i18n sync
+`,
+        'localization.oxe',
+        'localization.oxe',
+      ),
+    );
+    const elements = graph.nodes.filter((node) => node.kind === 'element');
+
+    expect(elements.flatMap((element) => element.staticAttributes)).not.toContainEqual(
+      expect.objectContaining({ name: 'i18n' }),
+    );
+    expect(elements.flatMap((element) => element.dynamicAttributes)).not.toContainEqual(
+      expect.objectContaining({ name: 'i18n' }),
+    );
+    expect(graph.nodes).toContainEqual(
+      expect.objectContaining({
+        kind: 'text',
+        localization: expect.objectContaining({
+          key: 'home.greeting',
+          selection: expect.objectContaining({ kind: 'cardinal' }),
+          source: 'Hello {name}',
+          values: [expect.objectContaining({ name: 'name' })],
+        }),
+      }),
+    );
+    expect(
+      graph.nodes
+        .filter((node) => node.kind === 'text')
+        .find((node) =>
+          node.parts.some((part) => part.kind === 'static' && part.value.includes('pnpm')),
+        )?.localization,
+    ).toBeUndefined();
+
+    expectOnlySemanticDiagnostic(
+      `App():
+  <p i18n={true}>Invalid metadata
+`,
+      'OXE2008',
+    );
+  });
+
+  it('lowers automatic prose, attributes, and reorderable inline markup', () => {
+    const graph = requireGraph(
+      analyzeSource(
+        `App(name = "Ada"):
+  total = 10
+  <main>
+    <p>Read
+      <strong>{name}
+    <input placeholder={"Search stories"}>
+    <data i18n={{ format: { type: "currency", currency: "USD" } }}>{total}
+`,
+        'automatic-localization.oxe',
+        'automatic-localization.oxe',
+        { localization: true },
+      ),
+    );
+    const localizedText = graph.nodes.find(
+      (node) => node.kind === 'text' && node.localization?.source.includes('<strong>'),
+    );
+    const input = graph.nodes.find((node) => node.kind === 'element' && node.tag === 'input');
+    const formatted = graph.nodes.find((node) => node.kind === 'text' && node.format);
+
+    expect(localizedText).toMatchObject({
+      kind: 'text',
+      localization: {
+        markup: [expect.objectContaining({ name: 'strong', tag: 'strong' })],
+        source: 'Read<strong>{name}</strong>',
+        values: [expect.objectContaining({ name: 'name' })],
+      },
+    });
+    expect(input).toMatchObject({
+      kind: 'element',
+      dynamicAttributes: [
+        expect.objectContaining({
+          name: 'placeholder',
+          localization: expect.objectContaining({ source: 'Search stories' }),
+        }),
+      ],
+    });
+    expect(formatted).toMatchObject({
+      kind: 'text',
+      format: {
+        options: [expect.objectContaining({ name: 'currency' })],
+        type: 'currency',
+        value: expect.objectContaining({ kind: 'read' }),
+      },
+    });
+    expect(validateUiGraph(graph)).toEqual([]);
+  });
+
   it('resolves context providers and consumers while preserving writable record paths', () => {
     const moduleId = 'context.oxe';
     const graph = requireGraph(
