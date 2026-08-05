@@ -78,9 +78,21 @@ importers:
 
   packages/cli:
     dependencies:
+      '@oxe/compiler':
+        specifier: workspace:*
+        version: link:../compiler
+      '@oxe/graph':
+        specifier: workspace:*
+        version: link:../graph
       '@oxe/i18n':
         specifier: workspace:*
         version: link:../i18n
+      '@oxe/router':
+        specifier: workspace:*
+        version: link:../router
+      '@oxe/runtime-server':
+        specifier: workspace:*
+        version: link:../runtime-server
 
   packages/compiler:
     dependencies:

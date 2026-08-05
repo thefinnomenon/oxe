@@ -19,6 +19,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@oxe/i18n": "workspace:*"
+    "@oxe/compiler": "workspace:*",
+    "@oxe/graph": "workspace:*",
+    "@oxe/i18n": "workspace:*",
+    "@oxe/router": "workspace:*",
+    "@oxe/runtime-server": "workspace:*"
   }
 }

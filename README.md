@@ -168,6 +168,50 @@ pnpm bench
 pnpm --filter @oxe/runtime-server bench
 ```
 
+## Building an OXE project
+
+After building the workspace packages, the CLI compiles a conventional
+`src/App.oxe` or `App.oxe` entry with:
+
+```sh
+node packages/cli/dist/cli.js build --project path/to/project
+```
+
+The default `dist` directory contains a versioned `oxe-manifest.json`, generated
+browser modules and source maps, canonical semantic graphs, and blocking and
+deferred server render plans. When `src/routes` contains `page.oxe` files, the
+command automatically emits a filesystem route manifest and one independently
+loadable artifact set per unique layout or page segment.
+
+Entry, output, and routing conventions can be overridden explicitly:
+
+```sh
+node packages/cli/dist/cli.js build \
+  --project path/to/project \
+  --entry src/Shell.oxe \
+  --export Shell \
+  --out-dir build
+
+node packages/cli/dist/cli.js build \
+  --project path/to/project \
+  --routes-dir src/routes \
+  --base-path /dashboard
+```
+
+If the project contains `oxe.config.json`, every build performs deterministic
+localization validation without contacting a provider or writing catalogs. Add
+`--sync-i18n` only when generation should run explicitly before validation and
+compilation:
+
+```sh
+node packages/cli/dist/cli.js build --project examples/localization --sync-i18n
+```
+
+Build output is staged before replacing the previous output directory, so a
+compiler or localization error leaves the last successful build intact. Host
+capability contract discovery and final application bundling remain deployment
+integration responsibilities in this first CLI build slice.
+
 The translation example uses `examples/localization/oxe.config.json`:
 
 ```json
