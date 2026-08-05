@@ -7,6 +7,14 @@ import esCatalog from '../../../examples/localization/locales/es.json';
 import frCatalog from '../../../examples/localization/locales/fr.json';
 import itCatalog from '../../../examples/localization/locales/it.json';
 import ptCatalog from '../../../examples/localization/locales/pt.json';
+import {
+  createBrowserRouter,
+  createDomRouteSegmentArtifact,
+  createDomSegmentTransition,
+  type DomRouteSegmentBuildContext,
+  type DomRouteSegmentContent,
+  type OxeRouter,
+} from '@oxe/router';
 
 import type { PlaygroundCapabilitySet } from './demo-capabilities.js';
 
@@ -33,7 +41,7 @@ if (!previewRoot) {
 }
 
 const expectedParentOrigin = new URL(document.referrer || window.location.href).origin;
-let activeMount: runtimeDom.MountHandle | undefined;
+let activeMount: { unmount(): void } | undefined;
 let activeRunId: number | null = null;
 let commandSequence = 0;
 let mutationObserver: MutationObserver | undefined;
@@ -386,10 +394,11 @@ const importFactory = async (
   source: string,
   runId: number,
   sourceMap?: PreviewMountCommand['factorySourceMap'],
+  label = 'app',
 ): Promise<GeneratedFactory> => {
   const moduleSource =
     `export default ${source.trim()}\n` +
-    `//# sourceURL=oxe-playground-run-${runId.toString()}.generated.js\n` +
+    `//# sourceURL=oxe-playground-run-${runId.toString()}-${label}.generated.js\n` +
     (sourceMap
       ? `//# sourceMappingURL=data:application/json;base64,${inlineSourceMap(sourceMap)}\n`
       : '');
@@ -422,6 +431,115 @@ const mountPreview = async (
   activeRunId = command.runId;
   previewRoot.replaceChildren();
   observeOwnership(command.runId);
+  installDemoCapabilities(command.capabilitySet);
+  const i18n = command.localization
+    ? createI18n({
+        catalogs: [enCatalog, esCatalog, frCatalog, itCatalog, ptCatalog] as LocaleCatalog[],
+        locale: 'es',
+      })
+    : undefined;
+
+  if (command.routeBundle) {
+    const specifications = new Map(
+      command.routeBundle.segments.map((segment) => [segment.id, segment]),
+    );
+    const generated = new Map<string, Promise<GeneratedExports>>();
+    let routeRouter: OxeRouter | undefined;
+    const requireRouter = (): OxeRouter => {
+      if (!routeRouter) throw new Error('The playground route runtime is not ready.');
+      return routeRouter;
+    };
+    const navigation = {
+      navigate: (to: string, options?: Parameters<OxeRouter['navigate']>[1]) =>
+        requireRouter().navigate(to, options),
+      setSearchParams: (
+        updates: Parameters<OxeRouter['setSearchParams']>[0],
+        options?: Parameters<OxeRouter['setSearchParams']>[1],
+      ) => requireRouter().setSearchParams(updates, options),
+    };
+    const transition = createDomSegmentTransition(
+      previewRoot,
+      async (definition) => {
+        const specification = specifications.get(definition.id);
+        if (!specification) throw new Error(`Missing generated route segment ${definition.id}.`);
+        let loading = generated.get(definition.id);
+        if (!loading) {
+          loading = importFactory(
+            specification.factorySource,
+            command.runId,
+            undefined,
+            encodeURIComponent(definition.id),
+          ).then((factory) => factory(runtime, runtimeDom));
+          generated.set(definition.id, loading);
+        }
+        const exports = await loading;
+        const build = exports[specification.routeSegmentExport];
+        if (typeof build !== 'function') {
+          throw new TypeError(
+            `Generated route code did not export ${JSON.stringify(specification.routeSegmentExport)}.`,
+          );
+        }
+        const segmentBuilder = build as (
+          context: DomRouteSegmentBuildContext,
+        ) => DomRouteSegmentContent;
+        return createDomRouteSegmentArtifact({
+          build: (context) => segmentBuilder({ ...context, ...(i18n ? { i18n } : {}) }),
+          id: definition.id,
+          kind: definition.kind,
+          navigation,
+        });
+      },
+      { onError: (error) => postError('runtime', error, command.runId) },
+    );
+    observeMutations(command.runId);
+    observeReactivity(command.runId);
+    const startedAt = performance.now();
+    try {
+      window.history.replaceState(null, '', command.routeBundle.initialHref);
+      routeRouter = createBrowserRouter(command.routeBundle.manifest, {
+        hydrateSnapshot: false,
+        onError: (error) => postError('runtime', error, command.runId),
+        transition,
+        window,
+      });
+      const initial = routeRouter.snapshot.read();
+      const prepared = await transition.prepare(initial, new AbortController().signal);
+      if (sequence !== commandSequence) {
+        prepared.cancel();
+        routeRouter.dispose();
+        transition.dispose();
+        return;
+      }
+      prepared.commit(initial);
+      activeMount = {
+        unmount: () => {
+          routeRouter?.dispose();
+          transition.dispose();
+        },
+      };
+      resetPostMountMutations(command.runId);
+    } catch (error) {
+      mutationObserver?.disconnect();
+      mutationObserver = undefined;
+      stopReactivity();
+      routeRouter?.dispose();
+      transition.dispose();
+      postError('mount', error, command.runId);
+      return;
+    }
+    postToParent({
+      type: 'preview:mounted',
+      version: OXE_PLAYGROUND_PROTOCOL_VERSION,
+      runId: command.runId,
+      mountMilliseconds: performance.now() - startedAt,
+    });
+    return;
+  }
+
+  if (!command.factorySource || !command.mountExport) {
+    postError('protocol', new TypeError('The preview mount command has no generated entry.'));
+    return;
+  }
 
   let createGenerated: GeneratedFactory;
   try {
@@ -440,8 +558,6 @@ const mountPreview = async (
   if (sequence !== commandSequence) {
     return;
   }
-
-  installDemoCapabilities(command.capabilitySet);
 
   let generated: GeneratedExports;
   try {
@@ -465,12 +581,6 @@ const mountPreview = async (
   observeReactivity(command.runId);
   const startedAt = performance.now();
   try {
-    const i18n = command.localization
-      ? createI18n({
-          catalogs: [enCatalog, esCatalog, frCatalog, itCatalog, ptCatalog] as LocaleCatalog[],
-          locale: 'es',
-        })
-      : undefined;
     const result: unknown = mount(previewRoot, {
       ...(i18n ? { i18n } : {}),
       onError: (error: unknown) => postError('runtime', error, command.runId),

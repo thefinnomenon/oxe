@@ -1283,6 +1283,10 @@ const measureSize = async (
   result: CompileResult,
 ): Promise<void> => {
   const requestId = ++sizeRequestSequence;
+  if (result.routeBundle) {
+    await setEstimatedSize(result, requestId);
+    return;
+  }
   sizeState = { exact: false, status: 'loading' };
   updateSizeShortcut();
   renderSize();
@@ -1319,7 +1323,7 @@ const measureSize = async (
 };
 
 const postPreviewMount = (result: CompileResult): void => {
-  if (!previewReady || !result.factorySource || !result.mountExport) {
+  if (!previewReady || (!result.routeBundle && (!result.factorySource || !result.mountExport))) {
     return;
   }
   previewFrame.contentWindow?.postMessage(
@@ -1329,9 +1333,10 @@ const postPreviewMount = (result: CompileResult): void => {
       runId: result.runId,
       ...(selectedExample.capabilitySet ? { capabilitySet: selectedExample.capabilitySet } : {}),
       ...(selectedExample.localization ? { localization: true } : {}),
-      factorySource: result.factorySource,
+      ...(result.factorySource ? { factorySource: result.factorySource } : {}),
       ...(result.factorySourceMap ? { factorySourceMap: result.factorySourceMap } : {}),
-      mountExport: result.mountExport,
+      ...(result.mountExport ? { mountExport: result.mountExport } : {}),
+      ...(result.routeBundle ? { routeBundle: result.routeBundle } : {}),
     },
     window.location.origin,
   );
@@ -1374,8 +1379,8 @@ const handleCompileResult = (result: CompileResult): void => {
   const valid =
     result.stage === 'complete' &&
     result.diagnostics.length === 0 &&
-    result.factorySource !== undefined &&
-    result.mountExport !== undefined;
+    ((result.factorySource !== undefined && result.mountExport !== undefined) ||
+      result.routeBundle !== undefined);
   if (!valid) {
     setCompileTone(
       'danger',
@@ -1446,6 +1451,9 @@ const compileSource = (): void => {
     runId,
     ...(selectedExample.capabilitySet ? { capabilitySet: selectedExample.capabilitySet } : {}),
     ...(selectedExample.localization ? { localization: true } : {}),
+    ...(selectedExample.routeInitialHref
+      ? { routeInitialHref: selectedExample.routeInitialHref }
+      : {}),
     entryModuleId: selectedExample.entryModuleId,
     entryExport: selectedExample.entryExport,
     files: currentProjectFiles(),

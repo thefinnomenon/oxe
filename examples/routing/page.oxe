@@ -1,0 +1,11 @@
+export Page():
+  search = useSearchParams()
+
+  details():
+    setSearchParams({ tab: "details" })
+
+  <section>
+    <h2>Home page
+    <p>The root layout remains mounted as pages change.
+    <p>Selected tab: {search.tab}
+    <button onClick={details}>Set details search param

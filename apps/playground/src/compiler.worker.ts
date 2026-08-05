@@ -1,5 +1,6 @@
 import { analyzeProject, generateDomArtifact, parseSource, scanSource } from '@oxe/compiler';
 import { serializeUiGraph } from '@oxe/graph';
+import { createFileRouteManifest, matchRoute } from '@oxe/router';
 
 import { capabilitiesForPlayground, type PlaygroundCapabilitySet } from './demo-capabilities.js';
 
@@ -44,6 +45,7 @@ const compile = async (request: {
   readonly files: readonly CompileFile[];
   readonly localization?: boolean;
   readonly runId: number;
+  readonly routeInitialHref?: string;
 }): Promise<CompileResult> => {
   const startedAt = performance.now();
   const sources = new Map(request.files.map((file) => [file.moduleId, file.source]));
@@ -52,6 +54,89 @@ const compile = async (request: {
     astJson: prettyJson(parseSource(file.source, file.moduleId).ast),
     tokenJson: prettyJson(scanSource(file.source, file.moduleId).tokens),
   }));
+  if (request.routeInitialHref !== undefined) {
+    const manifest = createFileRouteManifest(request.files.map((file) => file.moduleId));
+    const initialMatch = matchRoute(manifest, request.routeInitialHref);
+    if (!initialMatch) {
+      throw new Error(
+        `The initial playground URL ${JSON.stringify(request.routeInitialHref)} does not match a route.`,
+      );
+    }
+    const definitions = new Map(
+      manifest.routes.flatMap((route) => route.segments.map((segment) => [segment.id, segment])),
+    );
+    const compiled = await Promise.all(
+      [...definitions.values()].map(async (segment) => {
+        const analyzed = await analyzeProject({
+          capabilities: capabilitiesForPlayground(request.capabilitySet),
+          entryExport: segment.exportName,
+          entryModuleId: segment.moduleId,
+          loadModule: async (moduleId) => sources.get(moduleId),
+          ...(request.localization === undefined ? {} : { localization: request.localization }),
+          routeSegment: segment.kind,
+        });
+        return { analyzed, segment };
+      }),
+    );
+    const diagnostics = compiled.flatMap(({ analyzed }) => analyzed.diagnostics);
+    const common = {
+      type: 'compile-result' as const,
+      version: OXE_PLAYGROUND_PROTOCOL_VERSION,
+      runId: request.runId,
+      diagnostics,
+      modules,
+    };
+    if (diagnostics.length > 0 || compiled.some(({ analyzed }) => !analyzed.graph)) {
+      return {
+        ...common,
+        stage: diagnostics[0] ? diagnosticStage(diagnostics[0].code) : 'analyze',
+        compileMilliseconds: performance.now() - startedAt,
+      };
+    }
+    const artifacts = compiled.map(({ analyzed, segment }) => {
+      if (!analyzed.graph) throw new Error(`Route segment ${segment.id} has no graph.`);
+      const artifact = generateDomArtifact(analyzed.graph, { routeSegment: segment.kind });
+      if (!artifact.routeSegmentExport) {
+        throw new Error(`Route segment ${segment.id} has no generated segment export.`);
+      }
+      return {
+        artifact,
+        graph: analyzed.graph,
+        routeSegmentExport: artifact.routeSegmentExport,
+        segment,
+      };
+    });
+    const initialPage = initialMatch.route.segments.at(-1);
+    const display = artifacts.find(({ segment }) => segment.id === initialPage?.id) ?? artifacts[0];
+    if (!display) throw new Error('The route playground produced no artifacts.');
+    const stats = artifacts.reduce(
+      (total, { graph }) => ({
+        edges: total.edges + graph.edges.length,
+        entries: total.entries + graph.entryComponents.length,
+        nodes: total.nodes + graph.nodes.length,
+      }),
+      { edges: 0, entries: 0, nodes: 0 },
+    );
+    return {
+      ...common,
+      stage: 'complete',
+      graphJson: serializeUiGraph(display.graph),
+      graphStats: stats,
+      moduleSource: artifacts
+        .map(({ artifact, segment }) => `// ${segment.moduleId}\n${artifact.moduleSource}`)
+        .join('\n'),
+      routeBundle: {
+        initialHref: initialMatch.location.href,
+        manifest,
+        segments: artifacts.map(({ artifact, routeSegmentExport, segment }) => ({
+          factorySource: artifact.factorySource,
+          id: segment.id,
+          routeSegmentExport,
+        })),
+      },
+      compileMilliseconds: performance.now() - startedAt,
+    };
+  }
   const analyzed = await analyzeProject({
     capabilities: capabilitiesForPlayground(request.capabilitySet),
     entryModuleId: request.entryModuleId,

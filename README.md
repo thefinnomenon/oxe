@@ -134,6 +134,9 @@ or dynamically register their additional resource and patch work when they do no
   the deterministic synchronous JavaScript reference renderer, a portable
   readiness scheduler, inert stream transport/checkpoints, and structural
   performance metrics.
+- `@oxe/router`: serializable filesystem route manifests, strict URL matching,
+  graph-backed route inputs, nested SSR composition, reactive browser
+  navigation, and persistent independently loaded DOM segments.
 - `@oxe/playground`: browser compiler lab with native examples, an isolated DOM
   preview, diagnostics, generated output, graph inspection, and payload sizing.
 - `docs/language-decisions.md`: settled authored-language decisions and open
@@ -248,6 +251,9 @@ excluded.
 The current SSR slice, portability boundary, deliberate limitations, and next
 hydration/streaming steps are documented in
 [docs/server-rendering.md](docs/server-rendering.md).
+The filesystem contract, authored route inputs, nested SSR composition,
+persistent layout lifecycle, and URL policy are documented in
+[docs/routing.md](docs/routing.md).
 
 After `pnpm build`, inspect the JavaScript generated from the authored counter:
 

@@ -47,6 +47,9 @@ importers:
       '@oxe/i18n':
         specifier: workspace:*
         version: link:../../packages/i18n
+      '@oxe/router':
+        specifier: workspace:*
+        version: link:../../packages/router
       '@oxe/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -99,6 +102,19 @@ importers:
       '@oxe/runtime':
         specifier: workspace:*
         version: link:../runtime
+
+  packages/router:
+    dependencies:
+      '@oxe/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@oxe/runtime-server':
+        specifier: workspace:*
+        version: link:../runtime-server
+    devDependencies:
+      '@oxe/compiler':
+        specifier: workspace:*
+        version: link:../compiler
 
   packages/runtime: {}
 

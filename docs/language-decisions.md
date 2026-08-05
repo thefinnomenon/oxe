@@ -862,17 +862,34 @@ reveal all of them in the same streamed batch.
 
 ## Routing
 
-Routing follows the focused Solid Router primitives:
+Routing is filesystem-based beneath `src/routes`: `page.oxe` defines a route,
+`layout.oxe` defines a persistent parent, `[param]` is dynamic, and
+`[...param]` is a final one-or-more catch-all. Static segments take precedence
+over dynamic segments and catch-alls. Matching is case-sensitive, canonical URLs
+omit trailing slashes, and deployments may configure one base path.
+
+The authored graph exposes focused route primitives:
 
 ```oxe
 location = useLocation()
 params = useParams()
-[searchParams, setSearchParams] = useSearchParams()
-navigate = useNavigate()
+search = useSearchParams()
+
+openProject():
+  navigate("/projects/alpha")
+
+showActivity():
+  setSearchParams({ tab: "activity" }, { replace: true })
 ```
 
 URL state is not directly assignable because navigation can require options such
-as history replacement, scrolling, and navigation state.
+as history replacement and scrolling. Missing search keys produce `null`, empty
+keys produce `""`, and repeated keys remain available as ordered values. Client
+navigation keeps the current view while independently compiled changed segments
+load, retains the common layout prefix, cancels abandoned owners, and commits the
+new suffix atomically. Push history and scroll-to-top are defaults; replace and
+scroll preservation are explicit options. The server request URL is the initial
+source of truth.
 
 ## Persistence
 

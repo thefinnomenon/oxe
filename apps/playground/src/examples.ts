@@ -26,6 +26,11 @@ import asyncPropsSource from '../../../examples/async-props/App.oxe?raw';
 import asyncStructuralSource from '../../../examples/async-structural/App.oxe?raw';
 import asyncCollectionSource from '../../../examples/async-collection/App.oxe?raw';
 import asyncErrorSource from '../../../examples/async-error/App.oxe?raw';
+import routingAboutPageSource from '../../../examples/routing/about-page.oxe?raw';
+import routingLayoutSource from '../../../examples/routing/layout.oxe?raw';
+import routingPageSource from '../../../examples/routing/page.oxe?raw';
+import routingProjectPageSource from '../../../examples/routing/project-page.oxe?raw';
+import routingProjectsLayoutSource from '../../../examples/routing/projects-layout.oxe?raw';
 
 import type { PlaygroundCapabilitySet } from './demo-capabilities.js';
 
@@ -34,6 +39,7 @@ export const exampleGroups = [
   'Async data',
   'Components',
   'Localization',
+  'Routing',
   'Reactivity',
   'Diagnostics',
 ] as const;
@@ -56,6 +62,7 @@ export interface PlaygroundExample {
   readonly intentionallyInvalid?: boolean;
   readonly label: string;
   readonly localization?: boolean;
+  readonly routeInitialHref?: string;
 }
 
 const singleFileExample = (
@@ -70,12 +77,33 @@ const singleFileExample = (
     ? {}
     : { intentionallyInvalid: example.intentionallyInvalid }),
   ...(example.localization === undefined ? {} : { localization: example.localization }),
+  ...(example.routeInitialHref === undefined ? {} : { routeInitialHref: example.routeInitialHref }),
   entryExport: 'App',
   entryModuleId: example.moduleId,
   files: [{ moduleId: example.moduleId, source: example.source }],
 });
 
 export const examples: readonly PlaygroundExample[] = [
+  {
+    id: 'routing',
+    label: 'Persistent routing',
+    group: 'Routing',
+    description:
+      'Filesystem routes, reactive URL inputs, search updates, and stateful persistent layouts.',
+    entryExport: 'Page',
+    entryModuleId: 'src/routes/page.oxe',
+    routeInitialHref: '/',
+    files: [
+      { moduleId: 'src/routes/layout.oxe', source: routingLayoutSource },
+      { moduleId: 'src/routes/page.oxe', source: routingPageSource },
+      { moduleId: 'src/routes/projects/layout.oxe', source: routingProjectsLayoutSource },
+      {
+        moduleId: 'src/routes/projects/[projectId]/page.oxe',
+        source: routingProjectPageSource,
+      },
+      { moduleId: 'src/routes/about/page.oxe', source: routingAboutPageSource },
+    ],
+  },
   singleFileExample({
     id: 'localization',
     label: 'Localization and Intl',

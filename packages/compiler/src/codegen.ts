@@ -42,6 +42,12 @@ export interface DomCodeArtifact {
   readonly moduleSourceMap: DomSourceMapV3;
   readonly mountExport: string;
   readonly hydrateExport?: string;
+  readonly routeSegmentExport?: string;
+}
+
+export interface DomCodegenOptions {
+  /** Emit an owned builder for an independently loaded route layout or page. */
+  readonly routeSegment?: 'layout' | 'page';
 }
 
 export interface DomSourceMapV3 {
@@ -107,6 +113,7 @@ interface EmittedProgram {
   readonly hydrateName?: string;
   readonly mountName: string;
   readonly mappings: readonly GeneratedMapping[];
+  readonly routeSegmentName?: string;
   readonly source: string;
 }
 
@@ -316,7 +323,7 @@ const orderBindings = (
   return ordered;
 };
 
-const buildPlan = (graph: UiGraphV1): GenerationPlan => {
+const buildPlan = (graph: UiGraphV1, options: DomCodegenOptions): GenerationPlan => {
   const graphDiagnostics = validateUiGraph(graph);
   if (graphDiagnostics.length > 0) {
     invalidGraph(
@@ -520,8 +527,15 @@ const buildPlan = (graph: UiGraphV1): GenerationPlan => {
   if (!entry) {
     return invalidGraph('The entry component does not match a module component node.');
   }
-  if (entry.parameters.length > 0) {
-    return unsupported(`Entry component "${entry.component.name}" cannot require props.`);
+  const unsupportedEntryParameters = entry.parameters.filter(
+    (parameter) => options.routeSegment !== 'layout' || parameter.parameterKind !== 'children',
+  );
+  if (unsupportedEntryParameters.length > 0) {
+    return unsupported(
+      options.routeSegment === 'layout'
+        ? `Route layout "${entry.component.name}" may consume only children.`
+        : `Entry component "${entry.component.name}" cannot require props.`,
+    );
   }
   let buildFingerprint = 'oxe-invalid';
   try {
@@ -561,6 +575,7 @@ const reservedIdentifiers = new Set([
   'listen',
   'mount',
   'readContext',
+  'route',
   'props',
   'removeCollection',
   'runtime',
@@ -679,7 +694,7 @@ const operatorSource = (operator: BinaryOperatorV1): string => {
   }
 };
 
-const emitProgram = (plan: GenerationPlan): EmittedProgram => {
+const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedProgram => {
   const writer = new CodeWriter();
   const names = new NameAllocator();
   const asyncValueIds = new Set(
@@ -722,6 +737,9 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
       (node.kind === 'element' &&
         node.dynamicAttributes?.some((attribute) => attribute.localization !== undefined)),
   );
+  const usesRoute = [...plan.nodesById.values()].some(
+    (node) => node.kind === 'platform-capability' && node.routeIntrinsic !== undefined,
+  );
   const componentNames = new Map<string, string>();
   const contextNames = new Map<string, string>();
   const bindingNames = new Map<string, string>();
@@ -741,6 +759,9 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
     usesAsyncResources || usesLocalization
       ? names.allocate(`hydrate${plan.entry.component.name}`)
       : undefined;
+  const routeSegmentName = options.routeSegment
+    ? names.allocate(`build${plan.entry.component.name}RouteSegment`)
+    : undefined;
 
   for (const context of plan.contexts) {
     contextNames.set(context.id, names.allocate(context.name));
@@ -931,6 +952,11 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         }
         const target = plan.nodesById.get(expression.targetId);
         if (target?.kind === 'platform-capability') {
+          if (target.routeIntrinsic === 'location') return 'route.location.read';
+          if (target.routeIntrinsic === 'params') return 'route.params.read';
+          if (target.routeIntrinsic === 'search-params') return 'route.search.read';
+          if (target.routeIntrinsic === 'navigate') return 'route.navigate';
+          if (target.routeIntrinsic === 'set-search-params') return 'route.setSearchParams';
           return target.path.reduce(
             (source, segment) => `${source}[${JSON.stringify(segment)}]`,
             'globalThis',
@@ -1125,7 +1151,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
       '/** Builds this component inside an active OXE owner. Prefer the mount helper at an application boundary. */',
     );
     writer.line(
-      `const ${generatedComponentName} = (document${usesLocalization ? ', i18n' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}${component.parameters.length > 0 ? ', props' : ''}) => {`,
+      `const ${generatedComponentName} = (document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}${component.parameters.length > 0 ? ', props' : ''}) => {`,
     );
     writer.indented(() => {
       for (const parameter of component.parameters) {
@@ -1185,6 +1211,25 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
             );
             break;
           case 'computed': {
+            const routeCapability =
+              binding.expression.kind === 'call' &&
+              binding.expression.arguments.length === 0 &&
+              binding.expression.callee.kind === 'capability-read'
+                ? plan.nodesById.get(binding.expression.callee.targetId)
+                : undefined;
+            if (
+              routeCapability?.kind === 'platform-capability' &&
+              (routeCapability.routeIntrinsic === 'location' ||
+                routeCapability.routeIntrinsic === 'params' ||
+                routeCapability.routeIntrinsic === 'search-params')
+            ) {
+              const source =
+                routeCapability.routeIntrinsic === 'search-params'
+                  ? 'search'
+                  : routeCapability.routeIntrinsic;
+              writer.line(`const ${name} = route.${source};`);
+              break;
+            }
             const dependencies = reactiveDependencies(binding.expression);
             const factory = asyncValueIds.has(binding.id) ? 'createAsyncDerived' : 'createDerived';
             writer.line(
@@ -1549,7 +1594,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         }
         const rootName = names.allocate(`${target.component.name}Root`);
         writer.line(
-          `const ${rootName} = createRoot(() => ${targetName}(document${usesLocalization ? ', i18n' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}, { ${entries.join(', ')} }), { name: ${JSON.stringify(`${target.component.name} component`)} });`,
+          `const ${rootName} = createRoot(() => ${targetName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${usesAsyncResources ? ', asyncCoordinator' : ''}, { ${entries.join(', ')} }), { name: ${JSON.stringify(`${target.component.name} component`)} });`,
         );
         return `${rootName}.value`;
       };
@@ -2080,6 +2125,38 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
   if (plan.components.length > 0) {
     writer.line();
   }
+  if (routeSegmentName && options.routeSegment) {
+    writer.source(plan.entry.component.span);
+    writer.line(
+      `const ${routeSegmentName} = (${options.routeSegment === 'layout' ? `{ children, document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''} }` : `{ document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''} }`}) => {`,
+    );
+    writer.indented(() => {
+      if (usesLocalization) {
+        writer.line('if (!i18n) {');
+        writer.indented(() => {
+          writer.line(
+            `throw new Error(${JSON.stringify(`Cannot build ${plan.entry.component.name} route segment: i18n is required by localized messages.`)});`,
+          );
+        });
+        writer.line('}');
+      }
+      if (usesAsyncResources) {
+        writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
+        writer.line(
+          `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
+        );
+        writer.line(
+          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}, asyncCoordinator${options.routeSegment === 'layout' ? ', { children }' : ''});`,
+        );
+      } else {
+        writer.line(
+          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', route' : ''}${options.routeSegment === 'layout' ? ', { children }' : ''});`,
+        );
+      }
+    });
+    writer.line('};');
+    writer.line();
+  }
   writer.source(plan.entry.component.span);
   writer.line(`const ${mountName} = (container, options = {}) => {`);
   writer.indented(() => {
@@ -2101,6 +2178,15 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
       });
       writer.line('}');
     }
+    if (usesRoute) {
+      writer.line('if (!options.route) {');
+      writer.indented(() => {
+        writer.line(
+          `throw new Error(${JSON.stringify(`Cannot mount ${plan.entry.component.name}: route runtime options are missing.`)});`,
+        );
+      });
+      writer.line('}');
+    }
     if (usesAsyncResources) {
       writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
       writer.line('return mount(container, () => {');
@@ -2109,13 +2195,13 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
         );
         writer.line(
-          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}, asyncCoordinator);`,
+          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', options.route' : ''}, asyncCoordinator${options.routeSegment === 'layout' ? ', { children: [] }' : ''});`,
         );
       });
       writer.line('}, { onError: options.onError });');
     } else {
       writer.line(
-        `return mount(container, () => ${componentName}(document${usesLocalization ? ', i18n' : ''}), { onError: options.onError });`,
+        `return mount(container, () => ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', options.route' : ''}${options.routeSegment === 'layout' ? ', { children: [] }' : ''}), { onError: options.onError });`,
       );
     }
   });
@@ -2144,6 +2230,15 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
         });
         writer.line('}');
       }
+      if (usesRoute) {
+        writer.line('if (!options.route) {');
+        writer.indented(() => {
+          writer.line(
+            `throw new Error(${JSON.stringify(`Cannot hydrate ${plan.entry.component.name}: route runtime options are missing.`)});`,
+          );
+        });
+        writer.line('}');
+      }
       writer.line('const asyncCoordinator = createAsyncResourceCoordinator();');
       writer.line('asyncCoordinator.hydrate(readSerializedAsyncCheckpoints(document));');
       writer.line('const actualBuildFingerprint = readSerializedBuildFingerprint(document);');
@@ -2153,7 +2248,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
           `registerCleanup(() => asyncCoordinator.dispose(), { kind: 'resource', name: 'async resource coordinator' });`,
         );
         writer.line(
-          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}, asyncCoordinator);`,
+          `return ${componentName}(document${usesLocalization ? ', i18n' : ''}${usesRoute ? ', options.route' : ''}, asyncCoordinator${options.routeSegment === 'layout' ? ', { children: [] }' : ''});`,
         );
       });
       writer.line(
@@ -2168,6 +2263,7 @@ const emitProgram = (plan: GenerationPlan): EmittedProgram => {
     ...(hydrateName ? { hydrateName } : {}),
     mappings: writer.mappings(),
     mountName,
+    ...(routeSegmentName ? { routeSegmentName } : {}),
     source: writer.toString(),
   };
 };
@@ -2305,7 +2401,7 @@ const emitFactorySource = (program: EmittedProgram): string => {
     }
     writer.line();
     writer.line(
-      `return { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''} };`,
+      `return { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''}${program.routeSegmentName ? `, ${program.routeSegmentName}` : ''} };`,
     );
   });
   writer.line('}');
@@ -2372,13 +2468,16 @@ const emitModuleSource = (program: EmittedProgram): string => {
   }
   writer.line();
   writer.line(
-    `export { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''} };`,
+    `export { ${program.componentName}, ${program.mountName}${program.hydrateName ? `, ${program.hydrateName}` : ''}${program.routeSegmentName ? `, ${program.routeSegmentName}` : ''} };`,
   );
   return `${writer.toString()}\n`;
 };
 
-export const generateDomArtifact = (graph: UiGraphV1): DomCodeArtifact => {
-  const program = emitProgram(buildPlan(graph));
+export const generateDomArtifact = (
+  graph: UiGraphV1,
+  options: DomCodegenOptions = {},
+): DomCodeArtifact => {
+  const program = emitProgram(buildPlan(graph, options), options);
   return {
     componentExport: program.componentName,
     factorySource: emitFactorySource(program),
@@ -2387,11 +2486,16 @@ export const generateDomArtifact = (graph: UiGraphV1): DomCodeArtifact => {
     moduleSourceMap: buildSourceMap(program, `${program.componentName}.js`, 3, 0),
     mountExport: program.mountName,
     ...(program.hydrateName ? { hydrateExport: program.hydrateName } : {}),
+    ...(program.routeSegmentName ? { routeSegmentExport: program.routeSegmentName } : {}),
   };
 };
 
-export const generateDomFactorySource = (graph: UiGraphV1): string =>
-  generateDomArtifact(graph).factorySource;
+export const generateDomFactorySource = (
+  graph: UiGraphV1,
+  options: DomCodegenOptions = {},
+): string => generateDomArtifact(graph, options).factorySource;
 
-export const generateDomModuleSource = (graph: UiGraphV1): string =>
-  generateDomArtifact(graph).moduleSource;
+export const generateDomModuleSource = (
+  graph: UiGraphV1,
+  options: DomCodegenOptions = {},
+): string => generateDomArtifact(graph, options).moduleSource;

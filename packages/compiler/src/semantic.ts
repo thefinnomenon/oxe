@@ -18,6 +18,7 @@ import {
   type LocalizedMarkupV1,
   type LocalizedMessageV1,
   type PrimitiveTypeV1,
+  type RouteIntrinsicV1,
   type ProcedureStepV1,
   type ProcedureNodeV1,
   type TextPartV1,
@@ -82,6 +83,7 @@ export interface PlatformCapabilityContract {
 export interface AnalyzeOptions {
   readonly capabilities?: readonly PlatformCapabilityContract[];
   readonly localization?: boolean;
+  readonly routeSegment?: 'layout' | 'page';
   readonly target?: 'client' | 'server';
 }
 
@@ -89,6 +91,7 @@ interface PlatformCapabilityInfo {
   readonly contract: PlatformCapabilityContract;
   readonly id: string;
   readonly path: readonly string[];
+  readonly routeIntrinsic?: RouteIntrinsicV1;
   span?: SourceSpan;
   used: boolean;
 }
@@ -204,6 +207,8 @@ export interface AnalyzeProjectOptions {
   readonly entryExport: string;
   readonly loadModule: LoadOxeModule;
   readonly localization?: boolean;
+  /** Route layouts may consume only the compiler-reserved children slot. */
+  readonly routeSegment?: 'layout' | 'page';
   readonly target?: 'client' | 'server';
 }
 
@@ -280,6 +285,32 @@ const expressionPath = (expression: ExpressionNode): readonly string[] | undefin
   return path;
 };
 
+const routeIntrinsicContracts: readonly {
+  readonly contract: PlatformCapabilityContract;
+  readonly intrinsic: RouteIntrinsicV1;
+}[] = [
+  {
+    contract: { kind: 'pure', name: 'useLocation', parameters: [], returns: 'record' },
+    intrinsic: 'location',
+  },
+  {
+    contract: { kind: 'pure', name: 'useParams', parameters: [], returns: 'record' },
+    intrinsic: 'params',
+  },
+  {
+    contract: { kind: 'pure', name: 'useSearchParams', parameters: [], returns: 'record' },
+    intrinsic: 'search-params',
+  },
+  {
+    contract: { kind: 'effect', name: 'navigate', parameters: ['string', 'record'] },
+    intrinsic: 'navigate',
+  },
+  {
+    contract: { kind: 'effect', name: 'setSearchParams', parameters: ['record', 'record'] },
+    intrinsic: 'set-search-params',
+  },
+];
+
 const createAnalysisState = (
   options: AnalyzeOptions | undefined,
   moduleId: string,
@@ -293,6 +324,15 @@ const createAnalysisState = (
     target: options?.target ?? 'client',
   };
   const capabilities = state.platformCapabilities as Map<string, PlatformCapabilityInfo>;
+  for (const route of options?.routeSegment ? routeIntrinsicContracts : []) {
+    capabilities.set(route.contract.name, {
+      contract: route.contract,
+      id: platformCapabilityId(moduleId, route.contract.name),
+      path: [route.contract.name],
+      routeIntrinsic: route.intrinsic,
+      used: false,
+    });
+  }
   for (const contract of options?.capabilities ?? []) {
     const path = contract.name.split('.');
     if (path.length === 0 || path.some((segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment))) {
@@ -553,7 +593,11 @@ const lowerExpression = (
         if (arguments_.length !== expression.arguments.length) {
           return undefined;
         }
-        if (arguments_.length !== platform.contract.parameters.length) {
+        const routeOptionalOptions =
+          (platform.routeIntrinsic === 'navigate' ||
+            platform.routeIntrinsic === 'set-search-params') &&
+          arguments_.length === 1;
+        if (arguments_.length !== platform.contract.parameters.length && !routeOptionalOptions) {
           report(
             state,
             'OXE2009',
@@ -5566,6 +5610,7 @@ const analyzeComponentSet = (
   graphModuleId: string,
   componentScopes: ReadonlyMap<string, ReadonlyMap<string, ComponentSymbols>>,
   requestedEntries: readonly ComponentSymbols[] | undefined,
+  routeSegment: 'layout' | 'page' | undefined,
   state: AnalysisState,
 ): ComponentSetAnalysis => {
   const nodes: UiNodeV1[] = [];
@@ -5593,11 +5638,16 @@ const analyzeComponentSet = (
   }
   if (requestedEntries) {
     for (const entry of requestedEntries) {
-      if (entry.parameters.size > 0) {
+      const unsupportedParameters = [...entry.parameters.values()].filter(
+        (parameter) => routeSegment !== 'layout' || parameter.parameterKind !== 'children',
+      );
+      if (unsupportedParameters.length > 0) {
         report(
           state,
           'OXE2017',
-          `Entry component "${entry.component.name.name}" must not declare or consume props.`,
+          routeSegment === 'layout'
+            ? `Route layout "${entry.component.name.name}" may consume only children.`
+            : `Entry component "${entry.component.name.name}" must not declare or consume props.`,
           entry.component.name.span,
         );
       }
@@ -5704,6 +5754,7 @@ const analyzeComponentSet = (
       kind: 'platform-capability',
       parameters: platform.contract.parameters,
       path: platform.path,
+      ...(platform.routeIntrinsic ? { routeIntrinsic: platform.routeIntrinsic } : {}),
       ...(platform.contract.returns ? { returns: platform.contract.returns } : {}),
       span: graphSpan(platform.span ?? modules[0]?.ast.span ?? componentList[0]!.component.span),
       target: platform.contract.target ?? 'universal',
@@ -5769,7 +5820,7 @@ export const analyzeSource = (
   for (const component of module.components.values()) {
     scopes.set(component.componentId, module.components);
   }
-  const analyzed = analyzeComponentSet([module], moduleId, scopes, undefined, state);
+  const analyzed = analyzeComponentSet([module], moduleId, scopes, undefined, undefined, state);
   return {
     ast: parsed.ast,
     diagnostics: analyzed.diagnostics,
@@ -6037,7 +6088,14 @@ export const analyzeProject = async (
     };
   }
 
-  const analyzed = analyzeComponentSet(semanticModules, entryModuleId, scopes, [entry], state);
+  const analyzed = analyzeComponentSet(
+    semanticModules,
+    entryModuleId,
+    scopes,
+    [entry],
+    options.routeSegment,
+    state,
+  );
   return {
     entryModuleId,
     modules: projectModules,
