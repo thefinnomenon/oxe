@@ -227,7 +227,7 @@ replacement and recover safely from deliberate mismatches.
       `time` and `data` formatting sites.
 - [x] Make locale, time zone, calendar, and numbering system explicit SSR inputs
       and serialize them into hydration state to prevent server/client drift.
-- [ ] Split locale catalogs into lazy chunks and prove through payload inspection
+- [x] Split locale catalogs into lazy chunks and prove through payload inspection
       that unused translation, plural, ordinal, and formatting capabilities are
       absent.
 - [x] Extract and hash messages during development without translating, then add

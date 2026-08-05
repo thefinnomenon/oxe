@@ -24,6 +24,12 @@ import {
 } from '@oxe/server-functions';
 
 import { OxeRouterError } from './errors.js';
+import {
+  localePreferenceFromCookie,
+  localizedHref,
+  negotiateLocale,
+  supportedLocale,
+} from './localization.js';
 import { createRouteSearchRecord, matchRoute } from './match.js';
 import { serializeRouteSnapshotData } from './snapshot.js';
 import type {
@@ -271,6 +277,7 @@ export interface FetchRouteHandlerOptions<Context = never> {
   readonly headers?: HeadersInit | ((request: Request, match: RouteMatch) => HeadersInit);
   readonly includeBootstrap?: boolean;
   readonly includeCheckpoints?: boolean;
+  readonly localization?: FetchRouteLocalizationOptions;
   loadPlan(
     segment: RouteSegmentDefinitionV1,
     request: Request,
@@ -287,6 +294,16 @@ export interface FetchRouteHandlerOptions<Context = never> {
   readonly scope?: string | ((request: Request, match: RouteMatch) => string);
   readonly serverFunctions?: FetchRouteServerFunctionsOptions<Context>;
   readonly statusGate?: ServerJavaScriptReadinessOptions['statusGate'];
+}
+
+export interface FetchRouteLocalizationOptions {
+  /** Defaults to oxe_locale. */
+  readonly cookieName?: string;
+  /** Host hook for a signed-in user preference. It takes precedence over cookie and browser language. */
+  resolvePreference?(
+    request: Request,
+    signal: AbortSignal,
+  ): string | undefined | PromiseLike<string | undefined>;
 }
 
 export type FetchRouteHandler = (request: Request) => Promise<Response>;
@@ -311,6 +328,40 @@ const plainResponse = (status: number, body: string, headers?: HeadersInit): Res
     },
     status,
   });
+
+const localeCookieName = (options: FetchRouteLocalizationOptions | undefined): string => {
+  const name = options?.cookieName ?? 'oxe_locale';
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(name)) {
+    return invalidPlan('The locale preference cookie name contains invalid characters.');
+  }
+  return name;
+};
+
+const localeCookie = (request: Request, name: string, locale: string, path: string): string =>
+  `${name}=${encodeURIComponent(locale)}; Path=${path}; Max-Age=31536000; SameSite=Lax${new URL(request.url).protocol === 'https:' ? '; Secure' : ''}`;
+
+const appendVary = (headers: Headers, ...names: readonly string[]): void => {
+  const values = new Set(
+    (headers.get('vary') ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+  for (const name of names) values.add(name);
+  if (values.size > 0) headers.set('vary', [...values].join(', '));
+};
+
+const configuredPreference = (
+  locale: string | undefined,
+  options: NonNullable<RouteManifestV1['localization']>,
+): string | undefined => {
+  if (!locale) return undefined;
+  try {
+    return supportedLocale(options, locale);
+  } catch {
+    return undefined;
+  }
+};
 
 const validEndpoint = (value: string): string => {
   if (!value.startsWith('/') || value.includes('?') || value.includes('#')) {
@@ -375,6 +426,47 @@ export const createFetchRouteHandler = <Context = never>(
     }
     const match = matchRoute(options.manifest, url);
     if (!match) return plainResponse(404, 'Not found');
+
+    const localization = options.manifest.localization;
+    const preferenceCookieName = localization ? localeCookieName(options.localization) : undefined;
+    const cookiePreference =
+      localization && preferenceCookieName
+        ? localePreferenceFromCookie(
+            localization,
+            request.headers.get('cookie'),
+            preferenceCookieName,
+          )
+        : undefined;
+    if (localization && match.locale) {
+      let redirectLocale: string | undefined;
+      if (match.localePrefixed && match.locale === localization.defaultLocale) {
+        redirectLocale = localization.defaultLocale;
+      } else if (!match.localePrefixed) {
+        const sessionPreference = configuredPreference(
+          await options.localization?.resolvePreference?.(request, request.signal),
+          localization,
+        );
+        const preferred =
+          sessionPreference ??
+          cookiePreference ??
+          negotiateLocale(localization, request.headers.get('accept-language'));
+        if (preferred !== localization.defaultLocale) redirectLocale = preferred;
+      }
+      if (redirectLocale) {
+        const headers = new Headers({
+          'cache-control': 'private, no-store',
+          location: localizedHref(options.manifest, redirectLocale, url),
+        });
+        appendVary(headers, 'Accept-Language', 'Cookie');
+        if (preferenceCookieName && cookiePreference !== redirectLocale) {
+          headers.set(
+            'set-cookie',
+            localeCookie(request, preferenceCookieName, redirectLocale, options.manifest.basePath),
+          );
+        }
+        return new Response(null, { headers, status: 307 });
+      }
+    }
 
     try {
       const plan = await composeRouteDeferredServerPlan(match, (segment) =>
@@ -513,6 +605,21 @@ export const createFetchRouteHandler = <Context = never>(
       if (!headers.has('cache-control')) headers.set('cache-control', 'no-store');
       if (!headers.has('x-content-type-options')) headers.set('x-content-type-options', 'nosniff');
       for (const [name, value] of new Headers(responseHeaders)) headers.set(name, value);
+      if (match.locale) headers.set('content-language', match.locale);
+      if (localization && !match.localePrefixed) {
+        appendVary(headers, 'Accept-Language', 'Cookie');
+      }
+      if (
+        match.locale &&
+        preferenceCookieName &&
+        match.localePrefixed &&
+        cookiePreference !== match.locale
+      ) {
+        headers.set(
+          'set-cookie',
+          localeCookie(request, preferenceCookieName, match.locale, options.manifest.basePath),
+        );
+      }
       return new Response(head ? null : stream, { headers, status: responseStatus });
     } catch (error) {
       return routeErrorResponse(

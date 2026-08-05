@@ -184,9 +184,11 @@ node packages/cli/dist/cli.js build --project path/to/project
 
 The default `dist` directory contains a versioned `oxe-manifest.json`, generated
 browser modules and source maps, canonical semantic graphs, and blocking and
-deferred server render plans. When `src/routes` contains `page.oxe` files, the
-command automatically emits a filesystem route manifest and one independently
-loadable artifact set per unique layout or page segment.
+deferred server render plans. Localized builds also emit
+`localization-manifest.json` plus one independent catalog file per configured
+locale; browser modules do not import every locale. When `src/routes` contains
+`page.oxe` files, the command automatically emits a filesystem route manifest
+and one independently loadable artifact set per unique layout or page segment.
 
 Entry, output, and routing conventions can be overridden explicitly:
 
@@ -216,6 +218,15 @@ Build output is staged before replacing the previous output directory, so a
 compiler or localization error leaves the last successful build intact. Host
 capability contract discovery and final application bundling remain deployment
 integration responsibilities in this first CLI build slice.
+
+For localized route builds, the configured source locale owns the bare URL and
+other locales use canonical lowercase prefixes (`/es`, `/pt-br`). The Fetch host
+redirects a bare first visit using a signed-in preference hook, then the
+`oxe_locale` cookie, then `Accept-Language`. SSR receives that locale before
+rendering, and hydration adopts the exact serialized localization context.
+`createLazyI18n` loads only the active locale chunk and deduplicates a later
+client-side language switch. Responses remain `no-store` by default; public CDN
+caching is intentionally left to a later host policy.
 
 The translation example uses `examples/localization/oxe.config.json`:
 

@@ -1,4 +1,5 @@
 import {
+  batch,
   createCell,
   localizationContextsEqual,
   resolveLocalizationContext,
@@ -10,9 +11,11 @@ import {
 import type {
   CatalogMessage,
   LocaleCatalog,
+  LocaleCatalogChunkManifestV1,
   MessageSelectionKind,
   PluralCategory,
 } from './types.js';
+import { I18N_CATALOG_SCHEMA } from './types.js';
 
 export type { LocaleCatalog } from './types.js';
 
@@ -272,6 +275,8 @@ export interface I18nRuntime {
 
 export interface CreateI18nOptions extends LocalizationContextInput {
   readonly catalogs: readonly LocaleCatalog[];
+  /** Configured locales may include catalogs that will be added lazily. */
+  readonly supportedLocales?: readonly string[];
 }
 
 export const createI18n = (options: CreateI18nOptions): I18nRuntime => {
@@ -282,6 +287,12 @@ export const createI18n = (options: CreateI18nOptions): I18nRuntime => {
     ]),
   );
   let context = resolveLocalizationContext(options);
+  const supported = new Set(
+    (options.supportedLocales ?? options.catalogs.map((catalog) => catalog.locale)).map(
+      (locale) => Intl.getCanonicalLocales(locale)[0] ?? locale,
+    ),
+  );
+  const fixedSupportedLocales = options.supportedLocales !== undefined;
   const revision = createCell(0, { name: 'i18n locale and catalogs' });
   if (!catalogs.has(context.locale)) {
     throw new RangeError(`No localization catalog is loaded for ${context.locale}.`);
@@ -289,6 +300,10 @@ export const createI18n = (options: CreateI18nOptions): I18nRuntime => {
   return {
     addCatalog(catalog): void {
       const canonical = Intl.getCanonicalLocales(catalog.locale)[0] ?? catalog.locale;
+      if (fixedSupportedLocales && !supported.has(canonical)) {
+        throw new RangeError(`Locale ${canonical} is not configured for this application.`);
+      }
+      supported.add(canonical);
       catalogs.set(canonical, catalog);
       revision.write(revision.read() + 1);
     },
@@ -349,7 +364,127 @@ export const createI18n = (options: CreateI18nOptions): I18nRuntime => {
       revision.write(revision.read() + 1);
     },
     get supportedLocales(): readonly string[] {
-      return [...catalogs.keys()].sort();
+      return [...supported].sort();
     },
+  };
+};
+
+export interface CreateLazyI18nOptions extends LocalizationContextInput {
+  readonly catalog: LocaleCatalog;
+  loadCatalog(locale: string): Promise<LocaleCatalog>;
+  readonly supportedLocales: readonly string[];
+}
+
+export interface LazyI18nRuntime extends I18nRuntime {
+  /** Deduplicates the locale chunk load, then atomically activates it. */
+  prepareLocale(locale: string, signal?: AbortSignal): Promise<void>;
+}
+
+const waitForCatalog = async <Value>(
+  work: Promise<Value>,
+  signal?: AbortSignal,
+): Promise<Value> => {
+  if (!signal) return work;
+  if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  return new Promise<Value>((resolve, reject) => {
+    const abort = (): void => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    signal.addEventListener('abort', abort, { once: true });
+    void work.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error);
+      },
+    );
+  });
+};
+
+/** Creates a browser-safe runtime that starts with one catalog and loads other locales on demand. */
+export const createLazyI18n = (options: CreateLazyI18nOptions): LazyI18nRuntime => {
+  const runtime = createI18n({
+    catalogs: [options.catalog],
+    locale: options.locale,
+    supportedLocales: options.supportedLocales,
+    ...(options.calendar ? { calendar: options.calendar } : {}),
+    ...(options.numberingSystem ? { numberingSystem: options.numberingSystem } : {}),
+    ...(options.timeZone ? { timeZone: options.timeZone } : {}),
+  });
+  const loaded = new Set([
+    Intl.getCanonicalLocales(options.catalog.locale)[0] ?? options.catalog.locale,
+  ]);
+  const pending = new Map<string, Promise<LocaleCatalog>>();
+  return Object.assign(runtime, {
+    async prepareLocale(locale: string, signal?: AbortSignal): Promise<void> {
+      const canonical = Intl.getCanonicalLocales(locale)[0] ?? locale;
+      if (!runtime.supportedLocales.includes(canonical)) {
+        throw new RangeError(`Locale ${canonical} is not configured for this application.`);
+      }
+      let catalog: LocaleCatalog | undefined;
+      if (!loaded.has(canonical)) {
+        let work = pending.get(canonical);
+        if (!work) {
+          work = options.loadCatalog(canonical);
+          pending.set(canonical, work);
+          void work.finally(() => pending.delete(canonical)).catch(() => undefined);
+        }
+        catalog = await waitForCatalog(work, signal);
+        const catalogLocale = Intl.getCanonicalLocales(catalog.locale)[0] ?? catalog.locale;
+        if (catalogLocale !== canonical) {
+          throw new TypeError(
+            `Loaded catalog ${catalogLocale} does not match requested locale ${canonical}.`,
+          );
+        }
+      }
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      batch(() => {
+        if (catalog) {
+          runtime.addCatalog(catalog);
+          loaded.add(canonical);
+        }
+        runtime.setLocale(canonical);
+      });
+    },
+  });
+};
+
+export interface CatalogFetchLoaderOptions {
+  readonly baseUrl: string | URL;
+  readonly fetch?: typeof globalThis.fetch;
+}
+
+/** Creates a lazy loader for the independently emitted locale catalog files. */
+export const createCatalogFetchLoader = (
+  manifest: LocaleCatalogChunkManifestV1,
+  options: CatalogFetchLoaderOptions,
+): ((locale: string) => Promise<LocaleCatalog>) => {
+  const fetcher = options.fetch ?? globalThis.fetch;
+  const chunks = new Map(manifest.locales.map((chunk) => [chunk.locale, chunk.catalog]));
+  return async (locale: string): Promise<LocaleCatalog> => {
+    const canonical = Intl.getCanonicalLocales(locale)[0] ?? locale;
+    const path = chunks.get(canonical);
+    if (!path) throw new RangeError(`No catalog chunk is configured for ${canonical}.`);
+    const response = await fetcher(new URL(path, options.baseUrl));
+    if (!response.ok) {
+      throw new Error(`Could not load the ${canonical} catalog (${response.status}).`);
+    }
+    const value: unknown = await response.json();
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('schemaVersion' in value) ||
+      value.schemaVersion !== I18N_CATALOG_SCHEMA ||
+      !('locale' in value) ||
+      value.locale !== canonical ||
+      !('messages' in value) ||
+      typeof value.messages !== 'object' ||
+      value.messages === null ||
+      Array.isArray(value.messages)
+    ) {
+      throw new TypeError(`The ${canonical} catalog chunk is invalid.`);
+    }
+    return value as LocaleCatalog;
   };
 };

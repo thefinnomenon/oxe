@@ -3,11 +3,7 @@ import * as runtime from '@oxe/runtime';
 import * as serverFunctionRuntime from '@oxe/server-functions';
 import { createI18n, type LocaleCatalog } from '@oxe/i18n/runtime';
 
-import enCatalog from '../../../examples/localization/locales/en-US.json';
 import esCatalog from '../../../examples/localization/locales/es.json';
-import frCatalog from '../../../examples/localization/locales/fr.json';
-import itCatalog from '../../../examples/localization/locales/it.json';
-import ptCatalog from '../../../examples/localization/locales/pt.json';
 import {
   createBrowserRouter,
   createDomRouteSegmentArtifact,
@@ -439,7 +435,7 @@ const mountPreview = async (
   const i18n = command.localization
     ? createI18n({
         calendar: 'gregory',
-        catalogs: [enCatalog, esCatalog, frCatalog, itCatalog, ptCatalog] as LocaleCatalog[],
+        catalogs: [esCatalog] as LocaleCatalog[],
         locale: 'es',
         numberingSystem: 'latn',
         timeZone: 'UTC',

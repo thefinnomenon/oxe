@@ -103,6 +103,8 @@ export const createBrowserRouter = (
 ): OxeRouter => {
   const window = options.window ?? globalThis.window;
   const history = createBrowserHistory(window, options);
+  const cookieName =
+    options.localeCookieName === false ? undefined : (options.localeCookieName ?? 'oxe_locale');
   const initialSnapshot =
     options.hydrateSnapshot === false
       ? undefined
@@ -111,6 +113,15 @@ export const createBrowserRouter = (
     history,
     ...(initialSnapshot ? { initialSnapshot } : {}),
     ...(options.onError ? { onError: options.onError } : {}),
+    ...(options.prepareLocale ? { prepareLocale: options.prepareLocale } : {}),
+    ...(cookieName
+      ? {
+          persistLocale: (locale: string) => {
+            const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+            window.document.cookie = `${cookieName}=${encodeURIComponent(locale)}; Path=${manifest.basePath}; Max-Age=31536000; SameSite=Lax${secure}`;
+          },
+        }
+      : {}),
     ...(options.transition ? { transition: options.transition } : {}),
   });
   const detachLinks = attachBrowserLinks(router, window, options.onError);

@@ -1,6 +1,7 @@
 import { batch, createCell, createDerived, createRoot, type Cell, type Root } from '@oxe/runtime';
 
 import { abortedNavigation, OxeRouterError } from './errors.js';
+import { localizedHref, supportedLocale } from './localization.js';
 import { createRouteSearchParams, matchRoute } from './match.js';
 import type {
   NavigateOptions,
@@ -79,6 +80,11 @@ export const createRouter = (manifest: RouteManifestV1, options: RouterOptions):
     controller = new AbortController();
     let prepared: PreparedRouteTransition | undefined;
     try {
+      const localeChanged = match.locale !== undefined && match.locale !== current.locale;
+      if (localeChanged) await options.prepareLocale?.(match.locale as string, controller.signal);
+      if (controller.signal.aborted || ownGeneration !== generation) {
+        throw abortError(controller.signal);
+      }
       prepared = options.transition
         ? await options.transition.prepare(match, controller.signal)
         : { cancel: () => undefined, commit: () => undefined };
@@ -93,6 +99,7 @@ export const createRouter = (manifest: RouteManifestV1, options: RouterOptions):
         root.value.snapshotCell.write(next);
       });
       navigationId += 1;
+      if (localeChanged) options.persistLocale?.(match.locale as string);
       options.history.complete?.(action, navigateOptions, next);
       return next;
     } catch (error) {
@@ -106,6 +113,9 @@ export const createRouter = (manifest: RouteManifestV1, options: RouterOptions):
       const snapshotCell = createCell(initialSnapshot, { name: 'router snapshot' });
       const location = createDerived([snapshotCell], () => snapshotCell.read().location, {
         name: 'router location',
+      });
+      const locale = createDerived([snapshotCell], () => snapshotCell.read().locale, {
+        name: 'router locale',
       });
       const params = createDerived([snapshotCell], () => snapshotCell.read().params, {
         name: 'router params',
@@ -121,10 +131,25 @@ export const createRouter = (manifest: RouteManifestV1, options: RouterOptions):
       ): Promise<RouteSnapshot> =>
         transition(to, navigateOptions, navigateOptions.replace ? 'replace' : 'push');
       return {
+        locale,
         location,
         navigate,
         params,
         search,
+        setLocale: (
+          locale: string,
+          navigateOptions: NavigateOptions = {},
+        ): Promise<RouteSnapshot> => {
+          if (!manifest.localization) {
+            throw new OxeRouterError(
+              'OXE_ROUTE_INVALID_MANIFEST',
+              'Cannot select a locale for a manifest without localization.',
+            );
+          }
+          const canonical = supportedLocale(manifest.localization, locale);
+          const href = localizedHref(manifest, canonical, snapshotCell.read().location.href);
+          return navigate(href, navigateOptions);
+        },
         setSearchParams: (
           updates: Readonly<Record<string, SearchParamUpdate>>,
           navigateOptions: NavigateOptions = {},
@@ -149,10 +174,12 @@ export const createRouter = (manifest: RouteManifestV1, options: RouterOptions):
   });
 
   return {
+    locale: root.value.locale,
     location: root.value.location,
     navigate: root.value.navigate,
     params: root.value.params,
     search: root.value.search,
+    setLocale: root.value.setLocale,
     setSearchParams: root.value.setSearchParams,
     snapshot: root.value.snapshot,
     dispose: () => {

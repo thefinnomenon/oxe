@@ -9,6 +9,7 @@ import type {
   RouteSearchParams,
   RouteSearchRecord,
 } from './types.js';
+import { splitLocalizedApplicationPath } from './localization.js';
 
 const decodeSegment = (segment: string): string | undefined => {
   try {
@@ -85,7 +86,8 @@ export const matchRoute = (
   if (!pathname) return undefined;
   const applicationPath = removeBasePath(pathname, manifest.basePath);
   if (!applicationPath) return undefined;
-  const encodedSegments = applicationPath.split('/').filter(Boolean);
+  const localized = splitLocalizedApplicationPath(manifest.localization, applicationPath);
+  const encodedSegments = localized.pathname.split('/').filter(Boolean);
   for (const route of manifest.routes) {
     const params = matchPath(route.path, encodedSegments);
     if (!params) continue;
@@ -95,7 +97,15 @@ export const matchRoute = (
       pathname,
       search: url.search,
     });
-    return Object.freeze({ location, params, route });
+    return Object.freeze({
+      ...(localized.locale ? { locale: localized.locale } : {}),
+      ...(localized.localePrefixed !== undefined
+        ? { localePrefixed: localized.localePrefixed }
+        : {}),
+      location,
+      params,
+      route,
+    });
   }
   return undefined;
 };

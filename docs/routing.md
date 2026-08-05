@@ -35,6 +35,42 @@ Matching is case-sensitive. Application URLs never retain a trailing slash. A
 base path is configured when the manifest is created. The server request URL is
 the source of truth for initial matching; the browser adopts that same location.
 
+## Locale URLs and negotiation
+
+When `oxe.config.json` enables localization, the build writes those canonical
+BCP 47 locales into the route manifest. The source locale is the default and
+keeps the bare application URL. Every other locale receives a lowercase locale
+prefix:
+
+```text
+/projects/alpha          en-US (default)
+/es/projects/alpha       es
+/pt-br/projects/alpha    pt-BR
+```
+
+The Fetch host treats an explicit locale URL as authoritative. For a bare URL it
+uses a host-resolved signed-in preference first, the `oxe_locale` preference
+cookie second, and the browser's quality-ordered `Accept-Language` header third.
+An enabled language-only match may select its configured regional locale, such
+as `pt-PT` selecting `pt-BR` when that is the only enabled Portuguese locale.
+Geography is not consulted. A non-default result receives a temporary redirect
+to its stable locale URL; an explicit default prefix such as `/en-us/projects`
+redirects to the canonical bare path.
+
+`createFetchRouteHandler.localization.resolvePreference` is the optional session
+hook. `RouteMatch.locale` then supplies the resolved URL locale to the host's
+`createI18n` callback before SSR. Localized responses include
+`Content-Language`; negotiated bare responses vary on cookie and browser
+language. The current host remains `no-store` by default, leaving public caching
+policy as a separate deployment decision.
+
+The browser router exposes reactive `locale` and `setLocale`. A locale switch
+rewrites only the locale portion of the current URL, preserving its path, query,
+and fragment. `prepareLocale` can load and activate the target catalog before
+the atomic route commit, and the browser persists the successfully committed
+choice in the same preference cookie. Country, locale, currency, and time zone
+remain independent inputs.
+
 ## Segment compilation and persistence
 
 `createFileRouteManifest` produces a serializable manifest whose routes contain
@@ -84,8 +120,8 @@ writes route state. Nested generated components inherit the same runtime.
 
 ## URL state
 
-The router runtime exposes reactive `location`, `params`, `search`, and
-`snapshot` readables plus `navigate` and `setSearchParams` operations. In authored
+The router runtime exposes reactive `locale`, `location`, `params`, `search`, and
+`snapshot` readables plus `navigate`, `setLocale`, and `setSearchParams` operations. In authored
 code, `useSearchParams()` is property-readable and returns the first value for a
 key. A missing search key returns `null`; an explicitly empty key returns `""`.
 The lower-level router search API preserves repeated keys through `getAll`.

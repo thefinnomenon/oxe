@@ -23,9 +23,16 @@ export interface RouteDefinitionV1 {
 
 export interface RouteManifestV1 {
   readonly basePath: string;
+  readonly localization?: RouteLocalizationV1;
   readonly routes: readonly RouteDefinitionV1[];
   readonly schemaVersion: 'oxe.route-manifest.v1';
   readonly trailingSlash: 'never';
+}
+
+export interface RouteLocalizationV1 {
+  readonly defaultLocale: string;
+  /** Canonical BCP 47 locales, including defaultLocale. */
+  readonly locales: readonly string[];
 }
 
 export type RouteParamValue = string | readonly string[];
@@ -40,6 +47,10 @@ export interface RouteLocation {
 }
 
 export interface RouteMatch {
+  /** Present when the manifest has locale-aware routes. */
+  readonly locale?: string;
+  /** True when the request URL included a locale prefix, including a non-canonical default prefix. */
+  readonly localePrefixed?: boolean;
   readonly location: RouteLocation;
   readonly params: RouteParams;
   readonly route: RouteDefinitionV1;
@@ -92,16 +103,22 @@ export interface RouterOptions {
   readonly history: RouteHistoryAdapter;
   readonly initialSnapshot?: RouteSnapshot;
   readonly onError?: (error: unknown) => void;
+  /** Loads and activates a locale before a locale-changing navigation commits. */
+  readonly prepareLocale?: (locale: string, signal: AbortSignal) => void | PromiseLike<void>;
+  /** Persists a successfully committed explicit locale choice. */
+  readonly persistLocale?: (locale: string) => void;
   readonly transition?: RouteTransition;
 }
 
 export interface OxeRouter {
+  readonly locale: Readable<string | undefined>;
   readonly location: Readable<RouteLocation>;
   readonly params: Readable<RouteParams>;
   readonly search: Readable<RouteSearchParams>;
   readonly snapshot: Readable<RouteSnapshot>;
   dispose(): void;
   navigate(to: string, options?: NavigateOptions): Promise<RouteSnapshot>;
+  setLocale(locale: string, options?: NavigateOptions): Promise<RouteSnapshot>;
   setSearchParams(
     updates: Readonly<Record<string, SearchParamUpdate>>,
     options?: NavigateOptions,
@@ -112,6 +129,10 @@ export interface BrowserRouterOptions {
   readonly focus?: boolean;
   readonly hydrateSnapshot?: boolean;
   readonly onError?: (error: unknown) => void;
+  /** Cookie used by the Fetch host for first-visit locale negotiation. Defaults to oxe_locale. */
+  readonly localeCookieName?: string | false;
+  /** Loads and activates a locale before a locale-changing navigation commits. */
+  readonly prepareLocale?: (locale: string, signal: AbortSignal) => void | PromiseLike<void>;
   readonly scroll?: boolean;
   readonly transition?: RouteTransition;
   readonly window?: Window;

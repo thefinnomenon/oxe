@@ -51,7 +51,72 @@ const compileSegment = async (segment: RouteSegmentDefinitionV1) => {
   return createServerRenderPlan(analyzed.graph);
 };
 
+const compileDeferredSegment = async (segment: RouteSegmentDefinitionV1) => {
+  const analyzed = await analyzeProject({
+    entryExport: segment.exportName,
+    entryModuleId: segment.moduleId,
+    loadModule: async (moduleId) => files[moduleId],
+    routeSegment: segment.kind,
+    target: 'server',
+  });
+  if (!analyzed.graph) {
+    throw new Error(`Expected a server graph: ${JSON.stringify(analyzed.diagnostics)}`);
+  }
+  return createDeferredServerRenderPlan(analyzed.graph);
+};
+
 describe('route server rendering', () => {
+  it('negotiates canonical locale URLs from session, cookie, then browser language', async () => {
+    const manifest = createFileRouteManifest(Object.keys(files), {
+      localization: { defaultLocale: 'en-US', locales: ['es', 'pt-BR'] },
+    });
+    const seenLocales: string[] = [];
+    const handler = createFetchRouteHandler({
+      createI18n: (_request, match) => {
+        if (match.locale) seenLocales.push(match.locale);
+        return undefined;
+      },
+      loadPlan: compileDeferredSegment,
+      localization: {
+        resolvePreference: (request) => request.headers.get('x-user-locale') ?? undefined,
+      },
+      manifest,
+    });
+
+    const browser = await handler(
+      new Request('https://example.test/projects/alpha?tab=one', {
+        headers: { 'accept-language': 'es-MX, en;q=0.8' },
+      }),
+    );
+    expect(browser.status).toBe(307);
+    expect(browser.headers.get('location')).toBe('/es/projects/alpha?tab=one');
+    expect(browser.headers.get('set-cookie')).toContain('oxe_locale=es');
+
+    const cookie = await handler(
+      new Request('https://example.test/projects/alpha', {
+        headers: { 'accept-language': 'es', cookie: 'oxe_locale=pt-BR' },
+      }),
+    );
+    expect(cookie.headers.get('location')).toBe('/pt-br/projects/alpha');
+
+    const session = await handler(
+      new Request('https://example.test/projects/alpha', {
+        headers: { cookie: 'oxe_locale=es', 'x-user-locale': 'en-US' },
+      }),
+    );
+    expect(session.status).toBe(200);
+    expect(session.headers.get('content-language')).toBe('en-US');
+
+    const explicit = await handler(new Request('https://example.test/es/projects/alpha'));
+    expect(explicit.status).toBe(200);
+    expect(explicit.headers.get('content-language')).toBe('es');
+    expect(seenLocales).toEqual(['en-US', 'es']);
+
+    const defaultPrefix = await handler(new Request('https://example.test/en-us/projects/alpha'));
+    expect(defaultPrefix.status).toBe(307);
+    expect(defaultPrefix.headers.get('location')).toBe('/projects/alpha');
+  });
+
   it('adapts streamed Fetch responses and request bodies to Node HTTP', async () => {
     const nodeHandler = createNodeHandler(async (request) => {
       const body = await request.text();

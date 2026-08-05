@@ -8,8 +8,11 @@ import { resolveLocalizationContext } from '@oxe/runtime';
 
 import {
   extractProjectMessages,
+  createCatalogFetchLoader,
   createI18n,
+  createLazyI18n,
   I18N_CATALOG_SCHEMA,
+  I18N_CHUNK_MANIFEST_SCHEMA,
   loadProjectConfig,
   prepareI18nBuild,
   readCatalog,
@@ -265,6 +268,49 @@ describe('OXE localization tooling', () => {
     expect(runtime.format('rank', { ordinal: 22, values: { rank: 22 } })).toBe('22nd');
     runtime.setLocale('fr');
     expect(runtime.format('stories', { count: 2, values: { count: 2 } })).toBe('2 histoires');
+  });
+
+  it('loads only a selected locale chunk and deduplicates concurrent preparation', async () => {
+    const requests: string[] = [];
+    const loadCatalog = createCatalogFetchLoader(
+      {
+        defaultLocale: 'en-US',
+        locales: [
+          { catalog: 'locales/en-US.json', locale: 'en-US', pathPrefix: '' },
+          { catalog: 'locales/es.json', locale: 'es', pathPrefix: 'es' },
+        ],
+        schemaVersion: I18N_CHUNK_MANIFEST_SCHEMA,
+      },
+      {
+        baseUrl: 'https://example.test/assets/',
+        fetch: async (input) => {
+          requests.push(String(input));
+          return new Response(
+            JSON.stringify({
+              locale: 'es',
+              messages: { greeting: 'Hola' },
+              schemaVersion: I18N_CATALOG_SCHEMA,
+            }),
+          );
+        },
+      },
+    );
+    const runtime = createLazyI18n({
+      catalog: {
+        locale: 'en-US',
+        messages: { greeting: 'Hello' },
+        schemaVersion: I18N_CATALOG_SCHEMA,
+      },
+      loadCatalog,
+      locale: 'en-US',
+      supportedLocales: ['en-US', 'es'],
+    });
+
+    await Promise.all([runtime.prepareLocale('es'), runtime.prepareLocale('es')]);
+
+    expect(requests).toEqual(['https://example.test/assets/locales/es.json']);
+    expect(runtime.locale).toBe('es');
+    expect(runtime.format('greeting')).toBe('Hola');
   });
 
   it('returns safe structured parts so translations can reorder compiler-owned inline markup', () => {

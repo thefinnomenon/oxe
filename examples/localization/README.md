@@ -22,11 +22,12 @@ approved translation of “reading list.” Purpose and element/component contex
 included in each generation request, while `translation.concurrency` limits how
 many locale batches can be in flight at once.
 
-The compiler-backed **Localization and Intl** Playground example mounts the
+The compiler-backed **Localization and Intl** Playground example imports only the
 Spanish catalog and demonstrates lowered prose, automatic placeholder
 translation, plural and ordinal cases, safe movable `<strong>` markup, currency,
 date formatting, and semantic `value`/`datetime` attributes. The standalone page
-below remains useful for switching among all five locales interactively.
+starts with English and lazily fetches one additional catalog only when its
+language selector changes.
 
 To try the generated catalogs in the language switcher, serve the repository root
 after building `@oxe/i18n`:

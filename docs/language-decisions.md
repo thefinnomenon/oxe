@@ -363,9 +363,21 @@ remains valid on any appropriate element when those semantics do not apply.
 The request's locale, time zone, calendar, and numbering system are stable render
 inputs. Server rendering serializes them for hydration so the browser cannot
 silently reformat server HTML with different host defaults. Locale catalogs are
-separate lazy chunks, and compiler feature analysis includes only the message
-selection and formatter capabilities actually used. An application with no
-localization configuration retains literal output and no localization runtime.
+separate lazy chunks emitted outside browser modules. The server loads only the
+catalog selected by the request URL and renders final translated HTML. The
+browser starts with that same active catalog and loads another only for a client
+locale switch; concurrent requests for one locale are deduplicated. Compiler
+feature analysis includes only the message selection and formatter capabilities
+actually used. An application with no localization configuration retains literal
+output and no localization runtime.
+
+Localized route builds use the source locale at the bare path and lowercase BCP
+47 prefixes for other configured locales. A signed-in host preference may
+supersede the `oxe_locale` cookie, which supersedes `Accept-Language`; the result
+redirects a bare request to a stable non-default locale URL. Explicit locale URLs
+win over negotiation, and geography is never a language signal. Shared caching
+policy remains a host optimization; the reference Fetch host continues to emit
+`no-store` unless configured otherwise.
 
 Message extraction is automatic during development, but translation generation
 is explicit. Development records stable source hashes and marks affected catalog

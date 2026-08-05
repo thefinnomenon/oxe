@@ -15,6 +15,8 @@ export {
 export { syncI18n } from './sync.js';
 export {
   createI18n,
+  createCatalogFetchLoader,
+  createLazyI18n,
   formatCatalogMessage,
   formatCatalogParts,
   formatIntlValue,
@@ -22,15 +24,19 @@ export {
   pluralCategories,
   pluralCategoryExample,
   type CreateI18nOptions,
+  type CatalogFetchLoaderOptions,
   type FormatCatalogMessageOptions,
   type FormatCatalogPartsOptions,
   type FormatValueOptions,
   type I18nRuntime,
+  type CreateLazyI18nOptions,
+  type LazyI18nRuntime,
   type LocalizedContentPart,
 } from './runtime.js';
 export { validateI18n } from './validate.js';
 export {
   I18N_CATALOG_SCHEMA,
+  I18N_CHUNK_MANIFEST_SCHEMA,
   I18N_MANIFEST_SCHEMA,
   type ExtractedMessage,
   type ExtractMessagesResult,
@@ -39,6 +45,8 @@ export {
   type CatalogMessage,
   type CatalogVariantMessage,
   type LocaleCatalog,
+  type LocaleCatalogChunkManifestV1,
+  type LocaleCatalogChunkV1,
   type ManifestMessage,
   type MessageLocation,
   type MessagePlaceholder,

@@ -6,6 +6,14 @@ export {
 } from './dom-segments.js';
 export { OxeRouterError, type RouterErrorCode } from './errors.js';
 export { createFileRouteManifest, type FileRouteManifestOptions } from './manifest.js';
+export {
+  createRouteLocalization,
+  localePathPrefix,
+  localePreferenceFromCookie,
+  localizedHref,
+  negotiateLocale,
+  supportedLocale,
+} from './localization.js';
 export { createRouteSearchParams, createRouteSearchRecord, matchRoute } from './match.js';
 export { createRouter } from './router.js';
 export { createDomRouteSegmentArtifact } from './segment-artifact.js';
@@ -35,6 +43,7 @@ export type {
   RouteDefinitionV1,
   RouteHistoryAdapter,
   RouteLocation,
+  RouteLocalizationV1,
   RouteManifestV1,
   RouteMatch,
   RouteParamValue,

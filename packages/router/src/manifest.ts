@@ -5,9 +5,14 @@ import type {
   RoutePathSegmentV1,
   RouteSegmentDefinitionV1,
 } from './types.js';
+import { createRouteLocalization } from './localization.js';
 
 export interface FileRouteManifestOptions {
   readonly basePath?: string;
+  readonly localization?: {
+    readonly defaultLocale: string;
+    readonly locales: readonly string[];
+  };
   readonly routesDirectory?: string;
 }
 
@@ -211,6 +216,14 @@ export const createFileRouteManifest = (
 
   return Object.freeze({
     basePath,
+    ...(options.localization
+      ? {
+          localization: createRouteLocalization(
+            options.localization.defaultLocale,
+            options.localization.locales,
+          ),
+        }
+      : {}),
     routes: Object.freeze(routes.sort(compareRoutes)),
     schemaVersion: 'oxe.route-manifest.v1',
     trailingSlash: 'never',

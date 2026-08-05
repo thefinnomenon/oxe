@@ -1,5 +1,6 @@
 export const I18N_CATALOG_SCHEMA = 'oxe.i18n.catalog.v2' as const;
 export const I18N_MANIFEST_SCHEMA = 'oxe.i18n.manifest.v2' as const;
+export const I18N_CHUNK_MANIFEST_SCHEMA = 'oxe.i18n.chunks.v1' as const;
 
 export type MissingTranslationPolicy = 'error' | 'source' | 'warn';
 export type MessageSelectionKind = 'cardinal' | 'ordinal';
@@ -92,6 +93,19 @@ export interface LocaleCatalog {
   readonly locale: string;
   readonly messages: Readonly<Record<string, CatalogMessage>>;
   readonly schemaVersion: typeof I18N_CATALOG_SCHEMA;
+}
+
+export interface LocaleCatalogChunkV1 {
+  readonly catalog: string;
+  readonly locale: string;
+  /** Empty for the default locale; otherwise the canonical lowercase URL segment. */
+  readonly pathPrefix: string;
+}
+
+export interface LocaleCatalogChunkManifestV1 {
+  readonly defaultLocale: string;
+  readonly locales: readonly LocaleCatalogChunkV1[];
+  readonly schemaVersion: typeof I18N_CHUNK_MANIFEST_SCHEMA;
 }
 
 export type TranslationProvenance = 'generated' | 'reviewed';

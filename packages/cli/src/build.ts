@@ -18,9 +18,24 @@ import {
   type DomCodeArtifact,
 } from '@oxe/compiler';
 import { serializeUiGraph, type UiGraphV1 } from '@oxe/graph';
-import { prepareI18nBuild, type PrepareI18nBuildResult, type SyncI18nOptions } from '@oxe/i18n';
+import {
+  extractProjectMessages,
+  I18N_CATALOG_SCHEMA,
+  I18N_CHUNK_MANIFEST_SCHEMA,
+  loadProjectConfig,
+  prepareI18nBuild,
+  readCatalog,
+  type CatalogMessage,
+  type LocaleCatalog,
+  type LocaleCatalogChunkManifestV1,
+  type OxeProjectConfig,
+  type PrepareI18nBuildResult,
+  type SyncI18nOptions,
+} from '@oxe/i18n';
 import {
   createFileRouteManifest,
+  createRouteLocalization,
+  localePathPrefix,
   type RouteManifestV1,
   type RouteSegmentDefinitionV1,
 } from '@oxe/router';
@@ -63,7 +78,14 @@ export interface OxeBuildManifestV1 {
     readonly moduleId: string;
   };
   readonly localization: {
+    readonly defaultLocale?: string;
     readonly enabled: boolean;
+    readonly locales?: readonly {
+      readonly catalog: string;
+      readonly locale: string;
+      readonly pathPrefix: string;
+    }[];
+    readonly manifest?: string;
     readonly synced: boolean;
     readonly validationIssues: number;
   };
@@ -92,6 +114,70 @@ const compareText = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;
 
 const prettyJson = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
+
+const localizedBuildFiles = async (
+  config: OxeProjectConfig,
+): Promise<{
+  readonly files: readonly OutputFile[];
+  readonly manifest: LocaleCatalogChunkManifestV1;
+}> => {
+  const extracted = await extractProjectMessages(config);
+  if (extracted.diagnostics.length > 0) {
+    throw new Error(
+      `Localization extraction failed:\n${extracted.diagnostics
+        .map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`)
+        .join('\n')}`,
+    );
+  }
+  const locales = [config.i18n.source, ...config.i18n.locales];
+  const existing = new Map(
+    await Promise.all(
+      locales.map(
+        async (locale) =>
+          [locale, await readCatalog(config.i18n.catalogDirectory, locale)] as const,
+      ),
+    ),
+  );
+  const sourceCatalog = existing.get(config.i18n.source);
+  const sourceMessage = (
+    id: string,
+    source: string,
+    selection: 'cardinal' | 'ordinal' | undefined,
+  ): CatalogMessage =>
+    sourceCatalog?.messages[id] ??
+    (selection ? { cases: { other: source }, kind: selection } : source);
+  const routeLocalization = createRouteLocalization(config.i18n.source, config.i18n.locales);
+  const chunks = locales.map((locale) => ({
+    catalog: `locales/${locale}.json`,
+    locale,
+    pathPrefix: localePathPrefix(routeLocalization, locale),
+  }));
+  const files = locales.map((locale): OutputFile => {
+    const catalog = existing.get(locale);
+    const messages = Object.fromEntries(
+      extracted.messages.map((message) => [
+        message.id,
+        catalog?.messages[message.id] ??
+          sourceMessage(message.id, message.source, message.selection?.kind),
+      ]),
+    );
+    const emitted: LocaleCatalog = {
+      locale,
+      messages,
+      schemaVersion: I18N_CATALOG_SCHEMA,
+    };
+    return { contents: prettyJson(emitted), path: `locales/${locale}.json` };
+  });
+  const manifest: LocaleCatalogChunkManifestV1 = {
+    defaultLocale: config.i18n.source,
+    locales: chunks,
+    schemaVersion: I18N_CHUNK_MANIFEST_SCHEMA,
+  };
+  return {
+    files: [...files, { contents: prettyJson(manifest), path: 'localization-manifest.json' }],
+    manifest,
+  };
+};
 
 const normalizeProjectPath = (value: string, description: string): string => {
   if (value.length === 0 || isAbsolute(value) || value.includes('\\')) {
@@ -322,6 +408,8 @@ export const buildProject = async (options: BuildProjectOptions): Promise<BuildP
         ...(options.i18nSync ? { sync: options.i18nSync } : {}),
       })
     : undefined;
+  const projectConfig = hasLocalization ? await loadProjectConfig(projectDirectory) : undefined;
+  const localizedOutput = projectConfig ? await localizedBuildFiles(projectConfig) : undefined;
   if (!hasLocalization && options.i18nSync) {
     throw new Error(`Cannot sync localization without ${CONFIG_FILE} in ${projectDirectory}.`);
   }
@@ -338,6 +426,14 @@ export const buildProject = async (options: BuildProjectOptions): Promise<BuildP
     }
     routeManifest = createFileRouteManifest(modules, {
       ...(options.basePath ? { basePath: options.basePath } : {}),
+      ...(projectConfig
+        ? {
+            localization: {
+              defaultLocale: projectConfig.i18n.source,
+              locales: projectConfig.i18n.locales,
+            },
+          }
+        : {}),
       routesDirectory,
     });
     compiled = await Promise.all(
@@ -380,10 +476,18 @@ export const buildProject = async (options: BuildProjectOptions): Promise<BuildP
   }
 
   for (const artifact of compiled) outputFiles.push(...artifact.files);
+  if (localizedOutput) outputFiles.push(...localizedOutput.files);
   const manifest: OxeBuildManifestV1 = {
     artifacts: compiled.map((artifact) => artifact.manifest),
     ...(entry ? { entry } : {}),
     localization: {
+      ...(localizedOutput
+        ? {
+            defaultLocale: localizedOutput.manifest.defaultLocale,
+            locales: localizedOutput.manifest.locales,
+            manifest: 'localization-manifest.json',
+          }
+        : {}),
       enabled: hasLocalization,
       synced: localization?.sync !== undefined,
       validationIssues: localization?.validation.issues.length ?? 0,

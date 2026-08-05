@@ -7,7 +7,9 @@ import {
   serializeRouteSnapshotData,
   createRouteSearchParams,
   createRouter,
+  localizedHref,
   matchRoute,
+  negotiateLocale,
   OxeRouterError,
   type NavigateOptions,
   type PreparedRouteTransition,
@@ -95,6 +97,29 @@ describe('filesystem route manifests', () => {
       ]),
     ).toThrowError(OxeRouterError);
   });
+
+  it('matches configured locale prefixes while keeping the default locale bare', () => {
+    const manifest = createFileRouteManifest(modules, {
+      basePath: '/app',
+      localization: { defaultLocale: 'en-US', locales: ['es', 'pt-BR'] },
+    });
+
+    expect(matchRoute(manifest, '/app/users/finn')).toMatchObject({
+      locale: 'en-US',
+      localePrefixed: false,
+    });
+    expect(matchRoute(manifest, '/app/pt-br/users/finn')).toMatchObject({
+      locale: 'pt-BR',
+      localePrefixed: true,
+    });
+    expect(localizedHref(manifest, 'es', '/app/users/finn?tab=one#title')).toBe(
+      '/app/es/users/finn?tab=one#title',
+    );
+    expect(localizedHref(manifest, 'en-US', '/app/pt-br/users/finn')).toBe('/app/users/finn');
+    expect(negotiateLocale(manifest.localization!, 'fr;q=0.9, pt-PT;q=0.8, es;q=0.7')).toBe(
+      'pt-BR',
+    );
+  });
 });
 
 describe('search parameters', () => {
@@ -118,6 +143,33 @@ describe('search parameters', () => {
 });
 
 describe('router navigation', () => {
+  it('loads and persists locale changes before committing their canonical URL', async () => {
+    const manifest = createFileRouteManifest(modules, {
+      localization: { defaultLocale: 'en-US', locales: ['es', 'pt-BR'] },
+    });
+    const history = new FakeHistory('/users/finn');
+    const prepared: string[] = [];
+    const persisted: string[] = [];
+    const router = createRouter(manifest, {
+      history,
+      persistLocale: (locale) => persisted.push(locale),
+      prepareLocale: (locale) => {
+        prepared.push(locale);
+      },
+    });
+
+    await router.setLocale('pt-br');
+    expect(router.locale.read()).toBe('pt-BR');
+    expect(history.pushed).toEqual(['/pt-br/users/finn']);
+    expect(prepared).toEqual(['pt-BR']);
+    expect(persisted).toEqual(['pt-BR']);
+
+    await router.setLocale('en-US');
+    expect(history.pushed).toEqual(['/pt-br/users/finn', '/users/finn']);
+    expect(prepared).toEqual(['pt-BR', 'en-US']);
+    router.dispose();
+  });
+
   it('atomically commits prepared routes and cancels abandoned navigation', async () => {
     const manifest = createFileRouteManifest(modules);
     const history = new FakeHistory('/');

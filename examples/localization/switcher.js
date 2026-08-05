@@ -1,15 +1,18 @@
-import { createI18n } from '../../packages/i18n/dist/runtime.js';
+import { createLazyI18n } from '../../packages/i18n/dist/runtime.js';
 
 const locales = ['en-US', 'es', 'pt', 'fr', 'it'];
-const catalogs = await Promise.all(
-  locales.map(async (locale) => {
-    const response = await fetch(`./locales/${locale}.json`);
-    if (!response.ok) throw new Error(`Could not load the ${locale} catalog.`);
-    return response.json();
-  }),
-);
+const loadCatalog = async (locale) => {
+  const response = await fetch(`./locales/${locale}.json`);
+  if (!response.ok) throw new Error(`Could not load the ${locale} catalog.`);
+  return response.json();
+};
 
-const i18n = createI18n({ catalogs, locale: 'en-US' });
+const i18n = createLazyI18n({
+  catalog: await loadCatalog('en-US'),
+  loadCatalog,
+  locale: 'en-US',
+  supportedLocales: locales,
+});
 const elements = {
   greeting: document.querySelector('#greeting'),
   locale: document.querySelector('#locale'),
@@ -36,9 +39,14 @@ const render = () => {
   elements.poweredBy.textContent = i18n.format('home.powered-by');
 };
 
-elements.locale.addEventListener('change', () => {
-  i18n.setLocale(elements.locale.value);
-  render();
+elements.locale.addEventListener('change', async () => {
+  elements.locale.disabled = true;
+  try {
+    await i18n.prepareLocale(elements.locale.value);
+    render();
+  } finally {
+    elements.locale.disabled = false;
+  }
 });
 document.querySelector('#remove-story').addEventListener('click', () => {
   stories = Math.max(0, stories - 1);

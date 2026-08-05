@@ -178,6 +178,92 @@ describe('OXE CLI', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('emits locale-aware routes and independent active-locale catalog chunks', async () => {
+    const projectDirectory = await temporaryProject();
+    const routesDirectory = join(projectDirectory, 'src', 'routes');
+    await mkdir(routesDirectory, { recursive: true });
+    await writeFile(
+      join(projectDirectory, 'oxe.config.json'),
+      `${JSON.stringify({
+        i18n: {
+          locales: ['es', 'pt-BR'],
+          onMissing: 'warn',
+          source: 'en-US',
+          translation: {
+            apiKeyEnv: 'OXE_TEST_KEY',
+            model: 'gpt-test',
+            provider: 'openai',
+          },
+        },
+      })}\n`,
+      'utf8',
+    );
+    await mkdir(join(projectDirectory, 'locales'));
+    await writeFile(
+      join(projectDirectory, 'locales', 'es.json'),
+      `${JSON.stringify({
+        locale: 'es',
+        messages: { 'home.title': 'Bienvenido' },
+        schemaVersion: 'oxe.i18n.catalog.v2',
+      })}\n`,
+      'utf8',
+    );
+    await writeFile(
+      join(projectDirectory, 'locales', 'pt-BR.json'),
+      `${JSON.stringify({
+        locale: 'pt-BR',
+        messages: { 'home.title': 'Boas-vindas' },
+        schemaVersion: 'oxe.i18n.catalog.v2',
+      })}\n`,
+      'utf8',
+    );
+    await writeFile(
+      join(routesDirectory, 'page.oxe'),
+      `export Page():
+  <h1 i18n={{ key: "home.title" }}>Welcome
+`,
+      'utf8',
+    );
+
+    const result = await run(['build', '--project', projectDirectory]);
+
+    expect(result).toMatchObject({ errors: [], exitCode: 0 });
+    const routeManifest: unknown = JSON.parse(
+      await readFile(join(projectDirectory, 'dist', 'route-manifest.json'), 'utf8'),
+    );
+    expect(routeManifest).toMatchObject({
+      localization: {
+        defaultLocale: 'en-US',
+        locales: ['en-US', 'es', 'pt-BR'],
+      },
+    });
+    const localizationManifest: unknown = JSON.parse(
+      await readFile(join(projectDirectory, 'dist', 'localization-manifest.json'), 'utf8'),
+    );
+    expect(localizationManifest).toMatchObject({
+      defaultLocale: 'en-US',
+      locales: [
+        { catalog: 'locales/en-US.json', locale: 'en-US', pathPrefix: '' },
+        { catalog: 'locales/es.json', locale: 'es', pathPrefix: 'es' },
+        { catalog: 'locales/pt-BR.json', locale: 'pt-BR', pathPrefix: 'pt-br' },
+      ],
+      schemaVersion: 'oxe.i18n.chunks.v1',
+    });
+    await expect(
+      access(join(projectDirectory, 'dist', 'locales', 'pt-BR.json')),
+    ).resolves.toBeUndefined();
+    await expect(
+      readFile(join(projectDirectory, 'dist', 'locales', 'es.json'), 'utf8'),
+    ).resolves.toContain('Bienvenido');
+    const browserModule = await readFile(
+      join(projectDirectory, 'dist', 'modules', 'src', 'routes', 'page.js'),
+      'utf8',
+    );
+    expect(browserModule).not.toContain('locales/es.json');
+    expect(browserModule).not.toContain('locales/pt-BR.json');
+    expect(browserModule).not.toContain('Bienvenido');
+  });
+
   it('preserves the previous output when compilation fails', async () => {
     const projectDirectory = await temporaryProject();
     await mkdir(join(projectDirectory, 'dist'));
