@@ -17,6 +17,7 @@ import {
 } from '@oxe/router';
 
 import type { PlaygroundCapabilitySet } from './demo-capabilities.js';
+import { createServerFunctionDemoCapability } from './server-function-demo.js';
 
 import {
   OXE_PLAYGROUND_PROTOCOL_VERSION,
@@ -134,10 +135,22 @@ const loadDemoUser = (id: number, signal?: AbortSignal): Promise<DemoUser> => {
 
 const installDemoCapabilities = (set: PlaygroundCapabilitySet | undefined): void => {
   demoRequestSequence = 0;
-  if (set !== 'async-users') {
-    Reflect.deleteProperty(globalThis, 'playground');
+  Reflect.deleteProperty(globalThis, 'playground');
+  Reflect.deleteProperty(globalThis, 'projects');
+  if (set === 'server-projects') {
+    Object.defineProperty(globalThis, 'projects', {
+      configurable: true,
+      value: Object.freeze({
+        read: createServerFunctionDemoCapability({
+          origin: window.location.origin,
+          onExchange: (direction, payload) =>
+            console.info(`server-function ${direction}: ${payload}`),
+        }),
+      }),
+    });
     return;
   }
+  if (set !== 'async-users') return;
   Object.defineProperty(globalThis, 'playground', {
     configurable: true,
     value: Object.freeze({

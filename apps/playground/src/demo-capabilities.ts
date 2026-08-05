@@ -1,6 +1,8 @@
 import type { PlatformCapabilityContract } from '@oxe/compiler';
 
-export type PlaygroundCapabilitySet = 'async-users';
+import { serverFunctionDemoCompilerCapabilities } from './server-function-demo.js';
+
+export type PlaygroundCapabilitySet = 'async-users' | 'server-projects';
 
 const asyncUserCapabilities = [
   {
@@ -19,7 +21,12 @@ const asyncUserCapabilities = [
 
 export const capabilitiesForPlayground = (
   set: PlaygroundCapabilitySet | undefined,
-): readonly PlatformCapabilityContract[] => (set === 'async-users' ? asyncUserCapabilities : []);
+): readonly PlatformCapabilityContract[] =>
+  set === 'async-users'
+    ? asyncUserCapabilities
+    : set === 'server-projects'
+      ? serverFunctionDemoCompilerCapabilities
+      : [];
 
 export const isPlaygroundCapabilitySet = (value: unknown): value is PlaygroundCapabilitySet =>
-  value === 'async-users';
+  value === 'async-users' || value === 'server-projects';

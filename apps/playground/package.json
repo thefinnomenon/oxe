@@ -17,7 +17,8 @@
     "@oxe/i18n": "workspace:*",
     "@oxe/router": "workspace:*",
     "@oxe/runtime": "workspace:*",
-    "@oxe/runtime-dom": "workspace:*"
+    "@oxe/runtime-dom": "workspace:*",
+    "@oxe/server-functions": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

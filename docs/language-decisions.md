@@ -891,6 +891,53 @@ new suffix atomically. Push history and scroll-to-top are defaults; replace and
 scroll preservation are explicit options. The server request URL is the initial
 source of truth.
 
+## Typed server functions
+
+Server functions reuse the existing external capability and ordinary async-value
+syntax. OXE does not add `server`, `async`, RPC, request, or response syntax to an
+application component:
+
+```oxe
+ProjectPage():
+  project = projects.read("project-1")
+
+  <h1>{project.name}
+```
+
+The host supplies a versioned `oxe.server-function.v1` definition. It contains a
+stable id, compiler-visible dot path, `query` or `mutation` classification,
+ordered named parameters, and a result schema. The compiler records the stable
+server-function id on the async capability node and preserves it in the server
+render plan. Browser code calls a transport adapter; SSR hosts may execute the
+same definition locally through their capability resolver.
+
+The first transport schema deliberately supports only required JSON values:
+booleans, finite numbers, strings, homogeneous arrays, and exact records. Nested
+schemas provide runtime validation rather than relying on TypeScript alone.
+`undefined`, `null`, optional fields, non-finite numbers, `Date`, `BigInt`, binary
+data, class instances, symbols, functions, unknown record fields, and cyclic
+values do not cross this boundary. Later type-system work may add nullable or
+special scalar encodings by versioning the schema instead of accepting ambiguous
+JSON conventions.
+
+Client arguments are validated before transport, then revalidated before a
+handler runs. Handler results are validated before serialization and again after
+the client receives them. Payload byte, depth, and node-count limits are explicit.
+Request context—including authentication, authorization, credentials, database
+handles, and tenant scope—is supplied directly to the server handler and is never
+part of an argument or response envelope.
+
+Handlers may raise a deliberately public typed failure. Existing async failure
+classes map to safe standard messages; arbitrary exceptions are reported only to
+the host and cross the boundary as a generic unexpected failure. Abort signals
+propagate from compiler-owned async resources through the transport into the
+handler. HTTP route mapping, restrictive CORS, session construction, stronger
+application-specific CSRF policy, rate limiting, and deployment-provider wiring
+remain host responsibilities around this platform-neutral contract; the standard
+Fetch adapter supplies POST, JSON, custom-header, same-origin, cache, and streaming
+body-limit defaults without trying to construct an authenticated application
+context.
+
 ## Persistence
 
 Persistence is expressed through a structured `db` client rather than assignment

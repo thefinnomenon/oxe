@@ -1,0 +1,26 @@
+export App():
+  projectId = 1
+  project = projects.read(projectId)
+
+  nextProject():
+    projectId = (projectId % 3) + 1
+
+  missingProject():
+    projectId = 404
+
+  reload():
+    refresh(project)
+
+  <main>
+    <h1>Typed server functions
+    <p>The compiler contract and runtime transport share one versioned definition.
+    <nav>
+      <button onClick={nextProject}>Next project
+      <button onClick={reload}>Reload current
+      <button onClick={missingProject}>Request missing project
+    <article>
+      <p>projects.read.v1 - request {project.request}
+      <h2>{project.name}
+      <p>{project.summary}
+      <p>Server-only request context resolved viewer {project.viewer}.
+    <p>Requests use an in-browser Fetch loopback for this static playground. Open Console to inspect versioned JSON envelopes, safe errors, and cancellation.

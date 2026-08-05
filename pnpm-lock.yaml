@@ -56,6 +56,9 @@ importers:
       '@oxe/runtime-dom':
         specifier: workspace:*
         version: link:../../packages/runtime-dom
+      '@oxe/server-functions':
+        specifier: workspace:*
+        version: link:../../packages/server-functions
     devDependencies:
       '@types/node':
         specifier: ^22.13.10
@@ -139,6 +142,15 @@ importers:
       '@oxe/runtime-dom':
         specifier: workspace:*
         version: link:../runtime-dom
+
+  packages/server-functions:
+    dependencies:
+      '@oxe/compiler':
+        specifier: workspace:*
+        version: link:../compiler
+      '@oxe/runtime':
+        specifier: workspace:*
+        version: link:../runtime
 
 packages:
 

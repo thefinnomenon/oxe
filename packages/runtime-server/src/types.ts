@@ -271,6 +271,7 @@ export interface ServerCapabilityPlanV1 {
   readonly routeIntrinsic?:
     'location' | 'navigate' | 'params' | 'search-params' | 'set-search-params';
   readonly returns?: PrimitiveTypeV1;
+  readonly serverFunctionId?: string;
   readonly target: 'client' | 'server' | 'universal';
 }
 

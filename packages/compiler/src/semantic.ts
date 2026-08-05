@@ -75,6 +75,8 @@ export interface PlatformCapabilityContract {
   readonly name: string;
   readonly parameters: readonly PrimitiveTypeV1[];
   readonly returns?: PrimitiveTypeV1;
+  /** Stable id in an oxe.server-function-manifest.v1 manifest. */
+  readonly serverFunctionId?: string;
   readonly target?: 'client' | 'server' | 'universal';
   /** Stable external target written by a persistent effect relationship. */
   readonly writes?: string;
@@ -360,6 +362,35 @@ const createAnalysisState = (
         span,
       );
       continue;
+    }
+    if (contract.serverFunctionId !== undefined) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(contract.serverFunctionId)) {
+        report(
+          state,
+          'OXE2008',
+          `Server function capability "${contract.name}" has an invalid serverFunctionId.`,
+          span,
+        );
+        continue;
+      }
+      if (contract.kind !== 'async' || (contract.target ?? 'universal') !== 'universal') {
+        report(
+          state,
+          'OXE2008',
+          `Server function capability "${contract.name}" must be async and universal so the host can execute it locally during SSR or through transport in the browser.`,
+          span,
+        );
+        continue;
+      }
+      if (contract.dispose !== undefined || contract.writes !== undefined) {
+        report(
+          state,
+          'OXE2008',
+          `Server function capability "${contract.name}" cannot declare disposal or a persistent write target.`,
+          span,
+        );
+        continue;
+      }
     }
     capabilities.set(contract.name, {
       contract,
@@ -5756,6 +5787,9 @@ const analyzeComponentSet = (
       path: platform.path,
       ...(platform.routeIntrinsic ? { routeIntrinsic: platform.routeIntrinsic } : {}),
       ...(platform.contract.returns ? { returns: platform.contract.returns } : {}),
+      ...(platform.contract.serverFunctionId
+        ? { serverFunctionId: platform.contract.serverFunctionId }
+        : {}),
       span: graphSpan(platform.span ?? modules[0]?.ast.span ?? componentList[0]!.component.span),
       target: platform.contract.target ?? 'universal',
       ...(platform.contract.writes ? { writes: platform.contract.writes } : {}),
