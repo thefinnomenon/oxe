@@ -4,6 +4,14 @@ OXE is an AI-first application language and runtime. Its long-term design is one
 compiler-visible graph spanning UI, asynchronous work, data, authorization,
 caching, errors, logs, metrics, and traces.
 
+The current architecture direction makes that normalized application graph the
+semantic source of truth. AI agents inspect compact projections and submit typed,
+atomic semantic mutations; source text and generated JavaScript are projections
+rather than the primary editing interface. See
+[docs/application-graph-architecture.md](docs/application-graph-architecture.md)
+and the canonical
+[Todo graph fixture](examples/application-graph-todo/graph.json).
+
 The project is being rebuilt from the UI language outward. Its production path
 does not use React, Solid, a virtual DOM, or `innerHTML`.
 

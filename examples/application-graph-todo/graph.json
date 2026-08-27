@@ -1,0 +1,455 @@
+{
+  "format": "oxe.application-graph",
+  "version": 1,
+  "revision": 12,
+  "app": {
+    "id": "app.todo",
+    "kind": "app",
+    "name": "TinyTodo",
+    "entryRoute": "route.tasks",
+    "actorEntity": "builtin.user"
+  },
+  "features": [
+    {
+      "id": "feature.tasks",
+      "kind": "feature",
+      "name": "tasks"
+    }
+  ],
+  "entities": [
+    {
+      "id": "builtin.user",
+      "kind": "entity",
+      "name": "User",
+      "origin": "builtin"
+    },
+    {
+      "id": "entity.task",
+      "kind": "entity",
+      "feature": "feature.tasks",
+      "name": "Task",
+      "fields": ["field.task.id", "field.task.title", "field.task.done", "field.task.createdAt"]
+    }
+  ],
+  "fields": [
+    {
+      "id": "field.task.id",
+      "kind": "field",
+      "entity": "entity.task",
+      "name": "id",
+      "valueType": {
+        "kind": "entityId",
+        "entity": "entity.task"
+      },
+      "required": true,
+      "origin": "generated"
+    },
+    {
+      "id": "field.task.title",
+      "kind": "field",
+      "entity": "entity.task",
+      "name": "title",
+      "valueType": {
+        "kind": "string"
+      },
+      "required": true,
+      "validation": [
+        {
+          "kind": "stringLength",
+          "min": 1,
+          "max": 120
+        }
+      ]
+    },
+    {
+      "id": "field.task.done",
+      "kind": "field",
+      "entity": "entity.task",
+      "name": "done",
+      "valueType": {
+        "kind": "boolean"
+      },
+      "required": true,
+      "default": {
+        "kind": "literal",
+        "value": false
+      }
+    },
+    {
+      "id": "field.task.createdAt",
+      "kind": "field",
+      "entity": "entity.task",
+      "name": "createdAt",
+      "valueType": {
+        "kind": "dateTime"
+      },
+      "required": true,
+      "origin": "generated"
+    }
+  ],
+  "relations": [
+    {
+      "id": "relation.taskOwner",
+      "kind": "relation",
+      "feature": "feature.tasks",
+      "from": {
+        "entity": "entity.task",
+        "name": "owner",
+        "cardinality": "one",
+        "required": true,
+        "createValue": {
+          "kind": "actor"
+        }
+      },
+      "to": {
+        "entity": "builtin.user",
+        "name": "tasks",
+        "cardinality": "many",
+        "required": false
+      }
+    }
+  ],
+  "policies": [
+    {
+      "id": "policy.task",
+      "kind": "policy",
+      "target": "entity.task",
+      "rules": {
+        "create": {
+          "kind": "authenticated"
+        },
+        "read": {
+          "kind": "relationEqualsActor",
+          "relation": "relation.taskOwner"
+        },
+        "update": {
+          "kind": "relationEqualsActor",
+          "relation": "relation.taskOwner"
+        },
+        "delete": {
+          "kind": "relationEqualsActor",
+          "relation": "relation.taskOwner"
+        }
+      }
+    }
+  ],
+  "queries": [
+    {
+      "id": "query.myTasks",
+      "kind": "query",
+      "feature": "feature.tasks",
+      "name": "myTasks",
+      "entity": "entity.task",
+      "filter": {
+        "kind": "relationEqualsActor",
+        "relation": "relation.taskOwner"
+      },
+      "order": [
+        {
+          "field": "field.task.createdAt",
+          "direction": "descending"
+        }
+      ],
+      "select": ["field.task.id", "field.task.title", "field.task.done", "field.task.createdAt"]
+    }
+  ],
+  "operations": [
+    {
+      "id": "operation.createTask",
+      "kind": "operation",
+      "feature": "feature.tasks",
+      "name": "createTask",
+      "input": {
+        "kind": "record",
+        "fields": {
+          "title": {
+            "kind": "string"
+          }
+        }
+      },
+      "output": {
+        "kind": "entity",
+        "entity": "entity.task"
+      },
+      "effects": [
+        {
+          "kind": "databaseWrite",
+          "target": "entity.task"
+        }
+      ],
+      "body": {
+        "kind": "createEntity",
+        "entity": "entity.task",
+        "values": {
+          "field.task.title": {
+            "kind": "inputField",
+            "name": "title"
+          },
+          "relation.taskOwner": {
+            "kind": "actor"
+          }
+        }
+      }
+    },
+    {
+      "id": "operation.toggleTask",
+      "kind": "operation",
+      "feature": "feature.tasks",
+      "name": "toggleTask",
+      "input": {
+        "kind": "record",
+        "fields": {
+          "task": {
+            "kind": "entity",
+            "entity": "entity.task"
+          }
+        }
+      },
+      "output": {
+        "kind": "entity",
+        "entity": "entity.task"
+      },
+      "effects": [
+        {
+          "kind": "databaseWrite",
+          "target": "field.task.done"
+        }
+      ],
+      "body": {
+        "kind": "updateEntity",
+        "record": {
+          "kind": "inputField",
+          "name": "task"
+        },
+        "values": {
+          "field.task.done": {
+            "kind": "not",
+            "value": {
+              "kind": "recordField",
+              "record": {
+                "kind": "inputField",
+                "name": "task"
+              },
+              "field": "field.task.done"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "routes": [
+    {
+      "id": "route.tasks",
+      "kind": "route",
+      "feature": "feature.tasks",
+      "path": "/tasks",
+      "authentication": "required",
+      "view": "view.tasks"
+    }
+  ],
+  "views": [
+    {
+      "id": "view.tasks",
+      "kind": "view",
+      "feature": "feature.tasks",
+      "name": "TasksPage",
+      "data": {
+        "tasks": {
+          "query": "query.myTasks"
+        }
+      },
+      "tree": {
+        "kind": "component",
+        "component": "ui.Page",
+        "children": [
+          {
+            "kind": "component",
+            "component": "ui.Heading",
+            "props": {
+              "text": {
+                "kind": "literal",
+                "value": "My tasks"
+              }
+            }
+          },
+          {
+            "id": "element.createTaskForm",
+            "kind": "component",
+            "component": "ui.Form",
+            "submit": {
+              "operation": "operation.createTask",
+              "arguments": {
+                "title": {
+                  "kind": "formValue",
+                  "name": "title"
+                }
+              }
+            },
+            "children": [
+              {
+                "kind": "component",
+                "component": "ui.TextField",
+                "props": {
+                  "name": {
+                    "kind": "literal",
+                    "value": "title"
+                  },
+                  "label": {
+                    "kind": "literal",
+                    "value": "New task"
+                  },
+                  "sourceField": {
+                    "kind": "semanticReference",
+                    "target": "field.task.title"
+                  }
+                }
+              },
+              {
+                "kind": "component",
+                "component": "ui.Button",
+                "props": {
+                  "text": {
+                    "kind": "literal",
+                    "value": "Add"
+                  },
+                  "type": {
+                    "kind": "literal",
+                    "value": "submit"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "id": "element.taskList",
+            "kind": "repeat",
+            "source": {
+              "kind": "viewData",
+              "name": "tasks"
+            },
+            "itemName": "task",
+            "identity": {
+              "kind": "recordField",
+              "record": {
+                "kind": "local",
+                "name": "task"
+              },
+              "field": "field.task.id"
+            },
+            "template": {
+              "kind": "component",
+              "component": "ui.CheckboxRow",
+              "props": {
+                "label": {
+                  "kind": "recordField",
+                  "record": {
+                    "kind": "local",
+                    "name": "task"
+                  },
+                  "field": "field.task.title"
+                },
+                "checked": {
+                  "kind": "recordField",
+                  "record": {
+                    "kind": "local",
+                    "name": "task"
+                  },
+                  "field": "field.task.done"
+                }
+              },
+              "events": {
+                "change": {
+                  "operation": "operation.toggleTask",
+                  "arguments": {
+                    "task": {
+                      "kind": "local",
+                      "name": "task"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "modes": {
+        "loading": {
+          "kind": "generated",
+          "strategy": "preserveStaticStructure"
+        },
+        "empty": {
+          "kind": "generated"
+        },
+        "unauthorized": {
+          "kind": "inherited",
+          "from": "app.todo"
+        },
+        "notFound": {
+          "kind": "inherited",
+          "from": "app.todo"
+        },
+        "error": {
+          "kind": "inherited",
+          "from": "app.todo"
+        }
+      }
+    }
+  ],
+  "verification": {
+    "invariants": [
+      {
+        "id": "invariant.taskOwner",
+        "kind": "invariant",
+        "statement": "Every Task has exactly one owner"
+      },
+      {
+        "id": "invariant.ownerAccess",
+        "kind": "invariant",
+        "statement": "A user can access only Tasks they own"
+      }
+    ],
+    "flows": [
+      {
+        "id": "flow.createTask",
+        "kind": "verificationFlow",
+        "actor": "authenticatedUser",
+        "steps": [
+          {
+            "kind": "visit",
+            "route": "route.tasks"
+          },
+          {
+            "kind": "submit",
+            "element": "element.createTaskForm",
+            "values": {
+              "title": "Test task"
+            }
+          },
+          {
+            "kind": "expectQueryContains",
+            "query": "query.myTasks",
+            "values": {
+              "field.task.title": "Test task"
+            }
+          }
+        ]
+      },
+      {
+        "id": "flow.toggleTask",
+        "kind": "verificationFlow",
+        "actor": "authenticatedUser",
+        "steps": [
+          {
+            "kind": "invoke",
+            "operation": "operation.toggleTask"
+          },
+          {
+            "kind": "expectField",
+            "field": "field.task.done",
+            "value": true
+          }
+        ]
+      }
+    ]
+  }
+}
