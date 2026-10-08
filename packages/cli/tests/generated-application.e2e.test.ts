@@ -331,7 +331,7 @@ describe.skipIf(!binaryDirectory || !existsSync(chromePath))(
           '-l',
           join(dataDirectory, 'postgres.log'),
           '-o',
-          `-F -p ${postgresPort} -h 127.0.0.1`,
+          `-F -p ${postgresPort} -h 127.0.0.1 -k ${dataDirectory}`,
           '-w',
           'start',
         ],

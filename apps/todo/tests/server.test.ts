@@ -67,7 +67,7 @@ describe.skipIf(!binaryDirectory)('runnable Todo application', () => {
         '-l',
         join(dataDirectory, 'postgres.log'),
         '-o',
-        `-F -p ${port} -h 127.0.0.1`,
+        `-F -p ${port} -h 127.0.0.1 -k ${dataDirectory}`,
         '-w',
         'start',
       ],
