@@ -1,0 +1,114 @@
+{
+  "schemaVersion": "oxe.ai-authoring-task-suite.v1",
+  "arms": ["compact-semantic", "normalized-graph", "repository-source"],
+  "tasks": [
+    {
+      "id": "add-task-priority",
+      "category": "schema-ui",
+      "prompt": "Add required Task.priority with low, normal, and high values, default normal, and expose it in task creation and task rows.",
+      "expected": [
+        "revision commits atomically",
+        "field is stored",
+        "form accepts priority",
+        "list displays priority",
+        "all checks pass"
+      ]
+    },
+    {
+      "id": "rename-task-field",
+      "category": "stable-identity",
+      "prompt": "Rename Task.title to Task.label without changing its stable semantic identity.",
+      "expected": [
+        "field.task.title ID is unchanged",
+        "storage and generated projections use label",
+        "no textual-reference search or rewrite"
+      ]
+    },
+    {
+      "id": "tighten-task-read-policy",
+      "category": "authorization",
+      "prompt": "Change only Task read authorization to require its owner relation to equal the current user.",
+      "expected": [
+        "policy.task read rule changes",
+        "other policy actions are unchanged",
+        "authorization tests pass"
+      ]
+    },
+    {
+      "id": "preview-remove-task-query",
+      "category": "diagnostics",
+      "prompt": "Preview removing query.myTasks and report why it cannot yet be removed. Do not publish an invalid revision.",
+      "expected": [
+        "mutation is rejected",
+        "incoming view and verification references are reported",
+        "revision remains unchanged"
+      ]
+    },
+    {
+      "id": "move-view-control",
+      "category": "ui-structure",
+      "prompt": "Move element.inviteTeamMemberForm under element.createTeamForm at child index 1 while preserving its semantic ID.",
+      "expected": [
+        "element ID is unchanged",
+        "move is atomic",
+        "cycles are rejected",
+        "view remains structurally valid"
+      ]
+    },
+    {
+      "id": "add-optional-task-due-date",
+      "category": "refined-types",
+      "prompt": "Add optional Task.dueDate as a Date, preserving explicit null semantics through storage and the generated client.",
+      "expected": [
+        "stable field ID is added",
+        "PostgreSQL uses nullable DATE storage",
+        "null and valid dates pass generated validation",
+        "invalid dates are rejected"
+      ]
+    },
+    {
+      "id": "add-document-upload-capability",
+      "category": "external-capability",
+      "prompt": "Add a provider-neutral object-storage capability and a typed operation that accepts bytes and content type without putting SDK code or credentials in the graph.",
+      "expected": [
+        "capability contract is provider neutral",
+        "bytes are runtime validated",
+        "operation declares the external effect",
+        "runtime binding remains server-only"
+      ]
+    },
+    {
+      "id": "add-project-under-team-context",
+      "category": "multi-tenant-auth",
+      "prompt": "Add context.project under context.team through relation.projectTeam, then scope Project records and authorization to the independently switchable active Project role.",
+      "expected": [
+        "project has a stable context role",
+        "parent relation connects Project to Team",
+        "parent context precedes child context",
+        "server validates membership and active context"
+      ]
+    },
+    {
+      "id": "add-branded-component-extension",
+      "category": "custom-ui",
+      "prompt": "Add browser module.brandedTask, component.brandedTask, and style.brandedTask with integrity-pinned code, typed props and events, scoped design tokens, a deterministic SSR fallback, and keyboard accessibility.",
+      "expected": [
+        "module integrity and packages are explicit",
+        "component props and events are typed",
+        "SSR fallback is deterministic",
+        "style changes remain semantic graph state"
+      ]
+    },
+    {
+      "id": "restore-prior-revision",
+      "category": "revision-recovery",
+      "prompt": "Restore revision 16 from a newer graph head as a new audited revision, then publish it without deleting history.",
+      "expected": [
+        "base revision is checked",
+        "prior semantic content becomes a new revision",
+        "history remains immutable",
+        "publication activates only after health checks"
+      ]
+    }
+  ]
+}

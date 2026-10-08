@@ -9,6 +9,10 @@ export interface BooleanSchemaV1 {
   readonly kind: 'boolean';
 }
 
+export interface NullSchemaV1 {
+  readonly kind: 'null';
+}
+
 export interface NumberSchemaV1 {
   readonly integer?: boolean;
   readonly kind: 'number';
@@ -45,24 +49,47 @@ export interface RecordSchemaV1<
   readonly kind: 'record';
 }
 
-export type ServerValueSchemaV1 =
-  ArraySchemaV1 | BooleanSchemaV1 | NumberSchemaV1 | RecordSchemaV1 | StringSchemaV1;
+export interface UnionSchemaV1<
+  Variants extends readonly ServerValueSchemaV1[] = readonly ServerValueSchemaV1[],
+> {
+  readonly kind: 'union';
+  readonly variants: Variants;
+}
 
-export type ServerSchemaValue<Schema extends ServerValueSchemaV1> = Schema extends BooleanSchemaV1
-  ? boolean
-  : Schema extends NumberSchemaV1
-    ? number
-    : Schema extends StringSchemaV1
-      ? string
-      : Schema extends ArraySchemaV1<infer Item>
-        ? readonly ServerSchemaValue<Item>[]
-        : Schema extends RecordSchemaV1<infer Fields>
-          ? {
-              readonly [Field in Fields[number] as Field['name']]: ServerSchemaValue<
-                Field['schema']
-              >;
-            }
-          : never;
+export type ServerValueSchemaV1 =
+  | ArraySchemaV1
+  | BooleanSchemaV1
+  | NullSchemaV1
+  | NumberSchemaV1
+  | RecordSchemaV1
+  | StringSchemaV1
+  | UnionSchemaV1;
+
+export type ServerSchemaValue<
+  Schema extends ServerValueSchemaV1,
+  Depth extends readonly unknown[] = readonly [],
+> = Depth['length'] extends 12
+  ? unknown
+  : Schema extends BooleanSchemaV1
+    ? boolean
+    : Schema extends NullSchemaV1
+      ? null
+      : Schema extends NumberSchemaV1
+        ? number
+        : Schema extends StringSchemaV1
+          ? string
+          : Schema extends ArraySchemaV1<infer Item>
+            ? readonly ServerSchemaValue<Item, readonly [...Depth, unknown]>[]
+            : Schema extends RecordSchemaV1<infer Fields>
+              ? {
+                  readonly [Field in Fields[number] as Field['name']]: ServerSchemaValue<
+                    Field['schema'],
+                    readonly [...Depth, unknown]
+                  >;
+                }
+              : Schema extends UnionSchemaV1<infer Variants>
+                ? ServerSchemaValue<Variants[number], readonly [...Depth, unknown]>
+                : never;
 
 export interface ServerFunctionParameterV1<
   Name extends string = string,

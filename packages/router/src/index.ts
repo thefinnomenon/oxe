@@ -16,6 +16,12 @@ export {
 } from './localization.js';
 export { createRouteSearchParams, createRouteSearchRecord, matchRoute } from './match.js';
 export { createRouter } from './router.js';
+export {
+  createNodeHandler,
+  type FetchRouteHandler,
+  type NodeHandlerOptions,
+  type NodeRouteHandler,
+} from './server.js';
 export { createDomRouteSegmentArtifact } from './segment-artifact.js';
 export {
   readSerializedRouteSnapshot,

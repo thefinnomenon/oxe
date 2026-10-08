@@ -1,23 +1,34 @@
+import { createHash } from 'node:crypto';
 import {
   access,
   glob,
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, join, posix, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 
 import {
+  ApplicationArtifactCache,
   analyzeProject,
   generateDomArtifact,
+  type ApplicationWorkerDeploymentV1,
+  type ApplicationCompiledExtensionModulesV1,
   type Diagnostic,
   type DomCodeArtifact,
 } from '@oxe/compiler';
-import { serializeUiGraph, type UiGraphV1 } from '@oxe/graph';
+import {
+  loadApplicationGraph,
+  serializeUiGraph,
+  type ApplicationGraphV1,
+  type UiGraphV1,
+} from '@oxe/graph';
+import { build as buildWithEsbuild, type Plugin } from 'esbuild';
 import {
   extractProjectMessages,
   I18N_CATALOG_SCHEMA,
@@ -44,10 +55,11 @@ import { createDeferredServerRenderPlan, createServerRenderPlan } from '@oxe/run
 export const OXE_BUILD_MANIFEST_SCHEMA = 'oxe.build-manifest.v1' as const;
 const CONFIG_FILE = 'oxe.config.json';
 
-export type BuildMode = 'app' | 'routes';
+export type BuildMode = 'app' | 'application' | 'routes';
 export type BuildArtifactKind = 'app' | 'layout' | 'page';
 
 export interface BuildProjectOptions {
+  readonly applicationGraph?: string;
   readonly basePath?: string;
   readonly entryExport?: string;
   readonly entryModuleId?: string;
@@ -55,6 +67,7 @@ export interface BuildProjectOptions {
   readonly outputDirectory?: string;
   readonly projectDirectory: string;
   readonly routesDirectory?: string;
+  readonly workerDeployment?: ApplicationWorkerDeploymentV1;
 }
 
 export interface BuildArtifactManifestV1 {
@@ -72,6 +85,22 @@ export interface BuildArtifactManifestV1 {
 }
 
 export interface OxeBuildManifestV1 {
+  readonly application?: {
+    readonly appId: string;
+    readonly artifacts: readonly {
+      readonly id: string;
+      readonly kind: string;
+    }[];
+    readonly deployment: {
+      readonly runtimeEntry: string;
+      readonly serverEntry: string;
+      readonly workerDeployment: ApplicationWorkerDeploymentV1;
+      readonly workerEntry?: string;
+    };
+    readonly browserAssets: string;
+    readonly graph: string;
+    readonly revision: number;
+  };
   readonly artifacts: readonly BuildArtifactManifestV1[];
   readonly entry?: {
     readonly exportName: string;
@@ -105,15 +134,267 @@ interface OutputFile {
   readonly path: string;
 }
 
+interface ApplicationBrowserAssetManifestV1 {
+  readonly assets: readonly {
+    readonly bytes: number;
+    readonly integrity: `sha256:${string}`;
+    readonly path: string;
+  }[];
+  readonly entries: {
+    readonly script: string;
+    readonly style?: string;
+  };
+  readonly schemaVersion: 'oxe.browser-asset-manifest.v1';
+}
+
 interface CompiledArtifact {
   readonly files: readonly OutputFile[];
   readonly manifest: BuildArtifactManifestV1;
+}
+
+interface VerifiedApplicationExtensionSource {
+  readonly canonicalPath: string;
+  readonly module: NonNullable<ApplicationGraphV1['modules']>[number];
+  readonly sourcePath: string;
 }
 
 const compareText = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;
 
 const prettyJson = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
+
+const packageNameForSpecifier = (specifier: string): string | undefined => {
+  if (
+    specifier.startsWith('.') ||
+    specifier.startsWith('/') ||
+    specifier.startsWith('#') ||
+    specifier.startsWith('node:')
+  )
+    return undefined;
+  const parts = specifier.split('/');
+  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+};
+
+const compileApplicationExtensions = async (
+  graph: ApplicationGraphV1,
+  projectDirectory: string,
+): Promise<ApplicationCompiledExtensionModulesV1> => {
+  const packageManifest = await readFile(resolve(projectDirectory, 'package.json'), 'utf8')
+    .then((source) => JSON.parse(source) as unknown)
+    .catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+  const projectPackages = (
+    typeof packageManifest === 'object' && packageManifest !== null
+      ? Object.assign(
+          {},
+          'dependencies' in packageManifest &&
+            typeof packageManifest.dependencies === 'object' &&
+            packageManifest.dependencies !== null
+            ? packageManifest.dependencies
+            : {},
+          'devDependencies' in packageManifest &&
+            typeof packageManifest.devDependencies === 'object' &&
+            packageManifest.devDependencies !== null
+            ? packageManifest.devDependencies
+            : {},
+          'optionalDependencies' in packageManifest &&
+            typeof packageManifest.optionalDependencies === 'object' &&
+            packageManifest.optionalDependencies !== null
+            ? packageManifest.optionalDependencies
+            : {},
+        )
+      : {}
+  ) as Readonly<Record<string, unknown>>;
+  const extensionSources = new Map<string, VerifiedApplicationExtensionSource>();
+  const extensionSourcesByPath = new Map<string, VerifiedApplicationExtensionSource>();
+  for (const module of graph.modules ?? []) {
+    const sourcePath = resolve(projectDirectory, module.source);
+    const canonicalPath = await realpath(sourcePath);
+    const source = await readFile(sourcePath);
+    const integrity = `sha256:${createHash('sha256').update(source).digest('hex')}`;
+    if (integrity !== module.integrity)
+      throw new Error(
+        `Extension module ${JSON.stringify(module.id)} integrity mismatch: expected ${module.integrity}, received ${integrity}.`,
+      );
+    const entry = { canonicalPath, module, sourcePath };
+    extensionSources.set(module.id, entry);
+    extensionSourcesByPath.set(canonicalPath, entry);
+  }
+  const compiled: Record<string, { browser?: string; server?: string }> = {};
+  for (const module of [...(graph.modules ?? [])].sort((left, right) =>
+    compareText(left.id, right.id),
+  )) {
+    const extensionSource = extensionSources.get(module.id);
+    if (!extensionSource)
+      throw new Error(`Extension module ${JSON.stringify(module.id)} has no verified source.`);
+    const { canonicalPath: canonicalSourcePath, sourcePath } = extensionSource;
+    const directPackages = new Set<string>();
+    const directImports: Plugin = {
+      name: 'oxe-extension-direct-imports',
+      setup(build) {
+        build.onResolve({ filter: /.*/ }, async (arguments_) => {
+          if (!arguments_.importer) return undefined;
+          const canonicalImporter = await realpath(arguments_.importer).catch(() =>
+            resolve(arguments_.importer),
+          );
+          if (canonicalImporter !== canonicalSourcePath) return undefined;
+          const packageName = packageNameForSpecifier(arguments_.path);
+          if (packageName) directPackages.add(packageName);
+          return undefined;
+        });
+      },
+    };
+    const compile = async (target: 'browser' | 'server'): Promise<string> => {
+      const result = await buildWithEsbuild({
+        absWorkingDir: projectDirectory,
+        bundle: true,
+        entryPoints: [sourcePath],
+        format: 'esm',
+        logLevel: 'silent',
+        metafile: true,
+        outdir: 'out',
+        platform: target === 'browser' ? 'browser' : 'node',
+        plugins: [directImports],
+        sourcemap: false,
+        target: 'es2022',
+        write: false,
+      });
+      const output = result.outputFiles.find((file) =>
+        file.path.endsWith(module.format === 'css' ? '.css' : '.js'),
+      );
+      if (!output)
+        throw new Error(`Extension module ${JSON.stringify(module.id)} produced no output.`);
+      for (const input of Object.keys(result.metafile.inputs)) {
+        const canonicalInput = await realpath(resolve(projectDirectory, input));
+        if (canonicalInput === canonicalSourcePath || canonicalInput.includes('/node_modules/'))
+          continue;
+        const dependency = extensionSourcesByPath.get(canonicalInput);
+        if (!dependency)
+          throw new Error(
+            `Extension module ${JSON.stringify(module.id)} bundles undeclared local source ${JSON.stringify(input)}. Declare it as an integrity-pinned extensionModule.`,
+          );
+        if (
+          (target === 'browser' && dependency.module.target === 'server') ||
+          (target === 'server' && dependency.module.target === 'browser')
+        )
+          throw new Error(
+            `Extension module ${JSON.stringify(module.id)} imports target-incompatible module ${JSON.stringify(dependency.module.id)}.`,
+          );
+      }
+      return output.text;
+    };
+    const outputs: { browser?: string; server?: string } = {};
+    if (module.target !== 'server') outputs.browser = await compile('browser');
+    if (module.target !== 'browser') outputs.server = await compile('server');
+    const declaredPackages = new Set(Object.keys(module.packages ?? {}));
+    for (const [packageName, version] of Object.entries(module.packages ?? {}).sort(
+      ([left], [right]) => compareText(left, right),
+    ))
+      if (projectPackages[packageName] !== version)
+        throw new Error(
+          `Extension module ${JSON.stringify(module.id)} requires ${packageName}@${version} in the project package.json.`,
+        );
+    for (const packageName of [...directPackages].sort(compareText))
+      if (!declaredPackages.has(packageName))
+        throw new Error(
+          `Extension module ${JSON.stringify(module.id)} imports undeclared package ${JSON.stringify(packageName)}.`,
+        );
+    for (const packageName of [...declaredPackages].sort(compareText))
+      if (!directPackages.has(packageName))
+        throw new Error(
+          `Extension module ${JSON.stringify(module.id)} declares unused package ${JSON.stringify(packageName)}.`,
+        );
+    compiled[module.id] = outputs;
+  }
+  return compiled;
+};
+
+const compileApplicationBrowserAssets = async (
+  artifacts: readonly { readonly contents: string; readonly id: string }[],
+  projectDirectory: string,
+): Promise<{
+  readonly files: readonly OutputFile[];
+  readonly manifest: ApplicationBrowserAssetManifestV1;
+}> => {
+  const browserSources = artifacts.filter(({ id }) => id.startsWith('browser/'));
+  const sourceById = new Map(browserSources.map(({ contents, id }) => [id, contents]));
+  const startSource = sourceById.get('browser/start.js');
+  const shellSource = sourceById.get('browser/index.html');
+  if (!startSource || !shellSource)
+    throw new Error(
+      'Application browser projection requires browser/start.js and browser/index.html.',
+    );
+
+  const staging = await mkdtemp(join(projectDirectory, '.oxe-browser-assets-'));
+  const sourceDirectory = join(staging, 'browser');
+  const outputDirectory = join(staging, 'assets');
+  try {
+    for (const source of browserSources) {
+      const target = resolve(staging, source.id);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, source.contents, 'utf8');
+    }
+    const entryPoints: Record<string, string> = { start: join(sourceDirectory, 'start.js') };
+    if (sourceById.has('browser/application.css'))
+      entryPoints.application = join(sourceDirectory, 'application.css');
+    const result = await buildWithEsbuild({
+      absWorkingDir: sourceDirectory,
+      assetNames: 'asset-[hash]',
+      bundle: true,
+      chunkNames: 'chunk-[hash]',
+      entryNames: '[name]-[hash]',
+      entryPoints,
+      format: 'esm',
+      logLevel: 'silent',
+      minify: true,
+      outdir: outputDirectory,
+      platform: 'browser',
+      sourcemap: false,
+      splitting: true,
+      target: 'es2022',
+      write: false,
+    });
+    const files = result.outputFiles
+      .map((file): OutputFile => ({
+        contents: file.text,
+        path: `browser/assets/${relative(outputDirectory, file.path).split(sep).join('/')}`,
+      }))
+      .sort((left, right) => compareText(left.path, right.path));
+    const script = files.find(({ path }) => /\/start-[A-Z0-9]+\.js$/iu.test(path));
+    const style = files.find(({ path }) => /\/application-[A-Z0-9]+\.css$/iu.test(path));
+    if (!script) throw new Error('Application browser projection produced no script entry.');
+    const manifest: ApplicationBrowserAssetManifestV1 = {
+      assets: files.map(({ contents, path }) => ({
+        bytes: Buffer.byteLength(contents),
+        integrity: `sha256:${createHash('sha256').update(contents).digest('hex')}`,
+        path: path.slice('browser/'.length),
+      })),
+      entries: {
+        script: script.path.slice('browser/'.length),
+        ...(style ? { style: style.path.slice('browser/'.length) } : {}),
+      },
+      schemaVersion: 'oxe.browser-asset-manifest.v1',
+    };
+    const shell = shellSource
+      .replace('./start.js', `./${manifest.entries.script}`)
+      .replace(
+        './application.css',
+        manifest.entries.style ? `./${manifest.entries.style}` : './application.css',
+      );
+    return {
+      files: [
+        ...files,
+        { contents: prettyJson(manifest), path: 'browser/asset-manifest.json' },
+        { contents: shell, path: 'browser/index.html' },
+      ],
+      manifest,
+    };
+  } finally {
+    await rm(staging, { force: true, recursive: true });
+  }
+};
 
 const localizedBuildFiles = async (
   config: OxeProjectConfig,
@@ -401,6 +682,84 @@ export const buildProject = async (options: BuildProjectOptions): Promise<BuildP
   );
   const relativeOutputDirectory = outputPath(options.outputDirectory ?? 'dist');
   validateOutputLocation(relativeOutputDirectory, modules);
+  if (options.applicationGraph !== undefined) {
+    if (
+      options.basePath !== undefined ||
+      options.entryExport !== undefined ||
+      options.entryModuleId !== undefined ||
+      options.routesDirectory !== undefined ||
+      options.i18nSync !== undefined
+    )
+      throw new TypeError(
+        'Application graph builds cannot be combined with UI entry, route, or localization options.',
+      );
+    const graphPath = normalizeProjectPath(options.applicationGraph, 'The application graph');
+    if (!graphPath.endsWith('.json'))
+      throw new TypeError('The application graph must be a JSON file.');
+    if (
+      graphPath === relativeOutputDirectory ||
+      graphPath.startsWith(`${relativeOutputDirectory}/`)
+    )
+      throw new TypeError(
+        'The output directory cannot contain the authoritative application graph.',
+      );
+    let graph: ApplicationGraphV1;
+    try {
+      graph = loadApplicationGraph(
+        JSON.parse(await readFile(resolve(projectDirectory, graphPath), 'utf8')) as unknown,
+      );
+    } catch (error) {
+      throw new Error(
+        `Application graph build failed for ${graphPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const workerDeployment = options.workerDeployment ?? 'embedded';
+    const extensions = await compileApplicationExtensions(graph, projectDirectory);
+    const compilation = new ApplicationArtifactCache().compile(graph, {
+      extensions,
+      workerDeployment,
+    });
+    const browserProjection = await compileApplicationBrowserAssets(
+      compilation.artifacts,
+      projectDirectory,
+    );
+    const application = {
+      appId: graph.app.id,
+      artifacts: compilation.artifacts.map(({ id, kind }) => ({ id, kind })),
+      browserAssets: 'browser/asset-manifest.json',
+      deployment: {
+        runtimeEntry: 'server/application.js',
+        serverEntry: 'server/start.js',
+        workerDeployment,
+        ...(workerDeployment === 'separate' ? { workerEntry: 'server/worker.js' } : {}),
+      },
+      graph: 'application/graph.json',
+      revision: graph.revision,
+    } as const;
+    const manifest: OxeBuildManifestV1 = {
+      application,
+      artifacts: [],
+      localization: {
+        enabled: false,
+        synced: false,
+        validationIssues: 0,
+      },
+      mode: 'application',
+      schemaVersion: OXE_BUILD_MANIFEST_SCHEMA,
+    };
+    const projectedPaths = new Set(browserProjection.files.map(({ path }) => path));
+    const outputFiles = compilation.artifacts
+      .filter(({ id }) => !projectedPaths.has(id))
+      .map(({ contents, id }) => ({ contents, path: id }));
+    outputFiles.push(...browserProjection.files);
+    outputFiles.push({ contents: prettyJson(manifest), path: 'oxe-manifest.json' });
+    return {
+      manifest,
+      outputDirectory: await writeOutput(projectDirectory, relativeOutputDirectory, outputFiles),
+    };
+  }
+  if (options.workerDeployment !== undefined)
+    throw new TypeError('--worker-mode requires --application-graph.');
   const hasLocalization = await hasFile(join(projectDirectory, CONFIG_FILE));
   const localization = hasLocalization
     ? await prepareI18nBuild({

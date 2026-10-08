@@ -431,6 +431,52 @@ describe('UiGraphV1', () => {
     ]);
   });
 
+  it('requires server-function capabilities to match their definitions', () => {
+    const input = graph();
+    const definition = {
+      id: 'oxe.server.readProject',
+      mode: 'query' as const,
+      moduleId: 'counter.oxe',
+      name: 'readProject',
+      parameters: [{ name: 'id', schema: { kind: 'string' as const } }],
+      path: ['oxe', 'readProject'],
+      returns: { kind: 'string' as const },
+      schemaVersion: 'oxe.server-function.v1' as const,
+    };
+    const capability = {
+      capabilityKind: 'async' as const,
+      id: `${componentId}/capability/readProject`,
+      kind: 'platform-capability' as const,
+      parameters: ['string' as const],
+      path: definition.path,
+      returns: 'string' as const,
+      serverFunctionId: definition.id,
+      span,
+      target: 'universal' as const,
+    };
+
+    expect(
+      validateUiGraph({
+        ...input,
+        nodes: [...input.nodes, capability],
+        serverFunctions: [definition],
+      }),
+    ).toEqual([]);
+    expect(validateUiGraph({ ...input, nodes: [...input.nodes, capability] })).toEqual([]);
+    expect(
+      validateUiGraph({
+        ...input,
+        nodes: [...input.nodes, { ...capability, parameters: [] }],
+        serverFunctions: [definition],
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        code: 'OXE3006',
+        message: expect.stringContaining('does not match definition'),
+      }),
+    ]);
+  });
+
   it('validates a closed graph and serializes nodes deterministically', () => {
     const input = graph();
     const serialized = serializeUiGraph(input);
@@ -443,6 +489,66 @@ describe('UiGraphV1', () => {
       countId,
       mainId,
     ]);
+  });
+
+  it('validates and deterministically serializes event-time captured arguments', () => {
+    const input = graph();
+    const procedureId = `${componentId}/procedure/change`;
+    const withCapturedArgument: UiGraphV1 = {
+      ...input,
+      nodes: [
+        ...input.nodes,
+        {
+          id: procedureId,
+          kind: 'procedure',
+          name: 'change',
+          parameters: [
+            { name: 'event', span, type: 'record' },
+            { name: 'value', span, type: 'number' },
+          ],
+          span,
+          steps: [],
+        },
+      ],
+      edges: [
+        ...input.edges,
+        {
+          arguments: [{ kind: 'read', span, targetId: countId }],
+          authoredName: 'onChange',
+          event: 'change',
+          from: mainId,
+          kind: 'event',
+          span,
+          to: procedureId,
+        },
+      ],
+    };
+
+    expect(validateUiGraph(withCapturedArgument)).toEqual([]);
+    expect(serializeUiGraph(withCapturedArgument)).toBe(
+      serializeUiGraph({
+        ...withCapturedArgument,
+        edges: [...withCapturedArgument.edges].reverse(),
+        nodes: [...withCapturedArgument.nodes].reverse(),
+      }),
+    );
+
+    const invalid = {
+      ...withCapturedArgument,
+      edges: withCapturedArgument.edges.map((edge) =>
+        edge.kind === 'event'
+          ? { ...edge, arguments: [{ kind: 'read' as const, span, targetId: componentId }] }
+          : edge,
+      ),
+    };
+    expect(validateUiGraph(invalid)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'OXE3003',
+          message: `Event argument read "${componentId}" must reference a value node.`,
+        }),
+      ]),
+    );
   });
 
   it('reports duplicate ids, dangling references, and invalid edge kinds', () => {

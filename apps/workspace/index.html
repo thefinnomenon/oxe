@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>OXE Development</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="workspace agent-collapsed" data-workspace>
+      <main class="preview-stage">
+        <section class="preview-shell" data-preview-shell aria-label="Development application">
+          <iframe
+            title="Development application"
+            sandbox="allow-forms allow-popups allow-same-origin allow-scripts"
+            data-preview-frame
+          ></iframe>
+          <div class="preview-fallback" data-preview-fallback hidden>
+            <div class="fallback-copy">
+              <p class="eyebrow">Development fallback</p>
+              <h1>The application server is not reachable yet</h1>
+              <p>
+                Start the application server or set <code>OXE_APPLICATION_URL</code>. Graph
+                inspection and revision tools remain available.
+              </p>
+            </div>
+            <pre data-compact-map tabindex="0"></pre>
+          </div>
+        </section>
+      </main>
+
+      <button
+        class="agent-backdrop"
+        type="button"
+        data-agent-backdrop
+        aria-label="Close agent"
+      ></button>
+      <aside
+        class="agent-rail collapsed"
+        data-agent-rail
+        aria-label="OXE development agent"
+        aria-hidden="true"
+      >
+        <header class="rail-header">
+          <div class="rail-tabs" role="tablist" aria-label="Development tools">
+            <button
+              role="tab"
+              type="button"
+              tabindex="0"
+              aria-selected="true"
+              data-rail-tab="agent"
+            >
+              Agent
+            </button>
+            <button
+              role="tab"
+              type="button"
+              tabindex="-1"
+              aria-selected="false"
+              data-rail-tab="graph"
+            >
+              Graph
+            </button>
+            <button
+              role="tab"
+              type="button"
+              tabindex="-1"
+              aria-selected="false"
+              data-rail-tab="revisions"
+            >
+              Revisions
+            </button>
+            <button
+              role="tab"
+              type="button"
+              tabindex="-1"
+              aria-selected="false"
+              data-rail-tab="runtime"
+            >
+              Runtime
+            </button>
+            <button
+              role="tab"
+              type="button"
+              tabindex="-1"
+              aria-selected="false"
+              data-rail-tab="performance"
+            >
+              Performance
+            </button>
+          </div>
+          <button
+            class="collapse-button"
+            type="button"
+            data-collapse-agent
+            aria-label="Close agent panel"
+          >
+            ×
+          </button>
+        </header>
+
+        <section class="rail-view agent-view" role="tabpanel" data-rail-view="agent">
+          <div class="agent-intro">
+            <p class="eyebrow">Develop in the application</p>
+            <h1>What should change?</h1>
+          </div>
+          <div class="interaction-context" data-context-card hidden>
+            <div>
+              <span class="context-label">Recent application context</span>
+              <strong data-interaction-context></strong>
+            </div>
+            <button type="button" data-clear-context>Clear</button>
+          </div>
+          <p class="agent-progress" data-agent-progress aria-live="polite" hidden></p>
+          <div class="transcript" data-transcript aria-live="polite"></div>
+          <form class="agent-form" data-agent-form>
+            <label class="sr-only" for="agent-input">Tell the agent what to change</label>
+            <div class="composer">
+              <textarea
+                id="agent-input"
+                name="query"
+                rows="2"
+                placeholder="Tell the agent what to fix or build…"
+                autocomplete="off"
+              ></textarea>
+              <button type="submit">Send</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="rail-view graph-view" role="tabpanel" data-rail-view="graph" hidden>
+          <div class="structure-panel" data-structure-panel>
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Semantic source of truth</p>
+                <h1>Application graph</h1>
+              </div>
+              <span class="count" data-node-count>0</span>
+            </div>
+            <label class="search-label" for="structure-search">Filter nodes</label>
+            <input
+              id="structure-search"
+              class="search-input"
+              type="search"
+              placeholder="Stable ID or kind"
+              autocomplete="off"
+              data-structure-search
+            />
+            <nav class="node-groups" data-node-groups aria-label="Semantic nodes"></nav>
+          </div>
+          <div data-node-detail class="node-detail detail-empty">Select a semantic node.</div>
+        </section>
+
+        <section class="rail-view" role="tabpanel" data-rail-view="revisions" hidden>
+          <div class="revision-list" data-revision-list></div>
+          <div class="revision-detail" data-revision-detail></div>
+        </section>
+
+        <section class="rail-view runtime-view" role="tabpanel" data-rail-view="runtime" hidden>
+          <div class="runtime-heading">
+            <div>
+              <p class="eyebrow">Application operations</p>
+              <h1>Runtime</h1>
+            </div>
+            <button type="button" data-refresh-runtime>Refresh</button>
+          </div>
+          <p class="runtime-status" data-runtime-status aria-live="polite">
+            Open this panel to inspect the running application.
+          </p>
+          <div class="runtime-stats" data-runtime-stats></div>
+          <section class="runtime-section">
+            <h2>Telemetry</h2>
+            <div class="runtime-list runtime-empty" data-runtime-metrics>No observations yet.</div>
+          </section>
+          <section class="runtime-section">
+            <h2>Dead letters</h2>
+            <div class="runtime-list runtime-empty" data-runtime-jobs>No jobs loaded.</div>
+          </section>
+        </section>
+
+        <section
+          class="rail-view performance-view"
+          role="tabpanel"
+          data-rail-view="performance"
+          hidden
+        >
+          <div class="performance-heading">
+            <div>
+              <p class="eyebrow">Live application measurements</p>
+              <h1>Performance</h1>
+            </div>
+            <button type="button" data-refresh-performance>Measure</button>
+          </div>
+          <p class="performance-status" data-performance-status aria-live="polite">
+            Open this panel to measure the running application.
+          </p>
+          <div class="performance-summary" data-performance-summary></div>
+          <section class="performance-section">
+            <h2>Page loading</h2>
+            <div class="performance-list" data-performance-timings></div>
+          </section>
+          <section class="performance-section">
+            <h2>Slowest resources</h2>
+            <div class="performance-list" data-performance-resources></div>
+          </section>
+          <section class="performance-section">
+            <h2>Runtime operations</h2>
+            <div class="performance-list" data-performance-runtime></div>
+          </section>
+        </section>
+
+        <footer class="workspace-info" aria-label="Application connection">
+          <div class="workspace-info-summary">
+            <span class="status-dot" data-preview-dot aria-hidden="true"></span>
+            <div class="workspace-info-copy">
+              <strong data-app-name>Application</strong>
+              <span data-preview-state aria-live="polite">Connecting…</span>
+            </div>
+            <span class="workspace-info-revision" data-revision>r–</span>
+          </div>
+          <div class="workspace-info-actions">
+            <button type="button" data-retry-publication hidden>Retry publish</button>
+            <button type="button" data-refresh-preview aria-label="Reload application">
+              <span aria-hidden="true">↻</span>
+              Reload
+            </button>
+            <a data-open-preview target="_blank" rel="noreferrer">
+              Open site
+              <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        </footer>
+      </aside>
+
+      <button
+        class="agent-launcher"
+        type="button"
+        data-agent-launcher
+        aria-label="Open OXE development agent"
+        aria-expanded="false"
+      >
+        <span aria-hidden="true">OXE</span>
+        <span class="launcher-dot" aria-hidden="true"></span>
+      </button>
+    </div>
+    <script>
+      (() => {
+        const showStartupError = (message) => {
+          const transcript = document.querySelector('[data-transcript]');
+          if (!transcript || transcript.childElementCount > 0) return;
+          const error = document.createElement('p');
+          error.className = 'message message-system';
+          error.textContent = message;
+          transcript.append(error);
+        };
+        window.addEventListener('error', (event) => {
+          showStartupError(`Workspace startup failed: ${event.message || 'browser script error'}`);
+        });
+        window.addEventListener('unhandledrejection', (event) => {
+          showStartupError(
+            `Workspace startup failed: ${event.reason?.message || String(event.reason)}`,
+          );
+        });
+        window.setTimeout(() => {
+          if (!window.__OXE_WORKSPACE_STARTED__)
+            showStartupError('Workspace client did not start. Refresh to load the latest build.');
+        }, 2000);
+      })();
+    </script>
+    <script defer src="/client.js"></script>
+  </body>
+</html>

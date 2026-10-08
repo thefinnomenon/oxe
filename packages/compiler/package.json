@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./application-session": {
+      "types": "./dist/application-session.d.ts",
+      "import": "./dist/application-session.js"
     }
   },
   "scripts": {
@@ -18,7 +22,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@oxe/graph": "workspace:*"
+    "@oxe/graph": "workspace:*",
+    "typescript": "^5.8.2"
   },
   "devDependencies": {
     "@oxe/runtime": "workspace:*",

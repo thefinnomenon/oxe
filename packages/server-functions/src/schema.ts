@@ -10,6 +10,7 @@ import type {
   ServerFunctionSerializationLimits,
   ServerValueSchemaV1,
   StringSchemaV1,
+  UnionSchemaV1,
 } from './types.js';
 
 const DEFAULT_LIMITS: ResolvedServerFunctionSerializationLimits = Object.freeze({
@@ -154,6 +155,14 @@ const normalizeRecordSchema = (schema: RecordSchemaV1, depth: number): RecordSch
   return Object.freeze({ fields: Object.freeze(fields), kind: 'record' });
 };
 
+const normalizeUnionSchema = (schema: UnionSchemaV1, depth: number): UnionSchemaV1 => {
+  if (schema.variants.length === 0) return contractError('A union schema cannot be empty.');
+  return Object.freeze({
+    kind: 'union',
+    variants: Object.freeze(schema.variants.map((variant) => normalizeSchema(variant, depth + 1))),
+  });
+};
+
 export const normalizeSchema = (schema: ServerValueSchemaV1, depth = 0): ServerValueSchemaV1 => {
   if (depth > 32) return contractError('A server-function schema cannot exceed 32 levels.');
   if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) {
@@ -164,12 +173,16 @@ export const normalizeSchema = (schema: ServerValueSchemaV1, depth = 0): ServerV
       return normalizeArraySchema(schema, depth);
     case 'boolean':
       return Object.freeze({ kind: 'boolean' });
+    case 'null':
+      return Object.freeze({ kind: 'null' });
     case 'number':
       return normalizeNumberSchema(schema);
     case 'record':
       return normalizeRecordSchema(schema, depth);
     case 'string':
       return normalizeStringSchema(schema);
+    case 'union':
+      return normalizeUnionSchema(schema, depth);
     default:
       return contractError('A server-function value schema has an unknown kind.');
   }
@@ -339,6 +352,9 @@ const normalizeValueInternal = (
     case 'boolean':
       if (typeof value !== 'boolean') return serializationError(path, 'Expected a boolean.');
       return value;
+    case 'null':
+      if (value !== null) return serializationError(path, 'Expected null.');
+      return null;
     case 'number':
       if (typeof value !== 'number' || !Number.isFinite(value)) {
         return serializationError(path, 'Expected a finite number.');
@@ -376,6 +392,27 @@ const normalizeValueInternal = (
         );
       }
       return value;
+    case 'union': {
+      const failures: unknown[] = [];
+      for (const variant of schema.variants) {
+        const variantState: VisitState = {
+          limits: state.limits,
+          nodes: state.nodes,
+          seen: new Set(state.seen),
+        };
+        try {
+          const result = normalizeValueInternal(variant, value, path, depth, variantState);
+          state.nodes = variantState.nodes;
+          return result;
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      return serializationError(
+        path,
+        `Value did not match any of ${failures.length} union variants.`,
+      );
+    }
   }
 };
 

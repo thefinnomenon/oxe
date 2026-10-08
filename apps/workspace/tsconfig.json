@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "outDir": "dist-typecheck",
+    "rootDir": ".",
+    "tsBuildInfoFile": "dist-typecheck/tsconfig.tsbuildinfo",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "references": [
+    { "path": "../../packages/auth" },
+    { "path": "../../packages/cli" },
+    { "path": "../../packages/compiler" },
+    { "path": "../../packages/graph" },
+    { "path": "../../packages/postgres" },
+    { "path": "../../packages/router" },
+    { "path": "../../packages/server-functions" }
+  ]
+}

@@ -251,6 +251,33 @@ describe('typed server-function contracts', () => {
     );
   });
 
+  it('round-trips explicit null and exact union contracts', async () => {
+    const optionalLabel = defineServerFunction({
+      id: 'labels.optional.v1',
+      mode: 'query',
+      parameters: [
+        {
+          name: 'label',
+          schema: { kind: 'union', variants: [{ kind: 'null' }, { kind: 'string' }] },
+        },
+      ],
+      path: ['labels', 'optional'],
+      returns: { kind: 'union', variants: [{ kind: 'null' }, { kind: 'string' }] },
+    });
+    const registry = createServerFunctionRegistry([
+      implementServerFunction(optionalLabel, ([label]) => label),
+    ]);
+    const call = createServerFunctionCaller(
+      optionalLabel,
+      createInProcessServerFunctionTransport(registry, () => ({})),
+    );
+    await expect(call([null])).resolves.toBeNull();
+    await expect(call(['name'])).resolves.toBe('name');
+    expect(() => serializeServerFunctionRequest(optionalLabel, [42 as never])).toThrow(
+      'did not match any',
+    );
+  });
+
   it('exposes intentional public failures and redacts private exceptions', async () => {
     const publicRegistry = registryWith(() => {
       throw new OxeServerFunctionPublicError('validation', 'That name is already used.', {

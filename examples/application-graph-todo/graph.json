@@ -1,14 +1,58 @@
 {
   "format": "oxe.application-graph",
   "version": 1,
-  "revision": 12,
+  "revision": 16,
   "app": {
     "id": "app.todo",
     "kind": "app",
     "name": "TinyTodo",
     "entryRoute": "route.tasks",
-    "actorEntity": "builtin.user"
+    "actorEntity": "builtin.user",
+    "contexts": ["context.team", "context.ownedTeam"],
+    "authentication": {
+      "provider": "betterAuth",
+      "methods": ["emailPassword"],
+      "signInPath": "/sign-in",
+      "signUpPath": "/sign-up",
+      "authenticatedRoute": "route.tasks"
+    }
   },
+  "contexts": [
+    {
+      "id": "context.team",
+      "kind": "context",
+      "name": "Team",
+      "entity": "entity.team",
+      "labelField": "field.team.name",
+      "authorization": {
+        "kind": "anyOf",
+        "anyOf": [
+          {
+            "kind": "relationEqualsActor",
+            "relation": "relation.teamOwner"
+          },
+          {
+            "kind": "membership",
+            "membershipEntity": "entity.teamMembership",
+            "memberRelation": "relation.membershipMember",
+            "resourceRelation": "relation.membershipTeam",
+            "conditions": [{ "field": "field.membership.accepted", "equals": true }]
+          }
+        ]
+      }
+    },
+    {
+      "id": "context.ownedTeam",
+      "kind": "context",
+      "name": "OwnedTeam",
+      "entity": "entity.team",
+      "labelField": "field.team.name",
+      "authorization": {
+        "kind": "relationEqualsActor",
+        "relation": "relation.teamOwner"
+      }
+    }
+  ],
   "features": [
     {
       "id": "feature.tasks",
@@ -29,6 +73,27 @@
       "feature": "feature.tasks",
       "name": "Task",
       "fields": ["field.task.id", "field.task.title", "field.task.done", "field.task.createdAt"]
+    },
+    {
+      "id": "entity.team",
+      "kind": "entity",
+      "feature": "feature.tasks",
+      "name": "Team",
+      "fields": ["field.team.id", "field.team.name", "field.team.createdAt"]
+    },
+    {
+      "id": "entity.teamMembership",
+      "kind": "entity",
+      "feature": "feature.tasks",
+      "name": "TeamMembership",
+      "fields": [
+        "field.membership.id",
+        "field.membership.userId",
+        "field.membership.role",
+        "field.membership.status",
+        "field.membership.accepted",
+        "field.membership.createdAt"
+      ]
     }
   ],
   "fields": [
@@ -85,6 +150,97 @@
       },
       "required": true,
       "origin": "generated"
+    },
+    {
+      "id": "field.team.id",
+      "kind": "field",
+      "entity": "entity.team",
+      "name": "id",
+      "valueType": {
+        "kind": "entityId",
+        "entity": "entity.team"
+      },
+      "required": true,
+      "origin": "generated"
+    },
+    {
+      "id": "field.team.name",
+      "kind": "field",
+      "entity": "entity.team",
+      "name": "name",
+      "valueType": {
+        "kind": "string"
+      },
+      "required": true,
+      "validation": [
+        {
+          "kind": "stringLength",
+          "min": 1,
+          "max": 80
+        }
+      ]
+    },
+    {
+      "id": "field.team.createdAt",
+      "kind": "field",
+      "entity": "entity.team",
+      "name": "createdAt",
+      "valueType": {
+        "kind": "dateTime"
+      },
+      "required": true,
+      "origin": "generated"
+    },
+    {
+      "id": "field.membership.id",
+      "kind": "field",
+      "entity": "entity.teamMembership",
+      "name": "id",
+      "valueType": { "kind": "entityId", "entity": "entity.teamMembership" },
+      "required": true,
+      "origin": "generated"
+    },
+    {
+      "id": "field.membership.userId",
+      "kind": "field",
+      "entity": "entity.teamMembership",
+      "name": "userId",
+      "valueType": { "kind": "string" },
+      "required": true
+    },
+    {
+      "id": "field.membership.role",
+      "kind": "field",
+      "entity": "entity.teamMembership",
+      "name": "role",
+      "valueType": { "kind": "enum", "values": ["member"] },
+      "required": true
+    },
+    {
+      "id": "field.membership.status",
+      "kind": "field",
+      "entity": "entity.teamMembership",
+      "name": "status",
+      "valueType": { "kind": "enum", "values": ["active"] },
+      "required": true
+    },
+    {
+      "id": "field.membership.accepted",
+      "kind": "field",
+      "entity": "entity.teamMembership",
+      "name": "accepted",
+      "valueType": { "kind": "boolean" },
+      "required": true,
+      "default": { "kind": "literal", "value": true }
+    },
+    {
+      "id": "field.membership.createdAt",
+      "kind": "field",
+      "entity": "entity.teamMembership",
+      "name": "createdAt",
+      "valueType": { "kind": "dateTime" },
+      "required": true,
+      "origin": "generated"
     }
   ],
   "relations": [
@@ -107,6 +263,93 @@
         "cardinality": "many",
         "required": false
       }
+    },
+    {
+      "id": "relation.taskTeam",
+      "kind": "relation",
+      "feature": "feature.tasks",
+      "from": {
+        "entity": "entity.task",
+        "name": "team",
+        "cardinality": "one",
+        "required": false,
+        "createValue": {
+          "kind": "activeContext",
+          "context": "context.team"
+        }
+      },
+      "to": {
+        "entity": "entity.team",
+        "name": "tasks",
+        "cardinality": "many",
+        "required": false
+      }
+    },
+    {
+      "id": "relation.teamOwner",
+      "kind": "relation",
+      "feature": "feature.tasks",
+      "from": {
+        "entity": "entity.team",
+        "name": "owner",
+        "cardinality": "one",
+        "required": true,
+        "createValue": {
+          "kind": "actor"
+        }
+      },
+      "to": {
+        "entity": "builtin.user",
+        "name": "teams",
+        "cardinality": "many",
+        "required": false
+      }
+    },
+    {
+      "id": "relation.membershipMember",
+      "kind": "relation",
+      "feature": "feature.tasks",
+      "from": {
+        "entity": "entity.teamMembership",
+        "name": "member",
+        "cardinality": "one",
+        "required": true
+      },
+      "to": {
+        "entity": "builtin.user",
+        "name": "teamMemberships",
+        "cardinality": "many",
+        "required": false
+      }
+    },
+    {
+      "id": "relation.membershipTeam",
+      "kind": "relation",
+      "feature": "feature.tasks",
+      "from": {
+        "entity": "entity.teamMembership",
+        "name": "team",
+        "cardinality": "one",
+        "required": true,
+        "createValue": {
+          "kind": "activeContext",
+          "context": "context.ownedTeam"
+        }
+      },
+      "to": {
+        "entity": "entity.team",
+        "name": "memberships",
+        "cardinality": "many",
+        "required": false
+      }
+    }
+  ],
+  "uniques": [
+    {
+      "id": "unique.membershipTeamMember",
+      "kind": "unique",
+      "entity": "entity.teamMembership",
+      "keys": ["relation.membershipMember", "relation.membershipTeam"]
     }
   ],
   "policies": [
@@ -116,19 +359,70 @@
       "target": "entity.task",
       "rules": {
         "create": {
+          "kind": "relationEqualsContext",
+          "context": "context.team",
+          "relation": "relation.taskTeam"
+        },
+        "read": {
+          "kind": "relationEqualsContext",
+          "context": "context.team",
+          "relation": "relation.taskTeam"
+        },
+        "update": {
+          "kind": "relationEqualsContext",
+          "context": "context.team",
+          "relation": "relation.taskTeam"
+        },
+        "delete": {
+          "kind": "relationEqualsContext",
+          "context": "context.team",
+          "relation": "relation.taskTeam"
+        }
+      }
+    },
+    {
+      "id": "policy.team",
+      "kind": "policy",
+      "target": "entity.team",
+      "rules": {
+        "create": {
           "kind": "authenticated"
         },
         "read": {
           "kind": "relationEqualsActor",
-          "relation": "relation.taskOwner"
+          "relation": "relation.teamOwner"
         },
         "update": {
           "kind": "relationEqualsActor",
-          "relation": "relation.taskOwner"
+          "relation": "relation.teamOwner"
         },
         "delete": {
           "kind": "relationEqualsActor",
-          "relation": "relation.taskOwner"
+          "relation": "relation.teamOwner"
+        }
+      }
+    },
+    {
+      "id": "policy.membership",
+      "kind": "policy",
+      "target": "entity.teamMembership",
+      "rules": {
+        "create": {
+          "kind": "relationEqualsContext",
+          "context": "context.ownedTeam",
+          "relation": "relation.membershipTeam"
+        },
+        "read": {
+          "kind": "authenticated"
+        },
+        "update": {
+          "kind": "relationEqualsActor",
+          "relation": "relation.membershipMember"
+        },
+        "delete": {
+          "kind": "relationEqualsContext",
+          "context": "context.ownedTeam",
+          "relation": "relation.membershipTeam"
         }
       }
     }
@@ -139,10 +433,12 @@
       "kind": "query",
       "feature": "feature.tasks",
       "name": "myTasks",
+      "cache": { "kind": "memory", "maxAgeMs": 30000 },
       "entity": "entity.task",
       "filter": {
-        "kind": "relationEqualsActor",
-        "relation": "relation.taskOwner"
+        "kind": "relationEqualsContext",
+        "context": "context.team",
+        "relation": "relation.taskTeam"
       },
       "order": [
         {
@@ -151,6 +447,60 @@
         }
       ],
       "select": ["field.task.id", "field.task.title", "field.task.done", "field.task.createdAt"]
+    },
+    {
+      "id": "query.myTeamInvitations",
+      "kind": "query",
+      "feature": "feature.tasks",
+      "name": "myTeamInvitations",
+      "cache": { "kind": "memory", "maxAgeMs": 5000 },
+      "entity": "entity.teamMembership",
+      "filter": {
+        "kind": "relationEqualsActor",
+        "relation": "relation.membershipMember"
+      },
+      "where": [{ "field": "field.membership.accepted", "equals": false }],
+      "order": [
+        {
+          "field": "field.membership.createdAt",
+          "direction": "descending"
+        }
+      ],
+      "select": [
+        "field.membership.id",
+        "field.membership.userId",
+        "field.membership.role",
+        "field.membership.status",
+        "field.membership.accepted",
+        "field.membership.createdAt"
+      ]
+    },
+    {
+      "id": "query.teamInvitations",
+      "kind": "query",
+      "feature": "feature.tasks",
+      "name": "teamInvitations",
+      "cache": { "kind": "memory", "maxAgeMs": 5000 },
+      "entity": "entity.teamMembership",
+      "filter": {
+        "kind": "relationEqualsContext",
+        "context": "context.ownedTeam",
+        "relation": "relation.membershipTeam"
+      },
+      "order": [
+        {
+          "field": "field.membership.createdAt",
+          "direction": "descending"
+        }
+      ],
+      "select": [
+        "field.membership.id",
+        "field.membership.userId",
+        "field.membership.role",
+        "field.membership.status",
+        "field.membership.accepted",
+        "field.membership.createdAt"
+      ]
     }
   ],
   "operations": [
@@ -187,6 +537,10 @@
           },
           "relation.taskOwner": {
             "kind": "actor"
+          },
+          "relation.taskTeam": {
+            "kind": "activeContext",
+            "context": "context.team"
           }
         }
       }
@@ -235,6 +589,240 @@
           }
         }
       }
+    },
+    {
+      "id": "operation.renameTask",
+      "kind": "operation",
+      "feature": "feature.tasks",
+      "name": "renameTask",
+      "input": {
+        "kind": "record",
+        "fields": {
+          "task": {
+            "kind": "entity",
+            "entity": "entity.task"
+          },
+          "title": {
+            "kind": "string"
+          }
+        }
+      },
+      "output": {
+        "kind": "entity",
+        "entity": "entity.task"
+      },
+      "effects": [
+        {
+          "kind": "databaseWrite",
+          "target": "field.task.title"
+        }
+      ],
+      "body": {
+        "kind": "updateEntity",
+        "record": {
+          "kind": "inputField",
+          "name": "task"
+        },
+        "values": {
+          "field.task.title": {
+            "kind": "inputField",
+            "name": "title"
+          }
+        }
+      }
+    },
+    {
+      "id": "operation.deleteTask",
+      "kind": "operation",
+      "feature": "feature.tasks",
+      "name": "deleteTask",
+      "input": {
+        "kind": "record",
+        "fields": {
+          "task": {
+            "kind": "entity",
+            "entity": "entity.task"
+          }
+        }
+      },
+      "output": {
+        "kind": "entity",
+        "entity": "entity.task"
+      },
+      "effects": [
+        {
+          "kind": "databaseWrite",
+          "target": "entity.task"
+        }
+      ],
+      "body": {
+        "kind": "deleteEntity",
+        "record": {
+          "kind": "inputField",
+          "name": "task"
+        }
+      }
+    },
+    {
+      "id": "operation.createTeam",
+      "kind": "operation",
+      "feature": "feature.tasks",
+      "name": "createTeam",
+      "input": {
+        "kind": "record",
+        "fields": {
+          "name": {
+            "kind": "string"
+          }
+        }
+      },
+      "output": {
+        "kind": "entity",
+        "entity": "entity.team"
+      },
+      "effects": [
+        {
+          "kind": "databaseWrite",
+          "target": "entity.team"
+        }
+      ],
+      "body": {
+        "kind": "createEntity",
+        "entity": "entity.team",
+        "values": {
+          "field.team.name": {
+            "kind": "inputField",
+            "name": "name"
+          },
+          "relation.teamOwner": {
+            "kind": "actor"
+          }
+        }
+      }
+    },
+    {
+      "id": "operation.inviteTeamMember",
+      "kind": "operation",
+      "feature": "feature.tasks",
+      "name": "inviteTeamMember",
+      "input": {
+        "kind": "record",
+        "fields": {
+          "userId": {
+            "kind": "string"
+          }
+        }
+      },
+      "output": {
+        "kind": "entity",
+        "entity": "entity.teamMembership"
+      },
+      "effects": [
+        {
+          "kind": "databaseWrite",
+          "target": "entity.teamMembership"
+        }
+      ],
+      "body": {
+        "kind": "createEntity",
+        "entity": "entity.teamMembership",
+        "values": {
+          "field.membership.userId": {
+            "kind": "inputField",
+            "name": "userId"
+          },
+          "field.membership.role": {
+            "kind": "literal",
+            "value": "member"
+          },
+          "field.membership.status": {
+            "kind": "literal",
+            "value": "active"
+          },
+          "field.membership.accepted": {
+            "kind": "literal",
+            "value": false
+          },
+          "relation.membershipMember": {
+            "kind": "inputField",
+            "name": "userId"
+          },
+          "relation.membershipTeam": {
+            "kind": "activeContext",
+            "context": "context.ownedTeam"
+          }
+        }
+      }
+    },
+    {
+      "id": "operation.acceptTeamInvitation",
+      "kind": "operation",
+      "feature": "feature.tasks",
+      "name": "acceptTeamInvitation",
+      "input": {
+        "kind": "record",
+        "fields": {
+          "invitation": {
+            "kind": "entity",
+            "entity": "entity.teamMembership"
+          }
+        }
+      },
+      "output": {
+        "kind": "entity",
+        "entity": "entity.teamMembership"
+      },
+      "effects": [
+        {
+          "kind": "databaseWrite",
+          "target": "field.membership.accepted"
+        }
+      ],
+      "body": {
+        "kind": "updateEntity",
+        "record": {
+          "kind": "inputField",
+          "name": "invitation"
+        },
+        "values": {
+          "field.membership.accepted": {
+            "kind": "literal",
+            "value": true
+          }
+        }
+      }
+    },
+    {
+      "id": "operation.revokeTeamInvitation",
+      "kind": "operation",
+      "feature": "feature.tasks",
+      "name": "revokeTeamInvitation",
+      "input": {
+        "kind": "record",
+        "fields": {
+          "invitation": {
+            "kind": "entity",
+            "entity": "entity.teamMembership"
+          }
+        }
+      },
+      "output": {
+        "kind": "entity",
+        "entity": "entity.teamMembership"
+      },
+      "effects": [
+        {
+          "kind": "databaseWrite",
+          "target": "entity.teamMembership"
+        }
+      ],
+      "body": {
+        "kind": "deleteEntity",
+        "record": {
+          "kind": "inputField",
+          "name": "invitation"
+        }
+      }
     }
   ],
   "routes": [
@@ -254,6 +842,12 @@
       "feature": "feature.tasks",
       "name": "TasksPage",
       "data": {
+        "myInvitations": {
+          "query": "query.myTeamInvitations"
+        },
+        "teamInvitations": {
+          "query": "query.teamInvitations"
+        },
         "tasks": {
           "query": "query.myTasks"
         }
@@ -271,6 +865,54 @@
                 "value": "My tasks"
               }
             }
+          },
+          {
+            "id": "element.createTeamForm",
+            "kind": "component",
+            "component": "ui.Form",
+            "submit": {
+              "operation": "operation.createTeam",
+              "arguments": {
+                "name": {
+                  "kind": "formValue",
+                  "name": "name"
+                }
+              }
+            },
+            "children": [
+              {
+                "kind": "component",
+                "component": "ui.TextField",
+                "props": {
+                  "name": {
+                    "kind": "literal",
+                    "value": "name"
+                  },
+                  "label": {
+                    "kind": "literal",
+                    "value": "New team"
+                  },
+                  "sourceField": {
+                    "kind": "semanticReference",
+                    "target": "field.team.name"
+                  }
+                }
+              },
+              {
+                "kind": "component",
+                "component": "ui.Button",
+                "props": {
+                  "text": {
+                    "kind": "literal",
+                    "value": "Create team"
+                  },
+                  "type": {
+                    "kind": "literal",
+                    "value": "submit"
+                  }
+                }
+              }
+            ]
           },
           {
             "id": "element.createTaskForm",
@@ -321,6 +963,140 @@
             ]
           },
           {
+            "id": "element.inviteTeamMemberForm",
+            "kind": "component",
+            "component": "ui.Form",
+            "submit": {
+              "operation": "operation.inviteTeamMember",
+              "arguments": {
+                "userId": {
+                  "kind": "formValue",
+                  "name": "userId"
+                }
+              }
+            },
+            "children": [
+              {
+                "kind": "component",
+                "component": "ui.TextField",
+                "props": {
+                  "name": {
+                    "kind": "literal",
+                    "value": "userId"
+                  },
+                  "label": {
+                    "kind": "literal",
+                    "value": "Invite user ID"
+                  },
+                  "sourceField": {
+                    "kind": "semanticReference",
+                    "target": "field.membership.userId"
+                  }
+                }
+              },
+              {
+                "kind": "component",
+                "component": "ui.Button",
+                "props": {
+                  "text": {
+                    "kind": "literal",
+                    "value": "Invite member"
+                  },
+                  "type": {
+                    "kind": "literal",
+                    "value": "submit"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "id": "element.myInvitationList",
+            "kind": "repeat",
+            "source": {
+              "kind": "viewData",
+              "name": "myInvitations"
+            },
+            "itemName": "invitation",
+            "display": ["field.membership.createdAt"],
+            "identity": {
+              "kind": "recordField",
+              "record": {
+                "kind": "local",
+                "name": "invitation"
+              },
+              "field": "field.membership.id"
+            },
+            "template": {
+              "kind": "component",
+              "component": "ui.Button",
+              "props": {
+                "text": {
+                  "kind": "literal",
+                  "value": "Accept invitation"
+                },
+                "type": {
+                  "kind": "literal",
+                  "value": "button"
+                }
+              },
+              "events": {
+                "click": {
+                  "operation": "operation.acceptTeamInvitation",
+                  "arguments": {
+                    "invitation": {
+                      "kind": "local",
+                      "name": "invitation"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "id": "element.teamInvitationList",
+            "kind": "repeat",
+            "source": {
+              "kind": "viewData",
+              "name": "teamInvitations"
+            },
+            "itemName": "invitation",
+            "display": ["field.membership.userId", "field.membership.accepted"],
+            "identity": {
+              "kind": "recordField",
+              "record": {
+                "kind": "local",
+                "name": "invitation"
+              },
+              "field": "field.membership.id"
+            },
+            "template": {
+              "kind": "component",
+              "component": "ui.Button",
+              "props": {
+                "text": {
+                  "kind": "literal",
+                  "value": "Revoke member"
+                },
+                "type": {
+                  "kind": "literal",
+                  "value": "button"
+                }
+              },
+              "events": {
+                "click": {
+                  "operation": "operation.revokeTeamInvitation",
+                  "arguments": {
+                    "invitation": {
+                      "kind": "local",
+                      "name": "invitation"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
             "id": "element.taskList",
             "kind": "repeat",
             "source": {
@@ -337,37 +1113,122 @@
               "field": "field.task.id"
             },
             "template": {
+              "id": "element.taskEditor",
               "kind": "component",
-              "component": "ui.CheckboxRow",
-              "props": {
-                "label": {
-                  "kind": "recordField",
-                  "record": {
+              "component": "ui.Form",
+              "submit": {
+                "operation": "operation.renameTask",
+                "arguments": {
+                  "task": {
                     "kind": "local",
                     "name": "task"
                   },
-                  "field": "field.task.title"
-                },
-                "checked": {
-                  "kind": "recordField",
-                  "record": {
-                    "kind": "local",
-                    "name": "task"
-                  },
-                  "field": "field.task.done"
+                  "title": {
+                    "kind": "formValue",
+                    "name": "title"
+                  }
                 }
               },
-              "events": {
-                "change": {
-                  "operation": "operation.toggleTask",
-                  "arguments": {
-                    "task": {
-                      "kind": "local",
-                      "name": "task"
+              "children": [
+                {
+                  "kind": "component",
+                  "component": "ui.CheckboxRow",
+                  "props": {
+                    "label": {
+                      "kind": "recordField",
+                      "record": {
+                        "kind": "local",
+                        "name": "task"
+                      },
+                      "field": "field.task.title"
+                    },
+                    "checked": {
+                      "kind": "recordField",
+                      "record": {
+                        "kind": "local",
+                        "name": "task"
+                      },
+                      "field": "field.task.done"
+                    }
+                  },
+                  "events": {
+                    "change": {
+                      "operation": "operation.toggleTask",
+                      "arguments": {
+                        "task": {
+                          "kind": "local",
+                          "name": "task"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "kind": "component",
+                  "component": "ui.TextField",
+                  "props": {
+                    "name": {
+                      "kind": "literal",
+                      "value": "title"
+                    },
+                    "label": {
+                      "kind": "literal",
+                      "value": "Task title"
+                    },
+                    "sourceField": {
+                      "kind": "semanticReference",
+                      "target": "field.task.title"
+                    },
+                    "value": {
+                      "kind": "recordField",
+                      "record": {
+                        "kind": "local",
+                        "name": "task"
+                      },
+                      "field": "field.task.title"
+                    }
+                  }
+                },
+                {
+                  "kind": "component",
+                  "component": "ui.Button",
+                  "props": {
+                    "text": {
+                      "kind": "literal",
+                      "value": "Save"
+                    },
+                    "type": {
+                      "kind": "literal",
+                      "value": "submit"
+                    }
+                  }
+                },
+                {
+                  "kind": "component",
+                  "component": "ui.Button",
+                  "props": {
+                    "text": {
+                      "kind": "literal",
+                      "value": "Delete"
+                    },
+                    "type": {
+                      "kind": "literal",
+                      "value": "button"
+                    }
+                  },
+                  "events": {
+                    "click": {
+                      "operation": "operation.deleteTask",
+                      "arguments": {
+                        "task": {
+                          "kind": "local",
+                          "name": "task"
+                        }
+                      }
                     }
                   }
                 }
-              }
+              ]
             }
           }
         ]
@@ -381,6 +1242,10 @@
           "kind": "generated"
         },
         "unauthorized": {
+          "kind": "inherited",
+          "from": "app.todo"
+        },
+        "forbidden": {
           "kind": "inherited",
           "from": "app.todo"
         },
@@ -400,12 +1265,27 @@
       {
         "id": "invariant.taskOwner",
         "kind": "invariant",
-        "statement": "Every Task has exactly one owner"
+        "statement": "Every new Task belongs to its active Team and records its creator"
       },
       {
         "id": "invariant.ownerAccess",
         "kind": "invariant",
-        "statement": "A user can access only Tasks they own"
+        "statement": "A user can access Tasks only through a server-authorized Team context"
+      },
+      {
+        "id": "invariant.teamAccess",
+        "kind": "invariant",
+        "statement": "A Team can be selected only by its owner or an active member"
+      },
+      {
+        "id": "invariant.teamInvites",
+        "kind": "invariant",
+        "statement": "Only a Team owner can invite or revoke a member, and only the invited user can accept"
+      },
+      {
+        "id": "invariant.uniqueTeamMembership",
+        "kind": "invariant",
+        "statement": "A user can have at most one membership record per Team"
       }
     ],
     "flows": [
@@ -447,6 +1327,33 @@
             "kind": "expectField",
             "field": "field.task.done",
             "value": true
+          }
+        ]
+      },
+      {
+        "id": "flow.renameTask",
+        "kind": "verificationFlow",
+        "actor": "authenticatedUser",
+        "steps": [
+          {
+            "kind": "invoke",
+            "operation": "operation.renameTask"
+          },
+          {
+            "kind": "expectField",
+            "field": "field.task.title",
+            "value": "Renamed task"
+          }
+        ]
+      },
+      {
+        "id": "flow.deleteTask",
+        "kind": "verificationFlow",
+        "actor": "authenticatedUser",
+        "steps": [
+          {
+            "kind": "invoke",
+            "operation": "operation.deleteTask"
           }
         ]
       }

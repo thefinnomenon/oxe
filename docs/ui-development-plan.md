@@ -56,11 +56,69 @@ authored OXE language.
 - [x] Add precise source maps from generated JavaScript and graph nodes to OXE.
 - [x] Explain why each computation reran and which dependency invalidated it.
 - [x] Add opt-in live owner/resource snapshots and cleanup leak inspection.
-- [ ] Add retained-memory sizing and host-level retainer inspection.
+- [x] Add retained-memory sizing for generated application clients.
+- [ ] Add host-level retainer inspection.
 
 Acceptance: valid examples render and update in a real browser; invalid examples
 produce clickable source diagnostics without destroying the last valid preview;
 and size figures identify their exact payload boundary and measurement method.
+
+## Graph-first development workspace
+
+The application-graph workspace replaces source-first editing for normalized
+applications. Its primary surface is a live, full-height application preview. A
+small persistent agent control sits in the lower-right corner and expands into a
+resizable right rail; collapsing it must return all space to the preview without
+destroying the conversation or pending reviewed draft.
+
+Desktop layout uses three independently collapsible surfaces:
+
+1. A narrow semantic explorer on the left for features, entities, queries,
+   operations, policies, contexts, routes, and views.
+2. The live preview in the center, with route and viewport controls in a restrained
+   top bar.
+3. The agent/revision rail on the right. Chat is the default tab; revisions shows
+   immutable history and the selected revision's semantic changes and artifact
+   impact.
+
+On narrow screens the preview remains the default surface. Structure and revision
+history open as full-height sheets, while agent chat expands upward from the corner.
+The UI must preserve keyboard focus, expose labeled resize/collapse controls, and
+never hide a failed diagnostic behind a transient toast.
+
+The workspace reads and writes only through `oxe.application-agent-request.v1`:
+
+- `inspect.map`, `inspect.node`, `inspect.incoming`, and `inspect.search` populate
+  the semantic explorer without loading the normalized document.
+- `inspect.history` drives the revision timeline. Selecting an old revision is
+  read-only and visibly distinct from the current head.
+- `preview` creates a review card containing semantic changes, diagnostics,
+  affected nodes, generated-artifact work, and a preview fingerprint. The live
+  preview may render disposable draft artifacts, but it does not advance history.
+- `commit` must carry the reviewed fingerprint. A successful compare-and-swap
+  advances the head and refreshes only published affected artifacts; stale review
+  cards remain visible but cannot be committed.
+
+The chat transcript stores protocol request IDs and revision/fingerprint links,
+not hidden source edits. Clicking a referenced semantic ID selects the same node in
+the explorer. Clicking a revision restores its review context; undo is a new
+semantic revision rather than destructive history rewriting.
+
+First workspace milestone:
+
+- [x] Add a local development-server transport around `ApplicationDevelopmentSession`.
+- [x] Embed a configured Todo server in a sandboxed live-preview frame and retain a compact
+      semantic fallback when that server is unavailable.
+- [x] Build the collapsible agent rail and semantic explorer from typed protocol results.
+- [x] Review and commit a priority-field preview with explicit semantic/artifact impact.
+- [x] Browse immutable revisions and compare any revision with its parent.
+- [x] Add last-good runnable artifact fallback when the configured application server fails.
+- [ ] Add responsive, keyboard, light/dark, stale-head, diagnostics, and reconnect tests.
+
+Acceptance: an agent can inspect Todo, preview one atomic semantic mutation, show
+the user exactly what semantic nodes and artifacts change, commit the reviewed
+fingerprint, and update the live application without a full page reload or direct
+editing of OXE/generated files.
 
 ## Milestone 1: reactive ownership kernel
 
@@ -197,7 +255,7 @@ replacement and recover safely from deliberate mismatches.
 
 - [x] Lower ordinary async assignments into cancellable graph resources.
 - [x] Generate component skeletons and pending modes from their real structure.
-- [ ] Implement override precedence and skeleton hints.
+- [x] Implement override precedence and skeleton hints.
 - [x] Retain prior data for same-identity refreshes and reset for identity changes.
 - [x] Define and implement typed async failure classes for runtime and server
       policy.
@@ -249,10 +307,130 @@ replacement and recover safely from deliberate mismatches.
       deterministic manifests, exact validation on both sides of the boundary,
       cancellation, safe error envelopes, server-only request context, and stable
       capability identities preserved in UI graphs and server render plans.
-- [ ] Reintroduce the schema graph around OXE's final type system.
-- [ ] Generate validated and authorized database/storage clients.
-- [ ] Connect reads and writes to semantic cache dependencies and invalidation.
-- [ ] Emit structured logs, metrics, traces, and AI-readable impact explanations.
+- [x] Lower application-graph queries and operations into those contracts, bind
+      form and keyed-row DOM events with typed arguments, and refresh affected
+      query resources after successful in-memory-host mutations.
+- [x] Execute Todo query/create/update bodies against semantic-id in-memory state,
+      reload client entity inputs authoritatively, enforce actor/relation policies,
+      and adapt the generated contracts into the ordinary server-function registry.
+- [x] Lower entities, fields, generated values, constraints, external actors, and
+      relation endpoints into deterministic storage-neutral database schema IR,
+      with additive migration planning for the Todo priority revision and explicit
+      rejection of unsafe or destructive transitions.
+- [x] Extend the semantic type system through refined integers/decimals, domain
+      scalars, exact lists, optional values, and typed result outcomes while
+      keeping application types out of the lowered UI graph.
+- [x] Emit deterministic PostgreSQL schema/migrations directly from database IR,
+      apply checksummed forward migrations under advisory locks to a real
+      temporary PostgreSQL database, and execute validated and authorized Todo
+      queries/operations through OXE's own Node `pg` semantic host.
+- [x] Convert verified Better Auth session identity to server-only `userId` plus
+      request-scoped context roles; validate direct ownership, membership-backed
+      authorization, arbitrary parent-role DAGs, and context policies/defaults.
+- [x] Extend TinyTodo with owner-or-member Team contexts, owner-only membership
+      grants, generic context-option discovery, and a generated-client team
+      switcher while keeping Team outside the framework type system.
+- [x] Add stable graph-owned composite uniqueness, additive PostgreSQL constraint
+      migration, external-user existence checks, and pending invitation
+      accept/revoke flows without introducing a framework-specific tenant model.
+- [x] Instantiate Better Auth in the Node application boundary, apply its
+      provider-owned PostgreSQL schema explicitly, resolve cookie sessions to
+      `userId`, and prove sign-up/sign-out/sign-in plus per-user generated Todo RPC
+      isolation against a real temporary database.
+- [x] Add graph-generated sign-in/sign-up/account UI and a generic browser view
+      interpreter for forms, repeats, context-aware operations, and standard modes.
+- [x] Implement generic direct-or-membership context discovery and authorization
+      for organization, team, project, or application-specific selection.
+- [x] Generate a typed browser client with user-and-active-context-scoped memory
+      caching, same-key in-flight deduplication, bounded freshness, and semantic
+      query invalidation after writes, including protection against stale
+      in-flight reads repopulating the cache.
+- [x] Bootstrap generated clients from a no-store, server-verified public context
+      endpoint; strictly parse declared context selections, omit server-only
+      session identity, derive cache scope internally, and propagate the resolved
+      ordered chain on every RPC.
+- [x] Add a reproducible generated-client size/runtime benchmark, remove
+      compiler-only manifest metadata from browser output, and avoid response-key
+      sorting on the validation hot path.
+- [x] Make query cache freshness/no-store and scalar query predicates graph
+      semantics, with PostgreSQL/in-memory execution and cache-aware compact inspect.
+- [x] Split reachable generated browser functions into lazy account and context-role
+      client modules, and intern repeated result schemas in each artifact.
+- [x] Expand atomic graph mutation with typed whole-semantic-node add/replace and
+      singleton application replacement while retaining full-draft validation.
+- [x] Add typed semantic removal, stable-ID symbol rename, identified UI movement,
+      policy-rule replacement, incoming-reference preflight, and deterministic
+      semantic impact previews.
+- [x] Generate one reusable browser transport/cache/validation runtime with small
+      typed context facets, eliminating duplicated runtime code across lazy chunks.
+- [x] Server-render graph-derived loading structure with revision/view hydration
+      identity and adopt the authenticated shell in the generic browser host.
+- [x] Compute transitive incoming semantic impact closure and map it to deterministic
+      database, server, client-manifest, route, view, and verification artifacts
+      without invalidating the shared browser runtime.
+- [x] Add headless-Chrome conformance/performance checks and a reproducible AI
+      authoring proxy plus a controlled three-arm model trial suite/scorer.
+- [x] Add typed transactional operation workflows with ordered local results and
+      matching rollback behavior in the memory and PostgreSQL semantic hosts.
+- [x] Carry finite numeric values through validation, RPC schemas, generated number
+      controls, memory execution, and PostgreSQL storage; broaden the semantic UI
+      registry with reusable layout, text, link, textarea, and number primitives.
+- [x] Add provider-neutral, versioned capability imports with exact invocation
+      contracts, explicit external-call effects, and injectable memory/PostgreSQL
+      adapters that keep credentials and provider SDKs outside semantic state.
+- [x] Project deterministic production runtime requirements and validate concrete
+      auth, PostgreSQL, and capability bindings before startup.
+- [x] Emit privacy-safe structured trace spans, aggregate metrics, and deterministic
+      AI-readable impact explanations from semantic IDs.
+- [x] Add explicit durable capability enqueue steps with atomic memory/PostgreSQL
+      outbox behavior, leased `SKIP LOCKED` claims, retries, and delivery idempotency keys.
+- [x] Add graph-declared exponential backoff/jitter, dead-letter inspection and replay,
+      a scheduled graceful-draining PostgreSQL worker, and adapter idempotency probes.
+- [x] Compose the outbox worker into application server startup/shutdown and add a
+      protected workspace Runtime panel for bounded telemetry, metadata-only
+      dead-letter inspection, and explicit replay.
+- [x] Emit compiler-owned PostgreSQL server entries from application graph builds,
+      with manifest-declared embedded and independently executable worker modes.
+- [x] Add integrity-pinned browser/server/universal extension modules with explicit
+      npm package declarations and independent target-aware bundling.
+- [x] Add typed custom-component contracts, direct custom-element lowering, and a
+      generated browser registry without coupling application semantics to UI IR.
+- [x] Add graph-owned design tokens, named theme overrides, and optional validated
+      browser CSS extension assets.
+- [x] Bind provider-neutral capabilities to generated server extension registries,
+      including durable-job idempotency checks.
+- [x] Emit executable lazy browser clients, a generic browser view host, checksummed
+      migration descriptor, and a production Node HTTP/Better Auth startup entry.
+- [x] Minify and code-split production application browser output, emit deterministic
+      content-hashed assets with SHA-256 metadata, and serve only those assets with
+      immutable caching while keeping generated HTML uncached.
+- [x] Exercise the generated Node host in headless Chrome against temporary PostgreSQL,
+      including sign-up, custom components/styles, team switching, task isolation,
+      and production cache headers.
+- [x] Make the live application the development workspace, with a mobile-ready
+      floating agent/tool panel and a strict exact-origin semantic interaction
+      bridge that gives chat bounded recent-action context without capturing data.
+- [x] Separate committed, staged, and active revisions; serialize publication;
+      gate activation behind an isolated adapter; retain last-good artifacts on
+      build/migration/runtime failure; and expose deterministic status in the
+      workspace.
+- [x] Bind the publication adapter to disposable PostgreSQL and generated Node
+      runtime candidates so one activation swaps the concrete database, server,
+      and browser target together, including restart recovery of the active
+      last-good revision.
+- [x] Add typed revision restore and failed-publication retry through the one
+      semantic protocol, plus responsive roving-tab keyboard navigation and
+      automatic live-target reconnection in the workspace.
+- [x] Add optional provider-neutral capability recipes for email, object storage,
+      payments, realtime, search, and webhook delivery on top of the generic
+      capability adapter boundary.
+- [x] Expand the controlled AI authoring suite to ten independent application
+      concerns and add deterministic multi-scenario representation/runtime
+      benchmarks without substituting heuristic tokens for provider usage.
+- [x] Add a no-key dry-run matrix, OpenAI Responses adapter, isolated held-out
+      evaluator, deterministic randomized/resumable scheduling, and explicit
+      concurrency, timeout, output-token, total-token, and trial-count limits for
+      the 90-trial pilot and later 900-trial controlled authoring experiment.
 
 ## Performance gates
 

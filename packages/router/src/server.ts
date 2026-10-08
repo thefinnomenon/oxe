@@ -653,6 +653,31 @@ const nodeRequestHeaders = (request: IncomingMessage): Headers => {
   return headers;
 };
 
+const nodeRequestBody = (request: IncomingMessage): ReadableStream<Uint8Array> => {
+  const iterator = request[Symbol.asyncIterator]();
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await iterator.next();
+        if (result.done) {
+          controller.close();
+          return;
+        }
+        const chunk: unknown = result.value;
+        if (typeof chunk === 'string') controller.enqueue(encoder.encode(chunk));
+        else if (chunk instanceof Uint8Array) controller.enqueue(chunk);
+        else controller.error(new TypeError('Node request emitted an unsupported body chunk.'));
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      request.destroy(reason instanceof Error ? reason : undefined);
+    },
+  });
+};
+
 const writeNodeResponse = async (response: Response, target: ServerResponse): Promise<void> => {
   target.statusCode = response.status;
   target.statusMessage = response.statusText;
@@ -716,7 +741,7 @@ export const createNodeHandler =
         signal: controller.signal,
         ...(hasBody
           ? {
-              body: Readable.toWeb(incoming) as ReadableStream<Uint8Array>,
+              body: nodeRequestBody(incoming),
               duplex: 'half' as const,
             }
           : {}),
@@ -742,4 +767,3 @@ export const createNodeRouteHandler = <Context = never>(
   nodeOptions: NodeHandlerOptions = {},
 ): NodeRouteHandler => createNodeHandler(createFetchRouteHandler(options), nodeOptions);
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { Readable } from 'node:stream';

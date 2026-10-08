@@ -4,6 +4,7 @@ import type {
   UiEdgeV1,
   UiGraphV1,
   UiNodeV1,
+  UiServerFunctionDefinitionV1,
   ValueExpressionV1,
 } from './types.js';
 
@@ -1313,6 +1314,15 @@ const validateComponentComposition = (
   for (const edge of graph.edges) {
     if (edge.kind === 'event' || edge.kind === 'read') {
       validateParameterScope(edge.from, edge.to, edgeSpan(edge, nodes, fallback));
+      if (edge.kind === 'event') {
+        for (const argument of edge.arguments ?? []) {
+          const references: ExpressionReference[] = [];
+          collectExpressionReferences(argument, references);
+          for (const reference of references) {
+            validateParameterScope(edge.from, reference.targetId, reference.span);
+          }
+        }
+      }
     } else if (edge.kind === 'prop' && edge.mode === 'procedure') {
       validateParameterScope(edge.from, edge.targetId, edge.span);
     } else if (edge.kind === 'prop' && edge.mode === 'reactive') {
@@ -1379,6 +1389,7 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
   const fallback = fallbackSpan(graph);
 
   const serverFunctionIds = new Set<string>();
+  const serverFunctionsById = new Map<string, UiServerFunctionDefinitionV1>();
   const serverFunctionPaths = new Set<string>();
   const validateServerSchema = (schema: unknown): boolean => {
     if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return false;
@@ -1386,15 +1397,23 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
       readonly fields?: readonly { readonly name?: unknown; readonly schema?: unknown }[];
       readonly items?: unknown;
       readonly kind?: unknown;
+      readonly variants?: readonly unknown[];
     };
     if (
       candidate.kind === 'boolean' ||
+      candidate.kind === 'null' ||
       candidate.kind === 'number' ||
       candidate.kind === 'string'
     ) {
       return true;
     }
     if (candidate.kind === 'array') return validateServerSchema(candidate.items);
+    if (candidate.kind === 'union')
+      return (
+        Array.isArray(candidate.variants) &&
+        candidate.variants.length > 0 &&
+        candidate.variants.every(validateServerSchema)
+      );
     if (candidate.kind !== 'record' || !Array.isArray(candidate.fields)) return false;
     const names = new Set<string>();
     return candidate.fields.every((field) => {
@@ -1435,6 +1454,7 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
       });
     }
     serverFunctionIds.add(definition.id);
+    serverFunctionsById.set(definition.id, definition);
     serverFunctionPaths.add(path);
   }
 
@@ -1691,6 +1711,24 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
           span: node.span,
         });
       }
+      if (node.serverFunctionId !== undefined) {
+        const definition = serverFunctionsById.get(node.serverFunctionId);
+        if (
+          definition &&
+          (node.path.join('.') !== definition.path.join('.') ||
+            node.parameters.length !== definition.parameters.length ||
+            node.parameters.some(
+              (parameter, index) => parameter !== definition.parameters[index]?.schema.kind,
+            ) ||
+            node.returns !== definition.returns.kind)
+        ) {
+          diagnostics.push({
+            code: 'OXE3006',
+            message: `Server function capability "${node.id}" does not match definition "${definition.id}".`,
+            span: node.span,
+          });
+        }
+      }
     } else if (node.kind === 'ref') {
       requireReference(node.elementId, node.span);
       const element = nodes.get(node.elementId);
@@ -1716,7 +1754,46 @@ export const validateUiGraph = (graph: UiGraphV1): GraphDiagnostic[] => {
       });
     }
 
-    if (edge.kind === 'prop' && edge.mode === 'reactive') {
+    if (edge.kind === 'event') {
+      const procedure = nodes.get(edge.to);
+      if (
+        edge.arguments !== undefined &&
+        procedure?.kind === 'procedure' &&
+        procedure.parameters.length !== edge.arguments.length + 1
+      ) {
+        diagnostics.push({
+          code: 'OXE3006',
+          message: `Event "${edge.authoredName}" supplies a DOM event and ${edge.arguments.length} captured argument${edge.arguments.length === 1 ? '' : 's'}, but procedure "${procedure.name}" declares ${procedure.parameters.length} parameters.`,
+          span: edge.span,
+        });
+      }
+      for (const argument of edge.arguments ?? []) {
+        validateExpressionStructure(argument, diagnostics);
+        const references: ExpressionReference[] = [];
+        collectExpressionReferences(argument, references);
+        for (const reference of references) {
+          requireReference(reference.targetId, reference.span);
+          const target = nodes.get(reference.targetId);
+          if (
+            target &&
+            target.kind !== 'async-resource' &&
+            target.kind !== 'cell' &&
+            target.kind !== 'computed' &&
+            target.kind !== 'constant' &&
+            target.kind !== 'collection-item' &&
+            target.kind !== 'context-consumer' &&
+            target.kind !== 'ref' &&
+            !(target.kind === 'component-parameter' && target.parameterKind === 'value')
+          ) {
+            diagnostics.push({
+              code: 'OXE3003',
+              message: `Event argument read "${reference.targetId}" must reference a value node.`,
+              span: reference.span,
+            });
+          }
+        }
+      }
+    } else if (edge.kind === 'prop' && edge.mode === 'reactive') {
       validateExpressionStructure(edge.value, diagnostics);
       const references: ExpressionReference[] = [];
       collectExpressionReferences(edge.value, references);

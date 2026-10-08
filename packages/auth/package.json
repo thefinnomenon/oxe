@@ -1,0 +1,30 @@
+{
+  "name": "@oxe/auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" --max-warnings=0",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@oxe/graph": "workspace:*",
+    "@oxe/server-functions": "workspace:*",
+    "better-auth": "1.7.2",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@oxe/compiler": "workspace:*",
+    "@oxe/postgres": "workspace:*",
+    "@types/pg": "^8.15.5"
+  }
+}

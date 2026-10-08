@@ -5591,7 +5591,8 @@ const edgeKey = (edge: UiEdgeV1): string => {
   }
 };
 
-const serverSchemaKind = (schema: ServerValueSchemaV1): PrimitiveTypeV1 => schema.kind;
+const serverSchemaKind = (schema: ServerValueSchemaV1): PrimitiveTypeV1 =>
+  schema.kind === 'null' || schema.kind === 'union' ? 'unknown' : schema.kind;
 
 const scalarServerSchema = (type: PrimitiveTypeV1 | undefined): ServerValueSchemaV1 | undefined =>
   type === 'boolean' || type === 'number' || type === 'string' ? { kind: type } : undefined;

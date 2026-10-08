@@ -438,10 +438,13 @@ const buildPlan = (graph: UiGraphV1, options: DomCodegenOptions): GenerationPlan
       children.push(edge);
       childrenByParent.set(edge.from, children);
     } else if (edge.kind === 'event') {
-      if (edge.event !== 'click' || edge.authoredName !== 'onClick') {
-        unsupported(
-          `Only onClick DOM events are supported, but received "${edge.authoredName}" (${edge.event}).`,
-        );
+      const supportedEvents = new Map([
+        ['change', 'onChange'],
+        ['click', 'onClick'],
+        ['submit', 'onSubmit'],
+      ]);
+      if (supportedEvents.get(edge.event) !== edge.authoredName) {
+        unsupported(`Unsupported DOM event "${edge.authoredName}" (${edge.event}).`);
       }
       const events = eventsByElement.get(edge.from) ?? [];
       events.push(edge);
@@ -1757,8 +1760,14 @@ const emitProgram = (plan: GenerationPlan, options: DomCodegenOptions): EmittedP
           }
           const procedure = plan.nodesById.get(event.to);
           const asyncErrorName = `${component.component.name}.${procedure?.kind === 'procedure' ? procedure.name : event.authoredName}`;
+          const handler =
+            (event.arguments?.length ?? 0) === 0
+              ? procedureName
+              : `(event) => ${procedureName}(event, ${event.arguments
+                  ?.map((argument) => expressionSource(argument))
+                  .join(', ')})`;
           writer.line(
-            `listen(${elementName}, ${JSON.stringify(event.event)}, ${procedureName}, {${asyncProcedureIds.has(event.to) ? ` onError: onError ? (error) => onError(error, { kind: 'async-procedure', name: ${JSON.stringify(asyncErrorName)} }) : undefined,` : ''} replayId: ${JSON.stringify(hydrationMarkerId(element.id))} });`,
+            `listen(${elementName}, ${JSON.stringify(event.event)}, ${handler}, {${asyncProcedureIds.has(event.to) ? ` onError: onError ? (error) => onError(error, { kind: 'async-procedure', name: ${JSON.stringify(asyncErrorName)} }) : undefined,` : ''} replayId: ${JSON.stringify(hydrationMarkerId(element.id))} });`,
           );
         }
 

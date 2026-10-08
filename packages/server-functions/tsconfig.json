@@ -8,5 +8,10 @@
     "tsBuildInfoFile": "dist-typecheck/tsconfig.tsbuildinfo"
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
-  "references": [{ "path": "../compiler" }, { "path": "../runtime" }]
+  "references": [
+    { "path": "../compiler" },
+    { "path": "../graph" },
+    { "path": "../postgres" },
+    { "path": "../runtime" }
+  ]
 }

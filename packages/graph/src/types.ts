@@ -25,6 +25,7 @@ export type PrimitiveTypeV1 = 'array' | 'boolean' | 'number' | 'record' | 'strin
 
 export type ServerValueSchemaV1 =
   | { readonly kind: 'boolean' }
+  | { readonly kind: 'null' }
   | {
       readonly integer?: boolean;
       readonly kind: 'number';
@@ -49,7 +50,8 @@ export type ServerValueSchemaV1 =
         readonly schema: ServerValueSchemaV1;
       }[];
       readonly kind: 'record';
-    };
+    }
+  | { readonly kind: 'union'; readonly variants: readonly ServerValueSchemaV1[] };
 
 /** Compiler-owned RPC contract synthesized from an authored `server` declaration. */
 export interface UiServerFunctionDefinitionV1 {
@@ -507,6 +509,8 @@ export type UiEdgeV1 =
       readonly to: NodeIdV1;
     }
   | {
+      /** Values captured from the element's render scope and passed after the DOM event. */
+      readonly arguments?: readonly ValueExpressionV1[];
       readonly authoredName: string;
       readonly event: string;
       readonly from: NodeIdV1;

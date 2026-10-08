@@ -24,7 +24,22 @@ export default tseslint.config(
     },
   },
   {
-    files: ['apps/playground/src/**/*.ts'],
+    files: ['**/scripts/**/*.mjs', 'benchmarks/**/*.mjs', 'tools/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+        Response: 'readonly',
+        URL: 'readonly',
+        WebSocket: 'readonly',
+        fetch: 'readonly',
+        performance: 'readonly',
+      },
+    },
+  },
+  {
+    files: ['apps/playground/src/**/*.ts', 'apps/workspace/src/client.ts'],
     languageOptions: {
       globals: {
         ...globals.browser,

@@ -8,6 +8,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./application": {
+      "types": "./dist/application.d.ts",
+      "import": "./dist/application.js"
+    },
+    "./application-postgres": {
+      "types": "./dist/application-postgres.d.ts",
+      "import": "./dist/application-postgres.js"
+    },
+    "./auth": {
+      "types": "./dist/auth.d.ts",
+      "import": "./dist/auth.js"
     }
   },
   "scripts": {
@@ -17,6 +29,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@oxe/graph": "workspace:*",
+    "@oxe/postgres": "workspace:*",
     "@oxe/runtime": "workspace:*"
   },
   "devDependencies": {

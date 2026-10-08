@@ -1,0 +1,31 @@
+{
+  "name": "@oxe/todo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "pnpm bench:client && pnpm bench:authoring",
+    "bench:authoring": "pnpm build && node scripts/benchmark-authoring.mjs",
+    "bench:browser": "node scripts/browser-conformance.mjs",
+    "bench:client": "pnpm build && node --expose-gc scripts/benchmark-client.mjs",
+    "build": "node scripts/generate-client.mjs && tsc -p tsconfig.build.json",
+    "dev": "pnpm build && node dist/server.js",
+    "generate:client": "node scripts/generate-client.mjs",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "lint": "eslint \"scripts/**/*.mjs\" \"src/**/*.ts\" \"tests/**/*.ts\" --max-warnings=0",
+    "typecheck": "node scripts/generate-client.mjs && tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@oxe/auth": "workspace:*",
+    "@oxe/compiler": "workspace:*",
+    "@oxe/graph": "workspace:*",
+    "@oxe/postgres": "workspace:*",
+    "@oxe/server-functions": "workspace:*",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5",
+    "esbuild": "^0.28.1"
+  }
+}

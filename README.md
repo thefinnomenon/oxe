@@ -129,10 +129,44 @@ or dynamically register their additional resource and patch work when they do no
 ## Packages
 
 - `@oxe/cli`: the `oxe` executable and explicit localization sync/check workflow.
+- `@oxe/auth`: Node/Better Auth email-password accounts, explicit provider-owned
+  PostgreSQL migration execution, cookie-session-to-`userId` resolution, and
+  optional server-validated active-context resolution for multi-tenant apps.
 - `@oxe/compiler`: scanner, parser, semantic analysis, and deterministic DOM code
-  generation.
-- `@oxe/graph`: versioned UI graph types, structural validation, dependency-edge
-  reconciliation, topology checks, and canonical JSON.
+  generation; deterministic application-route projection into the lowered UI
+  graph with semantic provenance and typed RPC contracts; a generated generic
+  browser-view contract with standard modes and lazy account/context client
+  facets over one shared transport/cache/validation runtime, scoped graph-declared
+  caching/invalidation, interned response schemas, structure-derived SSR loading
+  projections with hydration identity, and semantic impact-closure artifact
+  invalidation; and a separate
+  storage-neutral relational schema IR with safe additive migration planning for
+  application graph revisions, including stable composite unique constraints;
+  plus a revision-aware cache for real browser/database/server/verification
+  projections, compiler-owned embedded/separate PostgreSQL worker deployment
+  entries, and a Node-only development session that joins that cache to the
+  authoritative revision store and agent protocol; plus serialized staged
+  publication with disposable PostgreSQL/generated-Node candidates, atomic
+  last-good activation and restart recovery, candidate cleanup, and versioned
+  failure status.
+- `@oxe/graph`: distinct versioned application and lowered UI graph types,
+  structural and semantic validation, compact AI inspection, atomic typed
+  add/replace/remove/rename/UI-move/policy mutation with incoming-reference and
+  impact previews, canonical application serialization,
+  graph-declared query predicates/cache policy, typed transactional workflows,
+  finite numeric values, refined integers and decimals, dates, bytes, URLs,
+  email addresses, exact lists/optionals/results, provider-neutral capability
+  contracts and optional standard recipes, and runtime-binding
+  readiness diagnostics, privacy-safe semantic trace/metric collection,
+  deterministic AI-readable impact explanations, durable queued capability
+  delivery with stable idempotency keys, bounded retry policy, dead-letter replay,
+  and adapter conformance probes, generic context roles
+  with direct/membership authorization and parent-role DAGs, a policy-enforcing
+  in-memory semantic query/operation host, and an isolated Node-only SQLite WAL
+  revision store with indexed semantic references, atomic compare-and-commit,
+  mutation history, and undo; and a strict versioned inspect/preview/commit agent
+  protocol with reviewed-preview fingerprints. It also retains lowered UI dependency-edge
+  reconciliation, topology checks, and canonical UI-graph JSON.
 - `@oxe/i18n`: automatic message extraction, content-addressed catalogs,
   incremental sync, reviewed-translation protection, deterministic validation,
   and OpenAI translation isolated from application packages.
@@ -150,11 +184,34 @@ or dynamically register their additional resource and patch work when they do no
   graph-backed route inputs, nested SSR composition, reactive browser
   navigation, persistent independently loaded DOM segments, and Fetch/Node
   application hosts.
+- `@oxe/postgres`: Node `pg` connectivity, checksummed forward-only migration
+  application under PostgreSQL advisory locks, and a graph-compiled semantic
+  query/operation host with authoritative reloads, server-side context-role
+  resolution, generic authorized context-option discovery, direct-or-membership
+  authorization, external-entity existence validation, semantic unique-violation
+  errors, scoped policy enforcement, and a leased at-least-once outbox worker whose
+  inserts commit atomically with graph workflow writes, with scheduled polling,
+  exponential backoff/jitter, metadata-only inspection, replay, and graceful drain.
 - `@oxe/server-functions`: versioned typed RPC contracts, deterministic manifests,
   exact request/result validation, safe error envelopes, cancellation, and
-  Fetch/in-process transports for compiler-generated functions.
+  Fetch/in-process transports for compiler-generated functions, including the
+  server-only application adapters used to execute graph-owned contracts against
+  in-memory or PostgreSQL hosts, a managed PostgreSQL server composition with
+  bounded telemetry and graceful outbox-worker ownership, plus a Better Auth session-to-`userId` and
+  server-validated multi-tenant context boundary with a browser-safe context
+  bootstrap projection.
 - `@oxe/playground`: browser compiler lab with native examples, an isolated DOM
   preview, diagnostics, generated output, graph inspection, and payload sizing.
+- `@oxe/todo`: runnable Node/PostgreSQL browser projection of the authenticated
+  TinyTodo application graph, with Better Auth accounts, shared team membership,
+  pending accept/revoke invitations, duplicate prevention, a team switcher, and
+  generated OXE RPC/client projections; its leased outbox worker starts after
+  migrations and drains before database shutdown.
+- `@oxe/workspace`: local graph-first development workspace with a live preview,
+  semantic explorer, revision review, protected runtime telemetry/dead-letter
+  controls, collapsible agent protocol rail, typed revision restore, publication
+  retry, keyboard navigation, and committed-versus-active publication status
+  backed by the authoritative SQLite revision session and concrete hot target.
 - `docs/language-decisions.md`: settled authored-language decisions and open
   syntax.
 - `docs/ui-development-plan.md`: staged tasks and acceptance gates.
@@ -178,7 +235,21 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm bench
+pnpm bench:application-values
+pnpm todo:bench:authoring
+pnpm todo:bench:browser # while TinyTodo is running
+pnpm ai:trials:test
+pnpm ai:trials:dry # validates the 30-cell harness without a provider key
+pnpm ai:trials:pilot # 90 OpenAI trials; requires an explicit OPENAI_API_KEY
+pnpm ai:trials:full # 900 OpenAI trials after the pilot is reviewed
+pnpm ai:trials:record -- trial.json trials.jsonl
+pnpm ai:trials:run -- --adapter adapter.mjs --evaluator evaluator.mjs --output trials.jsonl
+pnpm ai:trials:score -- trials.jsonl
 pnpm --filter @oxe/runtime-server bench
+
+# Run TinyTodo after setting DATABASE_URL.
+pnpm todo
+pnpm workspace # then open http://127.0.0.1:4175
 ```
 
 ## Building an OXE project
@@ -224,8 +295,103 @@ node packages/cli/dist/cli.js build --project examples/localization --sync-i18n
 
 Build output is staged before replacing the previous output directory, so a
 compiler or localization error leaves the last successful build intact. Host
-capability contract discovery and final application bundling remain deployment
-integration responsibilities in this first CLI build slice.
+capability adapter implementation and the HTTP/auth edge remain deployment
+integration responsibilities.
+
+### Building a normalized application graph
+
+The application build path validates the authoritative graph and emits its
+canonical copy alongside deterministic PostgreSQL, browser, route, server-function,
+verification, runtime-requirement, and deployment artifacts:
+
+```sh
+node packages/cli/dist/cli.js build \
+  --project examples/application-graph-todo \
+  --application-graph graph.json \
+  --worker-mode embedded
+```
+
+`embedded` is the default. Its `server/application.js` factory owns one managed
+outbox worker and drains it when the host closes. Use `separate` when the web and
+worker processes scale independently:
+
+```sh
+node packages/cli/dist/cli.js build \
+  --project examples/application-graph-todo \
+  --application-graph graph.json \
+  --worker-mode separate
+
+DATABASE_URL=postgres://... node examples/application-graph-todo/dist/server/worker.js
+```
+
+Separate mode emits an independently executable `server/worker.js`; the server
+factory never polls the outbox. `oxe-manifest.json` and
+`application/manifest.json` identify the selected topology and entry paths. Both
+modes keep `graph.json` authoritative—the copy under `dist/application` and all
+JavaScript/SQL are disposable projections. The build also emits an executable
+`server/start.js` Node host. It applies the checksummed OXE migration, applies
+Better Auth's provider-owned migrations when authentication is declared, starts
+the generated RPC and optional embedded worker, serves the generated browser
+host, and resolves every request to server-verified `userId` and active-context
+state:
+
+```sh
+DATABASE_URL=postgres://localhost/oxe \
+BETTER_AUTH_URL=http://127.0.0.1:3000 \
+BETTER_AUTH_SECRET=replace-in-production \
+node examples/application-graph-todo/dist/server/start.js
+```
+
+`HOST`, `PORT`, and a comma-separated `OXE_ALLOWED_ORIGINS` are optional. The
+production host refuses to start an authenticated application without an auth
+secret. Generated pages, lazy account/context clients, the cache/transport
+runtime, view projections, custom components, and theme CSS are served from the
+same origin. Production application builds preserve the logical browser modules
+as inspectable disposable projections, then emit a minified, code-split
+`browser/assets` projection with content-hashed filenames. `browser/index.html`
+references those hashed entries, `browser/asset-manifest.json` records exact byte
+counts and SHA-256 integrity, and the generated host serves only the manifest's
+hashed assets with one-year immutable caching; HTML remains `no-store`.
+
+### JavaScript, npm packages, custom components, and styles
+
+Arbitrary behavior stays outside the compact semantic graph as an explicitly
+declared, integrity-pinned extension asset. An `extensionModule` gives the asset a
+stable semantic ID, project-relative source, SHA-256 digest, browser/server target,
+format, and the package dependencies it directly imports. Browser and server
+entries are bundled independently, so a Node-only dependency cannot silently leak
+into browser output. Every declared package must also exist at the exact declared
+specifier in the project's `package.json`; undeclared and stale declarations fail
+the build. Relative imports are allowed only when every reached project-local file
+has its own unique, integrity-pinned extension-module declaration with a compatible
+target.
+
+```json
+{
+  "id": "module.chart",
+  "kind": "extensionModule",
+  "name": "Chart implementation",
+  "source": "extensions/chart.js",
+  "integrity": "sha256:…",
+  "target": "browser",
+  "format": "javascript",
+  "packages": { "uplot": "1.6.32" }
+}
+```
+
+A `componentExtension` binds a browser/universal JavaScript export to an exact
+prop, event, children, and SSR custom-element contract. A capability's optional
+`adapter` binds a server/universal export to its already typed provider-neutral
+contract; queued adapters must declare `jobId` idempotency. The graph therefore
+remains inspectable and type-checkable without embedding an npm API or arbitrary
+JavaScript AST into application semantics.
+
+Styles use graph-owned semantic tokens and theme overrides. Optional CSS modules
+are browser-only, integrity-pinned extension assets and are bundled into the
+generated application stylesheet. Custom component definitions are loaded before
+the generic browser host adopts the graph-derived SSR shell. Extension source is
+an opaque revisioned asset pinned by the graph; generated bundles remain
+disposable projections.
 
 For localized route builds, the configured source locale owns the bare URL and
 other locales use canonical lowercase prefixes (`/es`, `/pt-br`). The Fetch host

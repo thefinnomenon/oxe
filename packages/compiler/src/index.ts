@@ -2,6 +2,126 @@ export { scanSource, type ScanResult } from './scanner.js';
 export { parseSource, type ParseResult } from './parser.js';
 export { formatSource, type FormatResult } from './formatter.js';
 export {
+  generateApplicationBrowserHostRuntime,
+  generateApplicationBrowserStart,
+} from './application-browser.js';
+export {
+  ApplicationArtifactCache,
+  type ApplicationArtifactBuildStatsV1,
+  type ApplicationArtifactCompilationV1,
+  type ApplicationArtifactCompilationOptionsV1,
+  type ApplicationCompiledArtifactV1,
+} from './application-artifact-cache.js';
+export {
+  ApplicationPublicationError,
+  ApplicationPublicationManager,
+  type ApplicationPublicationAdapterV1,
+  type ApplicationPublicationAttemptV1,
+  type ApplicationPublicationFailureStageV1,
+  type ApplicationPublicationManagerOptionsV1,
+  type ApplicationPublicationPreparationV1,
+  type ApplicationPublicationStateV1,
+  type PreparedApplicationRuntimeV1,
+} from './application-publication.js';
+export {
+  createApplicationClientManifest,
+  generateApplicationBrowserClientFacet,
+  generateApplicationBrowserClientFacetJavaScript,
+  generateApplicationBrowserClient,
+  generateApplicationBrowserClientRuntimeJavaScriptModule,
+  generateApplicationBrowserClientRuntimeModule,
+  projectApplicationLoading,
+  type ApplicationBrowserClientProjectionV1,
+  type ApplicationBrowserClientFacetProjectionV1,
+  type ApplicationClientCachePolicyV1,
+  type ApplicationClientFunctionV1,
+  type ApplicationClientManifestV1,
+  type ApplicationLoadingCollectionV1,
+  type ApplicationLoadingProjectionV1,
+  type ApplicationSkeletonNodeV1,
+} from './application-client.js';
+export {
+  planApplicationArtifactInvalidation,
+  type ApplicationArtifactInvalidationPlanV1,
+  type ApplicationArtifactKindV1,
+  type ApplicationInvalidatedArtifactV1,
+} from './application-incremental.js';
+export {
+  generateApplicationBrowserExtensionRegistry,
+  generateApplicationServerExtensionRegistry,
+  generateApplicationStyleSheet,
+  projectApplicationExtensionArtifacts,
+  type ApplicationCompiledExtensionModuleV1,
+  type ApplicationCompiledExtensionModulesV1,
+  type ApplicationExtensionArtifactV1,
+} from './application-extension.js';
+export {
+  generateApplicationNodeHostEntry,
+  generateApplicationPostgresServerEntry,
+  generateApplicationPostgresWorkerEntry,
+  type ApplicationWorkerDeploymentV1,
+} from './application-server.js';
+export {
+  generateApplicationBrowserViewModule,
+  projectApplicationBrowserView,
+  renderApplicationBrowserViewLoadingHtml,
+  type ApplicationBrowserViewFunctionV1,
+  type ApplicationBrowserViewProjectionV1,
+  type ApplicationStandardViewModeNameV1,
+  type ApplicationStandardViewModeV1,
+} from './application-view.js';
+export {
+  ApplicationUiLoweringError,
+  lowerApplicationRouteToUiGraph,
+  type ApplicationUiDeferredInteractionV1,
+  type ApplicationUiLoweredNodeProvenanceV1,
+  type ApplicationUiLoweredOriginV1,
+  type ApplicationUiLoweringDiagnostic,
+  type ApplicationUiLoweringDiagnosticCode,
+  type ApplicationUiLoweringOptions,
+  type ApplicationUiProjectionV1,
+  type ApplicationUiSemanticHandleV1,
+} from './application-lower.js';
+export {
+  ApplicationDatabaseProjectionError,
+  lowerApplicationGraphToDatabaseSchema,
+  planApplicationDatabaseMigration,
+  serializeApplicationDatabaseProjection,
+  type ApplicationDatabaseColumnTypeV1,
+  type ApplicationDatabaseColumnV1,
+  type ApplicationDatabaseDiagnostic,
+  type ApplicationDatabaseDiagnosticCode,
+  type ApplicationDatabaseExternalEntityV1,
+  type ApplicationDatabaseMigrationOperationV1,
+  type ApplicationDatabaseMigrationPlanV1,
+  type ApplicationDatabaseRelationEndpointV1,
+  type ApplicationDatabaseRelationV1,
+  type ApplicationDatabaseSchemaProjectionV1,
+  type ApplicationDatabaseStringLengthConstraintV1,
+  type ApplicationDatabaseTableV1,
+  type ApplicationDatabaseUniqueConstraintV1,
+} from './application-database.js';
+export {
+  ApplicationPostgresProjectionError,
+  compileApplicationPostgresBootstrap,
+  compileApplicationPostgresMigration,
+  compileApplicationPostgresSchema,
+  generateApplicationPostgresMigration,
+  generateApplicationPostgresInfrastructureSql,
+  generateApplicationPostgresSchemaSql,
+  lowerApplicationDatabaseSchemaToPostgres,
+  type ApplicationPostgresCheckV1,
+  type ApplicationPostgresColumnV1,
+  type ApplicationPostgresDiagnostic,
+  type ApplicationPostgresDiagnosticCode,
+  type ApplicationPostgresExternalReferenceV1,
+  type ApplicationPostgresForeignKeyV1,
+  type ApplicationPostgresMigrationV1,
+  type ApplicationPostgresSchemaV1,
+  type ApplicationPostgresTableV1,
+  type ApplicationPostgresUniqueConstraintV1,
+} from './application-postgres.js';
+export {
   analyzeProject,
   analyzeSource,
   type AnalyzeOptions,

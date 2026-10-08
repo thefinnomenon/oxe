@@ -71,7 +71,7 @@ const edgeKey = (edge: UiEdgeV1): string => {
     case 'event':
       return (
         `${edge.kind}\0${edge.from}\0${edge.to}\0${edge.authoredName}\0${edge.event}\0` +
-        spanKey(edge.span)
+        `${(edge.arguments ?? []).map(expressionKey).join('\0')}\0${spanKey(edge.span)}`
       );
     case 'owner':
       return `${edge.kind}\0${edge.from}\0${edge.to}`;
@@ -128,6 +128,9 @@ const normalizeServerSchema = (schema: ServerValueSchemaV1): ServerValueSchemaV1
         .map((field) => ({ ...field, schema: normalizeServerSchema(field.schema) }))
         .sort((left, right) => compareText(left.name, right.name)),
     };
+  }
+  if (schema.kind === 'union') {
+    return { ...schema, variants: schema.variants.map(normalizeServerSchema) };
   }
   if (schema.kind === 'string' && schema.enum) {
     return { ...schema, enum: [...schema.enum].sort(compareText) };

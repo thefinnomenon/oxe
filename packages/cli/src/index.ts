@@ -1,6 +1,7 @@
 import { loadEnvFile } from 'node:process';
 import { join, resolve } from 'node:path';
 
+import type { ApplicationWorkerDeploymentV1 } from '@oxe/compiler';
 import {
   createOpenAITranslationProvider,
   loadProjectConfig,
@@ -38,12 +39,14 @@ interface ParsedOptions {
 }
 
 interface ParsedBuildOptions extends ParsedOptions {
+  readonly applicationGraph?: string;
   readonly basePath?: string;
   readonly entryExport?: string;
   readonly entryModuleId?: string;
   readonly outputDirectory?: string;
   readonly routesDirectory?: string;
   readonly syncI18n: boolean;
+  readonly workerDeployment?: ApplicationWorkerDeploymentV1;
 }
 
 const usage = `OXE command line
@@ -51,6 +54,8 @@ const usage = `OXE command line
 Usage:
   oxe build [--project PATH] [--entry FILE] [--export NAME] [--out-dir PATH]
             [--routes-dir PATH] [--base-path PATH] [--sync-i18n]
+  oxe build --application-graph FILE [--worker-mode embedded|separate]
+            [--project PATH] [--out-dir PATH]
   oxe i18n sync [--project PATH]
   oxe i18n check [--project PATH]
 
@@ -59,7 +64,9 @@ server plans, and a versioned build manifest. Filesystem routes beneath
 src/routes are detected automatically. Localization validation never uses the
 network; generation occurs only with --sync-i18n or an explicit i18n sync. API
 keys are read from .env or the environment variable named in oxe.config.json and
-are never stored in catalogs.`;
+are never stored in catalogs. Application graph builds emit PostgreSQL, browser,
+server-runtime, and verification projections without lowering application semantics
+into the textual UI build.`;
 
 const parseOptions = (arguments_: readonly string[], cwd: string): ParsedOptions => {
   let projectDirectory = cwd;
@@ -81,19 +88,30 @@ const parseOptions = (arguments_: readonly string[], cwd: string): ParsedOptions
 
 const parseBuildOptions = (arguments_: readonly string[], cwd: string): ParsedBuildOptions => {
   let projectDirectory = cwd;
+  let applicationGraph: string | undefined;
   let basePath: string | undefined;
   let entryExport: string | undefined;
   let entryModuleId: string | undefined;
   let outputDirectory: string | undefined;
   let routesDirectory: string | undefined;
   let syncI18n = false;
+  let workerDeployment: ApplicationWorkerDeploymentV1 | undefined;
   const values = new Map<string, (value: string) => void>([
+    ['--application-graph', (value) => (applicationGraph = value)],
     ['--base-path', (value) => (basePath = value)],
     ['--entry', (value) => (entryModuleId = value)],
     ['--export', (value) => (entryExport = value)],
     ['--out-dir', (value) => (outputDirectory = value)],
     ['--project', (value) => (projectDirectory = resolve(cwd, value))],
     ['--routes-dir', (value) => (routesDirectory = value)],
+    [
+      '--worker-mode',
+      (value) => {
+        if (value !== 'embedded' && value !== 'separate')
+          throw new TypeError('--worker-mode must be embedded or separate.');
+        workerDeployment = value;
+      },
+    ],
   ]);
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
@@ -113,6 +131,7 @@ const parseBuildOptions = (arguments_: readonly string[], cwd: string): ParsedBu
     index += 1;
   }
   return {
+    ...(applicationGraph === undefined ? {} : { applicationGraph }),
     ...(basePath === undefined ? {} : { basePath }),
     ...(entryExport === undefined ? {} : { entryExport }),
     ...(entryModuleId === undefined ? {} : { entryModuleId }),
@@ -120,6 +139,7 @@ const parseBuildOptions = (arguments_: readonly string[], cwd: string): ParsedBu
     projectDirectory,
     ...(routesDirectory === undefined ? {} : { routesDirectory }),
     syncI18n,
+    ...(workerDeployment === undefined ? {} : { workerDeployment }),
     workingDirectory: cwd,
   };
 };
@@ -188,13 +208,19 @@ const buildOptions = async (
   io: CliIo,
 ): Promise<BuildProjectOptions> => {
   const common: BuildProjectOptions = {
+    ...(parsed.applicationGraph === undefined ? {} : { applicationGraph: parsed.applicationGraph }),
     ...(parsed.basePath === undefined ? {} : { basePath: parsed.basePath }),
     ...(parsed.entryExport === undefined ? {} : { entryExport: parsed.entryExport }),
     ...(parsed.entryModuleId === undefined ? {} : { entryModuleId: parsed.entryModuleId }),
     ...(parsed.outputDirectory === undefined ? {} : { outputDirectory: parsed.outputDirectory }),
     projectDirectory: parsed.projectDirectory,
     ...(parsed.routesDirectory === undefined ? {} : { routesDirectory: parsed.routesDirectory }),
+    ...(parsed.workerDeployment === undefined ? {} : { workerDeployment: parsed.workerDeployment }),
   };
+  if (parsed.applicationGraph && parsed.syncI18n)
+    throw new TypeError(
+      'Application graph builds cannot be combined with UI entry, route, or localization options.',
+    );
   if (!parsed.syncI18n) return common;
 
   const config = await loadProjectConfig(parsed.projectDirectory);
@@ -232,10 +258,10 @@ const reportBuild = (result: BuildProjectResult, io: CliIo): void => {
       `Sync complete: ${sync.generated} generated, ${sync.unchanged} unchanged, ${sync.preservedReviewed} reviewed preserved.`,
     );
   }
-  const noun = result.manifest.artifacts.length === 1 ? 'artifact' : 'artifacts';
-  io.log(
-    `Built ${result.manifest.artifacts.length} ${noun} (${result.manifest.mode}) to ${result.outputDirectory}.`,
-  );
+  const artifactCount =
+    result.manifest.application?.artifacts.length ?? result.manifest.artifacts.length;
+  const noun = artifactCount === 1 ? 'artifact' : 'artifacts';
+  io.log(`Built ${artifactCount} ${noun} (${result.manifest.mode}) to ${result.outputDirectory}.`);
 };
 
 const runBuild = async (parsed: ParsedBuildOptions, io: CliIo): Promise<number> => {

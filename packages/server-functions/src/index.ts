@@ -34,6 +34,7 @@ export type {
   ArraySchemaV1,
   BooleanSchemaV1,
   DispatchServerFunctionOptions,
+  NullSchemaV1,
   NumberSchemaV1,
   RecordFieldV1,
   RecordSchemaV1,
@@ -58,6 +59,7 @@ export type {
   ServerSchemaValue,
   ServerValueSchemaV1,
   StringSchemaV1,
+  UnionSchemaV1,
 } from './types.js';
 export {
   SERVER_FUNCTION_MANIFEST_SCHEMA,
